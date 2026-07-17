@@ -1,0 +1,48 @@
+# SFT Configuration — 14B QLoRA fine-tuning
+# ===========================================
+# Target: 14B-class models (Qwen2.5-14B, DeepSeek-14B)
+# Hardware: M5 96GB unified memory
+# Estimated memory: ~28 GB with 4-bit QLoRA + MXFP8
+
+sft:
+  model: ""  # e.g. "qwen2.5-14b-4bit" (fusion-mlx alias)
+  model_type: lm
+  method: qlora
+
+  # QLoRA parameters
+  lora_rank: 16
+  lora_alpha: 32.0
+  lora_dropout: 0.05
+  lora_target_modules:
+    - q_proj
+    - v_proj
+    - k_proj
+    - o_proj
+  quant_bits: 4
+
+  # Training hyperparameters
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-4
+  lr_scheduler: cosine
+  warmup_steps: 100
+  num_epochs: 3
+  max_seq_length: 4096
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  # Precision
+  use_mxfp8: true
+
+  # Checkpointing
+  save_every: 500
+  save_total_limit: 3
+  log_every: 10
+
+  # Output
+  run_name: sft_14b_qlora
+  output_dir: ""
+
+dataset:
+  hub_dataset: ""
+  max_seq_length: 4096

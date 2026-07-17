@@ -1,0 +1,46 @@
+# Fusion-Trainer
+
+# --- Runtime cache (auto-generated, not committed) ---
+runtime_cache/
+dataset_tmp/
+checkpoints/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# --- Build artifacts ---
+dist/
+build/
+*.egg
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Coverage ---
+.coverage
+htmlcov/
+coverage.xml
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Model weights (large binary files, not committed) ---
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.ckpt

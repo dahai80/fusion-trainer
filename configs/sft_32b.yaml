@@ -1,0 +1,46 @@
+# SFT Configuration — 32B QLoRA fine-tuning (M5 96GB peak)
+# ===========================================================
+# Target: 32B-class models (Qwen2.5-32B, DeepSeek-Coder-33B)
+# Hardware: M5 96GB unified memory (peak usage ~48 GB)
+# Note: Reduced context for memory efficiency
+
+sft:
+  model: ""  # e.g. "qwen2.5-32b-4bit" (fusion-mlx alias)
+  model_type: lm
+  method: qlora
+
+  # QLoRA parameters (reduced rank for memory efficiency)
+  lora_rank: 8
+  lora_alpha: 16.0
+  lora_dropout: 0.05
+  lora_target_modules:
+    - q_proj
+    - v_proj
+  quant_bits: 4
+
+  # Training hyperparameters
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4
+  lr_scheduler: cosine
+  warmup_steps: 50
+  num_epochs: 2
+  max_seq_length: 2048
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  # Precision
+  use_mxfp8: true
+
+  # Checkpointing
+  save_every: 200
+  save_total_limit: 2
+  log_every: 10
+
+  # Output
+  run_name: sft_32b_qlora
+  output_dir: ""
+
+dataset:
+  hub_dataset: ""
+  max_seq_length: 2048

@@ -1,0 +1,43 @@
+# RLSL Configuration — DPO/ORPO/RLSL Alignment
+# ==============================================
+# Target: 14B-class models aligned with preference data
+# Hardware: M5 96GB unified memory
+# Peak memory (RLSL): ~62 GB
+
+rlsl:
+  method: dpo  # Options: dpo, orpo, rlsl
+
+  # Reward model (only for rlsl method)
+  reward_model: ""
+  reward_learning_rate: 1.0e-5
+  reward_batch_size: 1
+  reward_num_epochs: 2
+
+  # DPO / ORPO parameters
+  beta: 0.1
+
+  # RLSL (PPO-light) parameters
+  clip_epsilon: 0.2
+  kl_coef: 0.04
+  ppo_epochs: 4
+
+  # Training hyperparameters
+  batch_size: 1
+  learning_rate: 5.0e-6
+  num_epochs: 1
+  max_steps: 0
+
+  # Generation during RL
+  response_length: 512
+  temperature: 0.7
+  top_p: 0.9
+
+  # Logging
+  log_every: 10
+  save_every: 200
+  run_name: rlsl_14b_dpo
+  output_dir: ""
+
+dataset:
+  hub_dataset: ""  # e.g. "preference/ultrafeedback_binarized"
+  max_seq_length: 4096

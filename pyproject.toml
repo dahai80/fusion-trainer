@@ -1,0 +1,124 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fusion-trainer"
+dynamic = ["version"]
+description = "Fusion-Trainer — lightweight supervised + reinforcement learning trainer on Apple MLX, for Mac M5 unified memory"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Fusion-Trainer contributors"}
+]
+keywords = ["llm", "mlx", "apple-silicon", "sft", "rlhf", "rlsf", "fine-tuning", "lora"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # Core MLX dependency
+    "fusion-mlx @ file:///Users/dahai/claude-home/fusion-mlx",
+    # MLX-native training
+    "mlx>=0.31.2",
+    "mlx-lm>=0.22.0",
+    "mlx-vlm>=0.1.0",
+    # Data processing
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.66.0",
+    "jsonlines>=4.0.0",
+    "datasets>=3.0.0",
+    "pyarrow>=15.0.0",
+    # Experiment tracking & visualization
+    "tensorboard>=2.16.0",
+    "matplotlib>=3.8.0",
+    "pandas>=2.0.0",
+    "seaborn>=0.13.0",
+    # CLI
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "click>=8.0.0",
+    # API
+    "fastapi>=0.108.0",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.23.0",
+    # Utility
+    "psutil>=5.9.0",
+    "tabulate>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+grammar = [
+    "xgrammar>=0.1.32",
+]
+image = [
+    "Pillow>=9.0.0",
+]
+audio = [
+    "mlx-audio[tts,stt,sts]>=0.1.0",
+]
+vision = [
+    "opencv-python>=4.8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/fusion-mlx/fusion-trainer"
+Documentation = "https://github.com/fusion-mlx/fusion-trainer#readme"
+Repository = "https://github.com/fusion-mlx/fusion-trainer"
+
+[project.scripts]
+fusion-trainer = "fusion_trainer.cli:main"
+ft = "fusion_trainer.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "fusion_trainer._version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fusion_trainer*"]
+
+[tool.setuptools.package-data]
+"fusion_trainer" = ["configs/**/*.yaml"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311", "py312"]
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["runtime_cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E402", "E501", "E731", "F841", "B008", "B904", "N802", "N803", "N806", "N801", "SIM108", "SIM117", "UP042", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
