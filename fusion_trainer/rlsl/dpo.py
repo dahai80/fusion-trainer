@@ -6,10 +6,9 @@ explicit reward modeling or PPO.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from ..config import RLSLConfig, TrainerConfig
+from ..config import TrainerConfig
 from ..dataset import DatasetLoader
 
 
@@ -46,7 +45,7 @@ class DPOTrainer:
         beta = self.rlsl_cfg.beta
         lr = self.rlsl_cfg.learning_rate
 
-        print(f"  [DPO] Running DPO alignment...")
+        print("  [DPO] Running DPO alignment...")
         print(f"       Dataset: {len(dataset)} preference pairs")
         print(f"       Beta: {beta}")
         print(f"       Learning rate: {lr}")

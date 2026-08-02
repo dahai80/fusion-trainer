@@ -10,13 +10,15 @@ external paths and writes outputs to its own cache directory.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..config import SFTConfig, TrainerConfig, DatasetConfig
+from ..config import TrainerConfig
 from ..dataset import DatasetLoader
 from .lora import LoRAConfig
+
+if TYPE_CHECKING:
+    from ..experiment import ExperimentLogger
 
 
 class SFTTrainer:
@@ -62,15 +64,15 @@ class SFTTrainer:
         Returns:
             Training summary dict with metrics and output paths.
         """
-        print(f"╔══ Fusion-Trainer SFT ═══════════════════════════════")
+        print("╔══ Fusion-Trainer SFT ═══════════════════════════════")
         print(f"║  Model:      {self.sft_cfg.model or '(from config)'}")
         print(f"║  Method:     {self.sft_cfg.method}")
         print(f"║  Output:     {self._output_dir}")
-        print(f"║  Engine:     fusion-mlx")
+        print("║  Engine:     fusion-mlx")
         if self.sft_cfg.method in ("lora", "qlora"):
             print(f"║  LoRA rank:  {self._lora_cfg.rank}")
             print(f"║  LoRA alpha: {self._lora_cfg.alpha}")
-        print(f"╚══════════════════════════════════════════════════════")
+        print("╚══════════════════════════════════════════════════════")
 
         # Step 1: Load dataset
         print("[1/4] Loading dataset...")
@@ -256,7 +258,7 @@ class SFTTrainer:
             "lora_rank": self._lora_cfg.rank if self.sft_cfg.method != "full" else 0,
         }
 
-        print(f"\n      ✓ Training complete!")
+        print("\n      ✓ Training complete!")
         print(f"      Output: {final_path}")
         return result
 

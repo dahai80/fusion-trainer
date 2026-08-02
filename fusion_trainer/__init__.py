@@ -11,7 +11,7 @@ and RLHF-style alignment without cloud dependencies.
 """
 
 from ._version import __version__
-from .config import TrainerConfig, DatasetConfig, SFTConfig, RLSLConfig
+from .config import DatasetConfig, RLSLConfig, SFTConfig, TrainerConfig
 
 __all__ = [
     "__version__",

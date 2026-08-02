@@ -1,9 +1,9 @@
 """RLSL module — reinforcement learning from supervised learning pipeline."""
 
-from .pipeline import RLSLEngine
-from .reward import RewardTrainer
 from .dpo import DPOTrainer
 from .orpo import ORPOTrainer
+from .pipeline import RLSLEngine
+from .reward import RewardTrainer
 
 __all__ = [
     "RLSLEngine",

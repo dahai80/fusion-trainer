@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fusion_trainer.config import RLSLConfig, TrainerConfig, DatasetConfig
+from fusion_trainer.config import DatasetConfig, RLSLConfig, TrainerConfig
 
 
 def test_rlsl_config_defaults():

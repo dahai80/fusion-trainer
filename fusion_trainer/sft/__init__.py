@@ -1,8 +1,8 @@
 """SFT module — supervised fine-tuning pipeline."""
 
-from .trainer import SFTTrainer
 from .lora import LoRAConfig
 from .presets import SFT_PRESETS
+from .trainer import SFTTrainer
 
 __all__ = [
     "SFTTrainer",

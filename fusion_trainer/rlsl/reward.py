@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from ..config import RLSLConfig, TrainerConfig
+from ..config import TrainerConfig
 from ..dataset import DatasetLoader
 
 
@@ -34,7 +33,7 @@ class RewardTrainer:
             Training summary dict.
         """
 
-        print(f"  [RM] Training reward model...")
+        print("  [RM] Training reward model...")
         print(f"       Dataset: {len(dataset)} preference pairs")
         print(f"       Learning rate: {self.rlsl_cfg.reward_learning_rate}")
         print(f"       Epochs: {self.rlsl_cfg.reward_num_epochs}")

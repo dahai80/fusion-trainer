@@ -6,14 +6,13 @@ Targets: sft/trainer.py
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from fusion_trainer.config import TrainerConfig, SFTConfig, DatasetConfig
+from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
 from fusion_trainer.sft.trainer import SFTTrainer
 
 
@@ -169,18 +168,11 @@ class TestLoadModel:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(model="test-model", cache_path=tmpdir)
             trainer = SFTTrainer(cfg)
-            # Simulate mlx_lm not installed
-            import sys
-            orig = sys.modules.get("mlx_lm", None)
-            sys.modules["mlx_lm"] = None  # type: ignore[arg-type]
-            try:
-                with pytest.raises(ImportError, match="mlx-lm is required"):
-                    trainer._load_model()
-            finally:
-                if orig:
-                    sys.modules["mlx_lm"] = orig
-                else:
-                    del sys.modules["mlx_lm"]
+            # _load_model() now uses HTTP to fusion-mlx, not mlx_lm import.
+            # When fusion-mlx is unreachable, it should still return (None, None)
+            # gracefully (prints warning, does not raise).
+            result = trainer._load_model()
+            assert result == (None, None)
 
 
 # ===========================================================================

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fusion_trainer.config import SFTConfig, TrainerConfig, DatasetConfig
+from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
 from fusion_trainer.sft.lora import LoRAConfig
 from fusion_trainer.sft.presets import SFT_PRESETS
 

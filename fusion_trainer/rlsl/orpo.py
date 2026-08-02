@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..config import RLSLConfig, TrainerConfig
+from ..config import TrainerConfig
 
 
 class ORPOTrainer:
@@ -43,7 +43,7 @@ class ORPOTrainer:
         beta = self.rlsl_cfg.beta
         lr = self.rlsl_cfg.learning_rate
 
-        print(f"  [ORPO] Running ORPO alignment...")
+        print("  [ORPO] Running ORPO alignment...")
         print(f"       Dataset: {len(dataset)} preference pairs")
         print(f"       Lambda (β): {beta}")
         print(f"       Learning rate: {lr}")

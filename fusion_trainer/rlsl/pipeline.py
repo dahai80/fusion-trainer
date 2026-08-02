@@ -15,12 +15,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..config import RLSLConfig, TrainerConfig
+from ..config import TrainerConfig
 from ..dataset import DatasetLoader
 from ..experiment import ExperimentLogger
-from .reward import RewardTrainer
 from .dpo import DPOTrainer
 from .orpo import ORPOTrainer
+from .reward import RewardTrainer
 
 
 class RLSLEngine:
@@ -49,11 +49,11 @@ class RLSLEngine:
         Returns:
             Summary dict with training results.
         """
-        print(f"╔══ Fusion-Trainer RLSL Pipeline ═════════════════════")
+        print("╔══ Fusion-Trainer RLSL Pipeline ═════════════════════")
         print(f"║  Method:     {self.rlsl_cfg.method}")
         print(f"║  Dataset:    {self.dataset_cfg.path or self.dataset_cfg.hub_dataset}")
         print(f"║  Output:     {self.rlsl_cfg.output_dir}")
-        print(f"╚══════════════════════════════════════════════════════")
+        print("╚══════════════════════════════════════════════════════")
 
         # Step 1: Load preference dataset
         print("[1/4] Loading preference dataset...")
@@ -83,7 +83,7 @@ class RLSLEngine:
         # Step 3: Save experiment log
         self._logger.save()
 
-        print(f"\n      ✓ Alignment complete!")
+        print("\n      ✓ Alignment complete!")
         print(f"      Method: {method}")
         print(f"      Output: {self.rlsl_cfg.output_dir}")
 

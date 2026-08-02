@@ -47,7 +47,7 @@ def load_dataset_file(path: Path, format: str = "") -> list[dict[str, Any]]:
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     data = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -62,7 +62,7 @@ def _load_json(path: Path) -> list[dict[str, Any]]:
     nested structure like {"data": {"data": [...]}}, only the top-level
     "data" key is extracted — the inner list is NOT walked recursively.
     """
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         content = json.load(f)
     if isinstance(content, list):
         return content
@@ -78,7 +78,7 @@ def _load_json(path: Path) -> list[dict[str, Any]]:
 def _load_csv(path: Path) -> list[dict[str, Any]]:
     delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
     data = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=delimiter)
         for row in reader:
             data.append(dict(row))

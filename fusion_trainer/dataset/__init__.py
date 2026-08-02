@@ -5,8 +5,8 @@ from file paths. The fusion-model-hub integration is purely a
 path convention: {model_hub_path}/datasets/{name}.jsonl.
 """
 
-from .loader import DatasetLoader
 from .formats import detect_format, load_dataset_file, save_dataset_file
+from .loader import DatasetLoader
 from .transforms import (
     clean_dataset,
     deduplicate,

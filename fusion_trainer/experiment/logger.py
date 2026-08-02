@@ -7,9 +7,8 @@ Only a bounded window of recent metrics is kept in memory for fast access.
 from __future__ import annotations
 
 import json
-import os
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,11 +46,11 @@ class ExperimentLogger:
 
         # Streaming file handle (append mode)
         self._metrics_path = self._output_dir / "metrics.jsonl"
-        self._metrics_file = open(self._metrics_path, "a", encoding="utf-8")
+        self._metrics_file = open(self._metrics_path, "a", encoding="utf-8")  # noqa: SIM115
 
         self._metadata: dict[str, Any] = metadata or {}
         self._metadata["run_name"] = run_name
-        self._metadata["started_at"] = datetime.now(timezone.utc).isoformat()
+        self._metadata["started_at"] = datetime.now(UTC).isoformat()
 
         # TensorBoard writer (optional)
         self._tb_writer = None
@@ -69,7 +68,7 @@ class ExperimentLogger:
         """
         entry = {
             "step": step,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         for key, value in metrics.items():
             entry[f"{prefix}{key}"] = value
@@ -104,7 +103,7 @@ class ExperimentLogger:
 
         # Save metadata (overwrites on each save to keep it current)
         meta = dict(self._metadata)
-        meta["completed_at"] = datetime.now(timezone.utc).isoformat()
+        meta["completed_at"] = datetime.now(UTC).isoformat()
         meta["num_metrics_logged"] = self._count_total_metrics()
 
         meta_path = self._output_dir / "metadata.json"
@@ -130,7 +129,7 @@ class ExperimentLogger:
         """Count total metric entries written to disk."""
         try:
             count = 0
-            with open(self._metrics_path, "r", encoding="utf-8") as f:
+            with open(self._metrics_path, encoding="utf-8") as f:
                 for _ in f:
                     count += 1
             return count

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +43,7 @@ class ExperimentTracker:
             "description": description,
             "config": config,
             "status": "created",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "git_commit": self._get_git_commit(),
             "metrics_summary": {},
             "output_paths": {},
@@ -93,8 +92,7 @@ class ExperimentTracker:
         for exp_dir in sorted(self._experiments_dir.iterdir()):
             if exp_dir.is_dir():
                 record = self._load(exp_dir.name)
-                if record:
-                    if status is None or record.get("status") == status:
+                if record and (status is None or record.get("status") == status):
                         results.append(record)
         return results
 
@@ -111,7 +109,7 @@ class ExperimentTracker:
         if not path.exists():
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return None

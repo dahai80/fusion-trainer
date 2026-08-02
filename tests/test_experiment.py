@@ -6,14 +6,14 @@ Targets: logger.py, visualizer.py, tracker.py
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from fusion_trainer.experiment import ExperimentLogger, ExperimentTracker, TrainingVisualizer
-
+from fusion_trainer.experiment import (
+    ExperimentLogger,
+    ExperimentTracker,
+    TrainingVisualizer,
+)
 
 # ===========================================================================
 # ExperimentLogger

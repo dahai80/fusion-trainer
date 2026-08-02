@@ -6,8 +6,9 @@ Dataset management commands are handled by the companion fusion-model-hub projec
 
 from __future__ import annotations
 
-from fusion_trainer.cli import app
 from typer.testing import CliRunner
+
+from fusion_trainer.cli import app
 
 runner = CliRunner()
 

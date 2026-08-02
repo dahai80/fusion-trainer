@@ -90,7 +90,7 @@ class TrainingVisualizer:
             if metric_keys is None:
                 # Auto-detect numeric keys
                 metric_keys = [
-                    k for k in metrics[0].keys()
+                    k for k in metrics[0]
                     if k not in ("step", "timestamp")
                 ]
 
@@ -122,7 +122,7 @@ class TrainingVisualizer:
         if not metrics_file.exists():
             return []
         metrics = []
-        with open(metrics_file, "r", encoding="utf-8") as f:
+        with open(metrics_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:

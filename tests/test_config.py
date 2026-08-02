@@ -5,20 +5,16 @@ Targets: config.py
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
 from fusion_trainer.config import (
     DatasetConfig,
-    SFTConfig,
     RLSLConfig,
+    SFTConfig,
     TrainerConfig,
-    _default_hub_path,
     _default_cache_path,
+    _default_hub_path,
 )
-
 
 # ===========================================================================
 # DatasetConfig

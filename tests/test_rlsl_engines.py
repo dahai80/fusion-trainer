@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from fusion_trainer.config import TrainerConfig, DatasetConfig, RLSLConfig, SFTConfig
-from fusion_trainer.rlsl import RLSLEngine, DPOTrainer, ORPOTrainer, RewardTrainer
+from fusion_trainer.config import DatasetConfig, RLSLConfig, SFTConfig, TrainerConfig
+from fusion_trainer.rlsl import DPOTrainer, ORPOTrainer, RewardTrainer, RLSLEngine
 
 
 def _make_preference_data(n: int = 5) -> list[dict]:

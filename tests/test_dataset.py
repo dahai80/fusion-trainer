@@ -5,9 +5,7 @@ Targets: formats.py, transforms.py, loader.py, versioning.py
 
 from __future__ import annotations
 
-import csv
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -26,7 +24,6 @@ from fusion_trainer.dataset import (
     to_chat_format,
     truncate_fields,
 )
-
 
 # ===========================================================================
 # formats.py — detect_format

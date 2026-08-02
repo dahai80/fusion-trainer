@@ -13,7 +13,6 @@ project fusion-model-hub, NOT by Fusion-Trainer.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import typer
@@ -98,8 +97,8 @@ def sft(
       - A hub reference:    --dataset hub:sft/my_dataset
         Resolved as: {model_hub_path}/datasets/sft/my_dataset.jsonl
     """
+    from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
     from fusion_trainer.sft.trainer import SFTTrainer
-    from fusion_trainer.config import SFTConfig, DatasetConfig, TrainerConfig
 
     _path, _hub_dataset = _parse_dataset_arg(dataset)
 
@@ -176,8 +175,8 @@ def rlsl(
       - A hub reference:    --dataset hub:preference/my_data
         Resolved as: {model_hub_path}/datasets/preference/my_data.jsonl
     """
+    from fusion_trainer.config import DatasetConfig, RLSLConfig, TrainerConfig
     from fusion_trainer.rlsl.pipeline import RLSLEngine
-    from fusion_trainer.config import RLSLConfig, DatasetConfig, TrainerConfig
 
     _path, _hub_dataset = _parse_dataset_arg(dataset)
 
@@ -207,6 +206,7 @@ def rlsl(
 def info():
     """Show system information and hardware check."""
     import platform
+
     import psutil
 
     typer.echo(f"{'Fusion-Trainer':30s} v{_get_version()}")

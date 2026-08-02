@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
+
+from typer.testing import CliRunner
 
 from fusion_trainer.cli import _parse_dataset_arg, app
-from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -64,20 +64,19 @@ class TestCLIInfo:
         assert "Model hub path" in result.stdout
 
     def test_info_mlx_not_installed(self):
-        # Simulate MLX not being available
+        # Simulate fusion-mlx not being installed
         import sys
-        orig_mod = sys.modules.get("mlx.core", None)
-        sys.modules["mlx.core"] = None  # type: ignore[arg-type]
+        orig_mod = sys.modules.get("fusion_mlx", None)
+        sys.modules["fusion_mlx"] = None  # type: ignore[arg-type]
         try:
             result = runner.invoke(app, ["info"])
-            # Should still show info, just with MLX NOT INSTALLED
             assert result.exit_code == 0
             assert "NOT INSTALLED" in result.stdout
         finally:
             if orig_mod:
-                sys.modules["mlx.core"] = orig_mod
+                sys.modules["fusion_mlx"] = orig_mod
             else:
-                del sys.modules["mlx.core"]
+                del sys.modules["fusion_mlx"]
 
     def test_info_fusion_mlx_not_installed(self):
         # Simulate fusion-mlx not being available
