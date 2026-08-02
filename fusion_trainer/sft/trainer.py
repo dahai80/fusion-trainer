@@ -121,7 +121,7 @@ class SFTTrainer:
         # Validate the model is registered on fusion-mlx
         try:
             resp = httpx.get(
-                "http://localhost:8000/v1/models",
+                "http://localhost:11434/v1/models",
                 timeout=10.0,
             )
             resp.raise_for_status()

@@ -218,7 +218,7 @@ def info():
     # Check MLX via fusion-mlx
     try:
         import httpx
-        resp = httpx.get("http://localhost:8000/v1/models", timeout=5.0)
+        resp = httpx.get("http://localhost:11434/v1/models", timeout=5.0)
         if resp.status_code == 200:
             typer.echo(f"{'fusion-mlx':30s} running")
             # Try to get MLX version from fusion-mlx package
