@@ -162,7 +162,7 @@ Fusion-Trainer is designed as the **model iteration factory** for the entire Fus
 
 ## License
 
-Apache 2.0
+This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## Acknowledgments
 

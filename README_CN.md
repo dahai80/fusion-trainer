@@ -160,7 +160,7 @@ Fusion-Trainer 作为整条 Fusion 产品矩阵的**模型迭代工厂**：
 
 ## 许可证
 
-Apache 2.0
+本项目采用 [Apache License 2.0](LICENSE) 许可证。
 
 ## 致谢
 
