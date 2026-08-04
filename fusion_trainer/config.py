@@ -31,6 +31,10 @@ def _default_cache_path() -> str:
     )
 
 
+def _default_mlx_port() -> int:
+    return int(os.environ.get("FUSION_MLX_PORT", "11432"))
+
+
 # ---------------------------------------------------------------------------
 # Dataset config
 # ---------------------------------------------------------------------------
@@ -241,6 +245,9 @@ class TrainerConfig:
 
     cache_path: str = field(default_factory=_default_cache_path)
     """Trainer-local cache directory for checkpoints and temp data."""
+
+    mlx_port: int = field(default_factory=_default_mlx_port)
+    """fusion-mlx HTTP API port. Overridable via FUSION_MLX_PORT env var."""
 
     def __post_init__(self):
         if not self.sft.output_dir:
