@@ -36,7 +36,9 @@ def test_sft_presets_exist():
     """Test that all SFT presets have the required fields."""
     required = {"model_type", "method", "learning_rate", "num_epochs"}
     for name, preset in SFT_PRESETS.items():
-        assert required.issubset(preset.keys()), f"{name} missing: {required - preset.keys()}"
+        assert required.issubset(preset.keys()), (
+            f"{name} missing: {required - preset.keys()}"
+        )
         assert preset["num_epochs"] > 0
         assert preset["learning_rate"] > 0
 

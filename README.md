@@ -42,16 +42,18 @@ fusion-* products (consumption layer)
 - Designed to interface with `fusion-model-hub` for shared storage
 
 ### Supervised Fine-Tuning (SFT)
-- Full-parameter fine-tuning for 7B and smaller models
+- Real SFT loop over fusion-mlx HTTP fine-tune API (LoRA / DoRA / full)
 - LoRA fine-tuning (rank 8–32) for 7B–32B models
 - QLoRA with 4-bit quantization for 32B models on M5 96GB
 - Domain-specific presets (code, finance, science)
+- **fusion-router-light presets** — 1.5B LoRA + 3B full, for the gateway intent classifier / spec-decoding draft model
 - MXFP8 mixed precision training (MLX-native)
 
 ### Reinforcement Learning from Supervised Learning (RLSL)
 - **DPO** — Direct Preference Optimization (no reward model needed)
 - **ORPO** — Odds Ratio Preference Optimization (single-stage SFT + alignment)
 - **RLSL** — Full PPO-light pipeline with reward model training
+- **GRPO** — Group Relative Policy Optimization with sandbox reward (math + code). Samples G completions per prompt, scores them in a deterministic sandbox, keeps the top-k by group-relative advantage, and runs a reward-filtered SFT update through the fusion-mlx fine-tune API. Converges toward higher reward without an external reward model. (True policy-gradient GRPO needs a logprob endpoint tracked upstream in fusion-mlx#363.)
 - Designed for M5 96GB unified memory (14B–32B models)
 
 ### Experiment Tracking
@@ -128,6 +130,28 @@ fusion-trainer sft --config configs/sft_7b.yaml \
     --run-name my_dpo_alignment
 ```
 
+### 5. Run GRPO with Sandbox Reward
+
+```bash
+fusion-trainer rlsl --config configs/rlsl_14b.yaml \
+    --model qwen2.5-7b-4bit \
+    --dataset /path/to/grpo_prompts.jsonl \
+    --method grpo \
+    --sandbox auto \
+    --group-size 8 \
+    --grpo-iters 1 \
+    --run-name my_grpo_run
+```
+
+GRPO prompt dataset (one JSON object per line):
+
+```json
+{"prompt": "Solve: 12 * 7 = ?", "answer": "84"}
+{"prompt": "Write a function that returns the factorial of n", "tests": "assert f(5) == 120"}
+```
+
+`--sandbox auto` picks **code** mode when a `tests` field is present, **math** mode when an `answer`/`solution` field is present. See `fusion_trainer/rlsl/sandbox.py` for the reward functions.
+
 ---
 
 ## CLI Reference
@@ -135,7 +159,7 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 | Command | Description |
 |---|---|
 | `fusion-trainer sft` | Run supervised fine-tuning |
-| `fusion-trainer rlsl` | Run DPO/ORPO/RLSL alignment |
+| `fusion-trainer rlsl` | Run DPO/ORPO/RLSL/GRPO alignment |
 | `fusion-trainer dataset import` | Import a dataset into the hub |
 | `fusion-trainer dataset list` | List datasets in the hub |
 | `fusion-trainer dataset info` | Show dataset details |

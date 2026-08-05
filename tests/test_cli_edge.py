@@ -19,6 +19,7 @@ runner = CliRunner()
 # _parse_dataset_arg
 # ===========================================================================
 
+
 class TestParseDatasetArg:
     def test_direct_path(self):
         path, hub = _parse_dataset_arg("/data/file.jsonl")
@@ -55,6 +56,7 @@ class TestParseDatasetArg:
 # CLI info command
 # ===========================================================================
 
+
 class TestCLIInfo:
     def test_info_success(self):
         result = runner.invoke(app, ["info"])
@@ -66,6 +68,7 @@ class TestCLIInfo:
     def test_info_mlx_not_installed(self):
         # Simulate fusion-mlx not being installed
         import sys
+
         orig_mod = sys.modules.get("fusion_mlx", None)
         sys.modules["fusion_mlx"] = None  # type: ignore[arg-type]
         try:
@@ -81,6 +84,7 @@ class TestCLIInfo:
     def test_info_fusion_mlx_not_installed(self):
         # Simulate fusion-mlx not being available
         import sys
+
         orig_mod = sys.modules.get("fusion_mlx", None)
         sys.modules["fusion_mlx"] = None  # type: ignore[arg-type]
         try:
@@ -97,6 +101,7 @@ class TestCLIInfo:
 # ===========================================================================
 # CLI command help
 # ===========================================================================
+
 
 class TestCLIHelp:
     def test_sft_help(self):
@@ -137,13 +142,18 @@ class TestCLIHelp:
 # CLI edge cases
 # ===========================================================================
 
+
 class TestCLIEdgeCases:
     def test_sft_invalid_method(self):
         """Should fail gracefully with unknown method."""
         result = runner.invoke(app, ["sft", "--method", "invalid"])
         # typer validates via type hint, so this will fail at runtime
         # We just check it doesn't crash
-        assert result.exit_code != 0 or "Error" in result.stderr or "usage" in result.stdout.lower()
+        assert (
+            result.exit_code != 0
+            or "Error" in result.stderr
+            or "usage" in result.stdout.lower()
+        )
 
     def test_rlsl_invalid_method(self):
         result = runner.invoke(app, ["rlsl", "--method", "invalid"])

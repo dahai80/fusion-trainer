@@ -34,6 +34,7 @@ def _make_config(method: str = "dpo", **kwargs) -> TrainerConfig:
 # RewardTrainer
 # ===========================================================================
 
+
 class TestRewardTrainer:
     def test_instantiate(self):
         trainer = RewardTrainer(_make_config())
@@ -66,6 +67,7 @@ class TestRewardTrainer:
 # ===========================================================================
 # DPOTrainer
 # ===========================================================================
+
 
 class TestDPOTrainer:
     def test_instantiate(self):
@@ -103,6 +105,7 @@ class TestDPOTrainer:
 # ORPOTrainer
 # ===========================================================================
 
+
 class TestORPOTrainer:
     def test_instantiate(self):
         trainer = ORPOTrainer(_make_config("orpo"))
@@ -139,6 +142,7 @@ class TestORPOTrainer:
 # RLSLEngine
 # ===========================================================================
 
+
 class TestRLSLEngine:
     def test_instantiate(self):
         config = _make_config("dpo")
@@ -149,11 +153,13 @@ class TestRLSLEngine:
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = Path(tmpdir) / "pref.jsonl"
             import json
+
             with open(data_path, "w") as f:
                 for i in range(3):
-                    f.write(json.dumps({
-                        "prompt": f"Q{i}", "chosen": "c", "rejected": "r"
-                    }) + "\n")
+                    f.write(
+                        json.dumps({"prompt": f"Q{i}", "chosen": "c", "rejected": "r"})
+                        + "\n"
+                    )
             config = TrainerConfig(
                 dataset=DatasetConfig(path=str(data_path)),
                 rlsl=RLSLConfig(method="dpo", run_name="test_dpo"),
@@ -168,11 +174,13 @@ class TestRLSLEngine:
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = Path(tmpdir) / "pref.jsonl"
             import json
+
             with open(data_path, "w") as f:
                 for i in range(3):
-                    f.write(json.dumps({
-                        "prompt": f"Q{i}", "chosen": "c", "rejected": "r"
-                    }) + "\n")
+                    f.write(
+                        json.dumps({"prompt": f"Q{i}", "chosen": "c", "rejected": "r"})
+                        + "\n"
+                    )
             config = TrainerConfig(
                 dataset=DatasetConfig(path=str(data_path)),
                 rlsl=RLSLConfig(method="orpo", run_name="test_orpo"),
@@ -186,11 +194,13 @@ class TestRLSLEngine:
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = Path(tmpdir) / "pref.jsonl"
             import json
+
             with open(data_path, "w") as f:
                 for i in range(3):
-                    f.write(json.dumps({
-                        "prompt": f"Q{i}", "chosen": "c", "rejected": "r"
-                    }) + "\n")
+                    f.write(
+                        json.dumps({"prompt": f"Q{i}", "chosen": "c", "rejected": "r"})
+                        + "\n"
+                    )
             config = TrainerConfig(
                 dataset=DatasetConfig(path=str(data_path)),
                 rlsl=RLSLConfig(
@@ -222,8 +232,11 @@ class TestRLSLEngine:
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = Path(tmpdir) / "pref.jsonl"
             import json
+
             with open(data_path, "w") as f:
-                f.write(json.dumps({"prompt": "q", "chosen": "c", "rejected": "r"}) + "\n")
+                f.write(
+                    json.dumps({"prompt": "q", "chosen": "c", "rejected": "r"}) + "\n"
+                )
             config = TrainerConfig(
                 dataset=DatasetConfig(path=str(data_path)),
                 rlsl=RLSLConfig(method="unknown"),  # type: ignore[arg-type]
@@ -239,11 +252,13 @@ class TestRLSLEngine:
             ds_dir = hub_dir / "datasets"
             ds_dir.mkdir()
             import json
+
             with open(ds_dir / "pref_data.jsonl", "w") as f:
                 for i in range(3):
-                    f.write(json.dumps({
-                        "prompt": f"Q{i}", "chosen": "c", "rejected": "r"
-                    }) + "\n")
+                    f.write(
+                        json.dumps({"prompt": f"Q{i}", "chosen": "c", "rejected": "r"})
+                        + "\n"
+                    )
             config = TrainerConfig(
                 dataset=DatasetConfig(hub_dataset="pref_data"),
                 rlsl=RLSLConfig(method="dpo", run_name="hub_dpo"),

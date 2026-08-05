@@ -54,7 +54,6 @@ class RewardTrainer:
             "method": "reward_model",
         }
 
-
     def predict(
         self,
         model_path: str,

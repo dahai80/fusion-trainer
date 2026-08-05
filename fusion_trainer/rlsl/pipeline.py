@@ -19,6 +19,7 @@ from ..config import TrainerConfig
 from ..dataset import DatasetLoader
 from ..experiment import ExperimentLogger
 from .dpo import DPOTrainer
+from .grpo import GRPOTrainer
 from .orpo import ORPOTrainer
 from .reward import RewardTrainer
 
@@ -55,28 +56,41 @@ class RLSLEngine:
         print(f"║  Output:     {self.rlsl_cfg.output_dir}")
         print("╚══════════════════════════════════════════════════════")
 
-        # Step 1: Load preference dataset
-        print("[1/4] Loading preference dataset...")
-        dataset = self._loader.load_preference(
-            path=self.dataset_cfg.path,
-            hub_dataset=self.dataset_cfg.hub_dataset,
-            max_samples=self.dataset_cfg.max_samples or 0,
-            max_seq_length=self.dataset_cfg.max_seq_length,
-        )
-        print(f"      {len(dataset)} preference pairs loaded")
-
-        if len(dataset) == 0:
-            raise ValueError("No valid preference data found")
-
-        # Step 2: Run alignment
         method = self.rlsl_cfg.method
 
+        # Step 1: Load dataset — GRPO uses prompt data, others use preference pairs
+        if method == "grpo":
+            print("[1/4] Loading GRPO prompt dataset...")
+            dataset = self._loader.load_grpo(
+                path=self.dataset_cfg.path,
+                hub_dataset=self.dataset_cfg.hub_dataset,
+                max_samples=self.dataset_cfg.max_samples or 0,
+                max_seq_length=self.dataset_cfg.max_seq_length,
+            )
+            print(f"      {len(dataset)} GRPO prompts loaded")
+            if len(dataset) == 0:
+                raise ValueError("No valid GRPO prompt data found")
+        else:
+            print("[1/4] Loading preference dataset...")
+            dataset = self._loader.load_preference(
+                path=self.dataset_cfg.path,
+                hub_dataset=self.dataset_cfg.hub_dataset,
+                max_samples=self.dataset_cfg.max_samples or 0,
+                max_seq_length=self.dataset_cfg.max_seq_length,
+            )
+            print(f"      {len(dataset)} preference pairs loaded")
+            if len(dataset) == 0:
+                raise ValueError("No valid preference data found")
+
+        # Step 2: Run alignment
         if method == "dpo":
             result = self._run_dpo(dataset)
         elif method == "orpo":
             result = self._run_orpo(dataset)
         elif method == "rlsl":
             result = self._run_rlsl(dataset)
+        elif method == "grpo":
+            result = self._run_grpo(dataset)
         else:
             raise ValueError(f"Unknown alignment method: {method}")
 
@@ -89,23 +103,22 @@ class RLSLEngine:
 
         return result
 
-    def _run_dpo(
-        self, dataset: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    def _run_dpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run DPO alignment."""
         trainer = DPOTrainer(self.config)
         return trainer.train(dataset)
 
-    def _run_orpo(
-        self, dataset: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    def _run_orpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run ORPO alignment."""
         trainer = ORPOTrainer(self.config)
         return trainer.train(dataset)
 
-    def _run_rlsl(
-        self, dataset: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    def _run_grpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
+        """Run GRPO alignment with sandbox feedback reward."""
+        trainer = GRPOTrainer(self.config)
+        return trainer.train(dataset)
+
+    def _run_rlsl(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run full RLSL pipeline (Reward Model + PPO-light)."""
         print("\n  [Phase 1/2] Training Reward Model...")
         rm_trainer = RewardTrainer(self.config)
