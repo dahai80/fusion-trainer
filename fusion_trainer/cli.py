@@ -29,64 +29,89 @@ app = typer.Typer(
 # SFT command
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def sft(
     config: str = typer.Option(
         "configs/sft_7b.yaml",
-        "--config", "-c",
+        "--config",
+        "-c",
         help="Path to SFT training config YAML",
     ),
     model: str = typer.Option(
-        "", "--model", "-m",
+        "",
+        "--model",
+        "-m",
         help="Base model name or path (overrides config)",
     ),
     dataset: str = typer.Option(
-        "", "--dataset", "-d",
+        "",
+        "--dataset",
+        "-d",
         help="Dataset file path, or 'hub:category/name' to load from model hub",
     ),
     output_dir: str = typer.Option(
-        "", "--output", "-o",
+        "",
+        "--output",
+        "-o",
         help="Output directory for checkpoints",
     ),
     method: str = typer.Option(
-        "lora", "--method", "-M",
+        "lora",
+        "--method",
+        "-M",
         help="Training method: full, lora, qlora",
     ),
     lora_rank: int = typer.Option(
-        16, "--lora-rank", "-r",
+        16,
+        "--lora-rank",
+        "-r",
         help="LoRA rank",
     ),
     batch_size: int = typer.Option(
-        1, "--batch-size", "-b",
+        1,
+        "--batch-size",
+        "-b",
         help="Per-device batch size",
     ),
     learning_rate: float = typer.Option(
-        2e-5, "--learning-rate", "-l",
+        2e-5,
+        "--learning-rate",
+        "-l",
         help="Learning rate",
     ),
     num_epochs: int = typer.Option(
-        3, "--epochs", "-e",
+        3,
+        "--epochs",
+        "-e",
         help="Number of training epochs",
     ),
     max_seq_length: int = typer.Option(
-        4096, "--max-seq-length",
+        4096,
+        "--max-seq-length",
         help="Maximum sequence length",
     ),
     run_name: str = typer.Option(
-        "", "--run-name", "-n",
+        "",
+        "--run-name",
+        "-n",
         help="Experiment run name",
     ),
     seed: int = typer.Option(
-        42, "--seed", "-s",
+        42,
+        "--seed",
+        "-s",
         help="Random seed",
     ),
     use_mxfp8: bool = typer.Option(
-        True, "--mxfp8/--no-mxfp8",
+        True,
+        "--mxfp8/--no-mxfp8",
         help="Use MXFP8 mixed precision",
     ),
     model_hub_path: str = typer.Option(
         "",
-        "--model-hub-path", "-H",
+        "--model-hub-path",
+        "-H",
         help="fusion-model-hub path (read-only, default: $FUSION_MODEL_HUB or ~/fusion-model-hub)",
     ),
 ):
@@ -131,40 +156,70 @@ def sft(
 # RLSL command
 # ---------------------------------------------------------------------------
 
+
 @app.command()
 def rlsl(
     config: str = typer.Option(
         "configs/rlsl_14b.yaml",
-        "--config", "-c",
+        "--config",
+        "-c",
         help="Path to RLSL config YAML",
     ),
     model: str = typer.Option(
-        "", "--model", "-m",
+        "",
+        "--model",
+        "-m",
         help="Base model name or path",
     ),
     dataset: str = typer.Option(
-        "", "--dataset", "-d",
+        "",
+        "--dataset",
+        "-d",
         help="Preference dataset path, or 'hub:category/name'",
     ),
     method: str = typer.Option(
-        "dpo", "--method", "-M",
-        help="Alignment method: dpo, orpo, rlsl",
+        "dpo",
+        "--method",
+        "-M",
+        help="Alignment method: dpo, orpo, rlsl, grpo",
     ),
     reward_model: str = typer.Option(
-        "", "--reward-model", "-r",
+        "",
+        "--reward-model",
+        "-r",
         help="Reward model (required for rlsl method)",
     ),
+    sandbox: str = typer.Option(
+        "auto",
+        "--sandbox",
+        help="GRPO sandbox reward: off, code, math, auto",
+    ),
+    group_size: int = typer.Option(
+        8,
+        "--group-size",
+        help="GRPO samples per prompt (G)",
+    ),
+    grpo_iterations: int = typer.Option(
+        1,
+        "--grpo-iters",
+        help="GRPO outer iterations (sample -> score -> SFT-update)",
+    ),
     run_name: str = typer.Option(
-        "", "--run-name", "-n",
+        "",
+        "--run-name",
+        "-n",
         help="Experiment run name",
     ),
     seed: int = typer.Option(
-        42, "--seed", "-s",
+        42,
+        "--seed",
+        "-s",
         help="Random seed",
     ),
     model_hub_path: str = typer.Option(
         "",
-        "--model-hub-path", "-H",
+        "--model-hub-path",
+        "-H",
         help="fusion-model-hub path (read-only, default: $FUSION_MODEL_HUB or ~/fusion-model-hub)",
     ),
 ):
@@ -175,7 +230,12 @@ def rlsl(
       - A hub reference:    --dataset hub:preference/my_data
         Resolved as: {model_hub_path}/datasets/preference/my_data.jsonl
     """
-    from fusion_trainer.config import DatasetConfig, RLSLConfig, TrainerConfig
+    from fusion_trainer.config import (
+        DatasetConfig,
+        RLSLConfig,
+        SFTConfig,
+        TrainerConfig,
+    )
     from fusion_trainer.rlsl.pipeline import RLSLEngine
 
     _path, _hub_dataset = _parse_dataset_arg(dataset)
@@ -187,10 +247,14 @@ def rlsl(
             path=_path,
             hub_dataset=_hub_dataset,
         ),
+        sft=SFTConfig(model=model),
         rlsl=RLSLConfig(
             method=method,  # type: ignore[arg-type]
             reward_model=reward_model,
             run_name=run_name,
+            sandbox_mode=sandbox,  # type: ignore[arg-type]
+            group_size=group_size,
+            grpo_iterations=grpo_iterations,
         ),
     )
 
@@ -201,6 +265,7 @@ def rlsl(
 # ---------------------------------------------------------------------------
 # Info command
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def info():
@@ -220,6 +285,7 @@ def info():
         import httpx
 
         from .config import _default_mlx_port
+
         mlx_port = _default_mlx_port()
         resp = httpx.get(f"http://localhost:{mlx_port}/v1/models", timeout=5.0)
         if resp.status_code == 200:
@@ -227,6 +293,7 @@ def info():
             # Try to get MLX version from fusion-mlx package
             try:
                 from fusion_mlx import __version__ as fm_version
+
                 typer.echo(f"{'fusion-mlx version':30s} {fm_version}")
             except ImportError:
                 pass
@@ -252,6 +319,7 @@ def info():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_dataset_arg(arg: str) -> tuple[str, str]:
     """Parse a --dataset argument.
@@ -285,6 +353,7 @@ def _get_version() -> str:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main():
     app()

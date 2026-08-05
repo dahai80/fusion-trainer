@@ -19,6 +19,7 @@ from fusion_trainer.experiment import (
 # ExperimentLogger
 # ===========================================================================
 
+
 class TestExperimentLogger:
     def test_basic_logging(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -130,6 +131,7 @@ class TestExperimentLogger:
 # ExperimentTracker
 # ===========================================================================
 
+
 class TestExperimentTracker:
     def test_create_experiment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -209,6 +211,7 @@ class TestExperimentTracker:
 # TrainingVisualizer (requires matplotlib)
 # ===========================================================================
 
+
 class TestTrainingVisualizer:
     def test_plot_loss_no_data(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -254,7 +257,9 @@ class TestTrainingVisualizer:
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = ExperimentLogger("viz_metrics", tmpdir)
             for i in range(1, 11):
-                logger.log_metrics(step=i, metrics={"loss": 0.1 * i, "acc": 1.0 - 0.1 * i})
+                logger.log_metrics(
+                    step=i, metrics={"loss": 0.1 * i, "acc": 1.0 - 0.1 * i}
+                )
             log_dir = logger.save()
             viz = TrainingVisualizer(log_dir)
             out = Path(tmpdir) / "metrics.png"
@@ -266,11 +271,15 @@ class TestTrainingVisualizer:
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = ExperimentLogger("viz_keys", tmpdir)
             for i in range(1, 6):
-                logger.log_metrics(step=i, metrics={"loss": 0.1, "acc": 0.9, "val_loss": 0.2})
+                logger.log_metrics(
+                    step=i, metrics={"loss": 0.1, "acc": 0.9, "val_loss": 0.2}
+                )
             log_dir = logger.save()
             viz = TrainingVisualizer(log_dir)
             out = Path(tmpdir) / "key_metrics.png"
-            result = viz.plot_metrics(metric_keys=["loss", "val_loss"], output_path=str(out))
+            result = viz.plot_metrics(
+                metric_keys=["loss", "val_loss"], output_path=str(out)
+            )
             assert result != ""
 
     def test_load_metrics_empty(self):

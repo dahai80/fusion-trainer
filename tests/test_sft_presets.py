@@ -129,3 +129,26 @@ class TestSFTPresets:
         p = SFT_PRESETS["sft_science_7b_lora"]
         assert p["method"] == "lora"
         assert p["learning_rate"] == 1e-5
+
+    def test_router_light_1_5b_preset(self):
+        p = SFT_PRESETS["sft_router_light_1_5b_lora"]
+        assert p["method"] == "lora"
+        assert p["model_type"] == "lm"
+        assert p["lora_rank"] == 16
+        assert p["max_seq_length"] == 2048
+        assert p["num_epochs"] == 4
+        assert p["memory_estimate_gb"] <= 96
+
+    def test_router_light_3b_preset(self):
+        p = SFT_PRESETS["sft_router_light_3b_full"]
+        assert p["method"] == "full"
+        assert p["model_type"] == "lm"
+        assert p["batch_size"] == 2
+        assert p["max_seq_length"] == 2048
+        assert p["memory_estimate_gb"] <= 96
+
+    def test_router_light_presets_within_m5_budget(self):
+        for name in ("sft_router_light_1_5b_lora", "sft_router_light_3b_full"):
+            assert SFT_PRESETS[name]["memory_estimate_gb"] <= 96, (
+                f"{name} exceeds M5 96GB"
+            )

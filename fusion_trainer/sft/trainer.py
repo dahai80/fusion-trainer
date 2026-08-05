@@ -10,6 +10,7 @@ external paths and writes outputs to its own cache directory.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,8 @@ from .lora import LoRAConfig
 
 if TYPE_CHECKING:
     from ..experiment import ExperimentLogger
+
+logger = logging.getLogger(__name__)
 
 
 class SFTTrainer:
@@ -57,6 +60,8 @@ class SFTTrainer:
         self._epoch = 0
         self._model = None
         self._tokenizer = None
+        self._train_samples: list[dict[str, Any]] = []
+        self._adapter_path: str = ""
 
     def train(self) -> dict[str, Any]:
         """Run the full SFT training pipeline.
@@ -114,9 +119,7 @@ class SFTTrainer:
 
         model_path = self.sft_cfg.model
         if not model_path:
-            raise ValueError(
-                "No model specified. Set --model or sft.model in config."
-            )
+            raise ValueError("No model specified. Set --model or sft.model in config.")
 
         print(f"      Checking model via fusion-mlx: {model_path}")
 
@@ -131,7 +134,9 @@ class SFTTrainer:
             model_ids = {m.get("id", "") for m in models}
             if model_path not in model_ids and model_ids:
                 available = ", ".join(sorted(model_ids))
-                print(f"      ⚠ Model '{model_path}' not found in fusion-mlx. Available: {available}")
+                print(
+                    f"      ⚠ Model '{model_path}' not found in fusion-mlx. Available: {available}"
+                )
         except Exception as e:
             print(f"      ⚠ Could not reach fusion-mlx to verify model: {e}")
 
@@ -139,9 +144,7 @@ class SFTTrainer:
         # will load them via fusion-mlx training API when implemented.
         return None, None
 
-    def _prepare_dataloader(
-        self, data: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _prepare_dataloader(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Prepare the training data loader."""
         formatted = []
         for item in data:
@@ -158,113 +161,188 @@ class SFTTrainer:
                     )
                     formatted.append({"text": text})
                 except Exception:
-                    formatted.append({
-                        "text": f"<|user|>\n{inp}\n<|assistant|>\n{out}"
-                    })
+                    formatted.append({"text": f"<|user|>\n{inp}\n<|assistant|>\n{out}"})
             else:
-                formatted.append({
-                    "text": f"<|user|>\n{inp}\n<|assistant|>\n{out}"
-                })
+                formatted.append({"text": f"<|user|>\n{inp}\n<|assistant|>\n{out}"})
         return formatted
+
+    def _build_mlx_config(self) -> dict[str, Any]:
+        """Map SFTConfig → fusion-mlx FineTuneConfig dict.
+
+        fusion-mlx currently supports fine_tune_type = lora | dora | full.
+        QLoRA is not yet supported upstream — qlora is mapped to lora and
+        a warning is logged. An upstream issue should track QLoRA support.
+        """
+        method = self.sft_cfg.method
+        if method == "qlora":
+            logger.warning(
+                "QLoRA not yet supported by fusion-mlx; falling back to lora. "
+                "File an upstream issue to add quantized-base LoRA."
+            )
+            fine_tune_type = "lora"
+        elif method == "full":
+            fine_tune_type = "full"
+        else:
+            fine_tune_type = "lora"
+
+        total_samples = max(1, len(self._train_samples))
+        steps_per_epoch = max(1, total_samples // max(1, self.sft_cfg.batch_size))
+        iters = self.sft_cfg.max_steps or (steps_per_epoch * self.sft_cfg.num_epochs)
+
+        cfg: dict[str, Any] = {
+            "fine_tune_type": fine_tune_type,
+            "lora_rank": self._lora_cfg.rank,
+            "lora_alpha": self._lora_cfg.alpha,
+            "lora_dropout": self._lora_cfg.dropout,
+            "lora_layers": 16,
+            "optimizer": "adamw",
+            "learning_rate": self.sft_cfg.learning_rate,
+            "batch_size": self.sft_cfg.batch_size,
+            "iters": iters,
+            "val_batches": 5,
+            "steps_per_report": self.sft_cfg.log_every,
+            "steps_per_eval": max(self.sft_cfg.log_every * 5, 50),
+            "steps_per_save": self.sft_cfg.save_every,
+            "max_seq_length": self.dataset_cfg.max_seq_length,
+            "grad_accumulation_steps": self.sft_cfg.gradient_accumulation_steps,
+            "mask_prompt": True,
+            "seed": self.config.seed,
+        }
+        return cfg
 
     def _run_training(
         self,
         train_loader: list[dict[str, Any]],
         val_data: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Execute the training loop.
+        """Execute training by delegating to fusion-mlx via HTTP.
 
-        TODO: Replace the simulated loss loop with a real MLX training loop.
-        Current implementation:
-          - Uses a dummy loss value (0.1 * (1 - step/total_steps)) for scaffolding
-          - Does NOT perform actual gradient computation or weight updates
-          - Needs to be wired to mlx-lm's training API or a custom mx.grad loop
+        Real gradient computation happens inside fusion-mlx's
+        FineTuneService (which wraps mlx_lm.tuner). This method:
+          1. Stages the dataset to a local jsonl
+          2. Submits a fine-tune job to /admin/api/fine-tune/jobs
+          3. Polls job status, streaming real loss into ExperimentLogger
+          4. Records the adapter path returned by fusion-mlx
         """
         from ..experiment import ExperimentLogger
+        from ..mlx_client import MLXFineTuneClient, MLXFineTuneError
 
-        logger = ExperimentLogger(
+        self._train_samples = train_loader
+        exp_logger = ExperimentLogger(
             run_name=self.sft_cfg.run_name or "sft_default",
             output_dir=self._output_dir,
         )
 
-        total_samples = len(train_loader)
-        steps_per_epoch = max(
-            1, total_samples // max(1, self.sft_cfg.batch_size)
+        staged_dir = self._output_dir / "staged_data"
+        dataset_path = MLXFineTuneClient.stage_dataset(
+            train_loader, staged_dir, filename="train.jsonl"
         )
-        total_steps = (
-            self.sft_cfg.max_steps
-            or (steps_per_epoch * self.sft_cfg.num_epochs)
-        )
-
-        print(f"\n      Total steps: {total_steps}")
-        print(f"      Batch size:  {self.sft_cfg.batch_size}")
-        print(f"      Learning rate: {self.sft_cfg.learning_rate}")
-        print(f"      {'='*50}")
-
-        step = 0
-        for epoch in range(self.sft_cfg.num_epochs):
-            if step >= total_steps:
-                break
-            self._epoch = epoch
-            epoch_loss = 0.0
-            num_batches = 0
-
-            for i in range(0, len(train_loader), self.sft_cfg.batch_size):
-                if step >= total_steps:
-                    break
-
-                batch = train_loader[i : i + self.sft_cfg.batch_size]
-                loss_val = 0.1 * (1.0 - step / total_steps)  # simulated loss
-
-                step += 1
-                self._global_step = step
-                epoch_loss += loss_val
-                num_batches += 1
-
-                if step % self.sft_cfg.log_every == 0:
-                    avg_loss = epoch_loss / max(1, num_batches)
-                    logger.log_metrics(
-                        step=step,
-                        metrics={
-                            "loss": avg_loss,
-                            "learning_rate": self.sft_cfg.learning_rate,
-                            "epoch": epoch + 1,
-                        },
-                    )
-                    print(
-                        f"      Step {step:6d}/{total_steps}  "
-                        f"Loss: {avg_loss:.4f}  "
-                        f"Epoch: {epoch + 1}/{self.sft_cfg.num_epochs}"
-                    )
-
-                if step % self.sft_cfg.save_every == 0:
-                    self._save_checkpoint(step, logger)
-
-            avg_epoch_loss = epoch_loss / max(1, num_batches)
-            print(
-                f"      Epoch {epoch + 1} complete. "
-                f"Avg loss: {avg_epoch_loss:.4f}"
+        if val_data:
+            MLXFineTuneClient.stage_dataset(
+                val_data, staged_dir, filename="valid.jsonl"
             )
 
-        final_path = self._save_final()
-        logger.save()
+        mlx_cfg = self._build_mlx_config()
+        adapter_name = self.sft_cfg.run_name or "sft_run"
+
+        client = MLXFineTuneClient(port=self.config.mlx_port)
+        job = client.create_job(
+            model_id=self.sft_cfg.model,
+            dataset=dataset_path,
+            config=mlx_cfg,
+            adapter_name=adapter_name,
+        )
+        job_id = job.get("job_id", "")
+        print(f"      Submitted fine-tune job: {job_id}")
+        print(
+            f"      iters={mlx_cfg['iters']} batch_size={mlx_cfg['batch_size']} "
+            f"lr={mlx_cfg['learning_rate']} type={mlx_cfg['fine_tune_type']}"
+        )
+        print(f"      {'=' * 50}")
+
+        self._global_step = 0
+        try:
+            final_job = client.wait_for_job(
+                job_id,
+                on_progress=lambda j, ev: self._ingest_progress(j, ev, exp_logger),
+                poll_interval=2.0,
+            )
+        except MLXFineTuneError as exc:
+            print(f"      ✗ Training failed: {exc}")
+            exp_logger.save()
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "output_dir": str(self._output_dir),
+                "method": self.sft_cfg.method,
+            }
+
+        status = final_job.get("status", "")
+        if status != "completed":
+            print(f"      ✗ Job ended with status: {status}")
+            exp_logger.save()
+            return {
+                "status": status,
+                "error": final_job.get("error", ""),
+                "output_dir": str(self._output_dir),
+                "method": self.sft_cfg.method,
+            }
+
+        adapter_path = final_job.get("adapter_path", "")
+        self._adapter_path = adapter_path
+        self._save_final(adapter_path=adapter_path)
+        exp_logger.save()
 
         result = {
             "status": "completed",
-            "total_steps": step,
+            "total_steps": self._global_step,
             "output_dir": str(self._output_dir),
-            "final_model_path": final_path,
+            "final_model_path": adapter_path,
+            "adapter_name": adapter_name,
             "method": self.sft_cfg.method,
             "lora_rank": self._lora_cfg.rank if self.sft_cfg.method != "full" else 0,
+            "job_id": job_id,
         }
-
         print("\n      ✓ Training complete!")
-        print(f"      Output: {final_path}")
+        print(f"      Adapter: {adapter_path}")
         return result
 
-    def _save_checkpoint(
-        self, step: int, logger: ExperimentLogger
-    ) -> str:
+    def _ingest_progress(
+        self,
+        job: dict[str, Any],
+        new_events: list[dict[str, Any]],
+        exp_logger: ExperimentLogger,
+    ) -> None:
+        """Convert fusion-mlx job events into ExperimentLogger metrics."""
+        for ev in new_events:
+            etype = ev.get("type", "")
+            if etype == "train_loss":
+                step = ev.get("step", 0)
+                self._global_step = step
+                exp_logger.log_metrics(
+                    step=step,
+                    metrics={
+                        "loss": ev.get("train_loss", 0.0),
+                        "learning_rate": ev.get("learning_rate", 0.0),
+                        "tokens_per_second": ev.get("tokens_per_second", 0.0),
+                        "it_sec": ev.get("it_sec", 0.0),
+                        "peak_memory_gb": ev.get("peak_memory_gb", 0.0),
+                    },
+                )
+                print(
+                    f"      Step {step:6d}  "
+                    f"Loss: {ev.get('train_loss', 0.0):.4f}  "
+                    f"LR: {ev.get('learning_rate', 0.0):.2e}  "
+                    f"tok/s: {ev.get('tokens_per_second', 0.0):.0f}"
+                )
+            elif etype == "val_loss":
+                exp_logger.log_metrics(
+                    step=ev.get("step", self._global_step),
+                    metrics={"val_loss": ev.get("val_loss", 0.0)},
+                )
+                print(f"      Val loss: {ev.get('val_loss', 0.0):.4f}")
+
+    def _save_checkpoint(self, step: int, logger: ExperimentLogger) -> str:
         """Save a training checkpoint (Trainer-local, not in hub)."""
         ckpt_dir = self._output_dir / "checkpoints" / f"step_{step}"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -273,21 +351,32 @@ class SFTTrainer:
         self._cleanup_checkpoints()
         return str(ckpt_dir)
 
-    def _save_final(self) -> str:
-        """Save the final trained model weights (Trainer-local)."""
+    def _save_final(self, adapter_path: str = "") -> str:
+        """Record final adapter metadata (Trainer-local pointer).
+
+        The real adapter weights live in fusion-mlx's adapter directory
+        (~/.fusion-mlx/adapters/{model}/{name}/). This writes a local
+        pointer config so the Trainer output_dir is self-describing.
+        """
         if self.sft_cfg.method in ("lora", "qlora"):
             adapter_dir = self._output_dir / "lora_adapter"
             adapter_dir.mkdir(parents=True, exist_ok=True)
             with open(adapter_dir / "adapter_config.json", "w") as f:
-                json.dump({
-                    "lora_rank": self._lora_cfg.rank,
-                    "lora_alpha": self._lora_cfg.alpha,
-                    "lora_dropout": self._lora_cfg.dropout,
-                    "target_modules": self._lora_cfg.target_modules,
-                    "quantize_base": self._lora_cfg.quantize_base,
-                    "base_model": self.sft_cfg.model,
-                }, f, indent=2)
-            return str(adapter_dir)
+                json.dump(
+                    {
+                        "lora_rank": self._lora_cfg.rank,
+                        "lora_alpha": self._lora_cfg.alpha,
+                        "lora_dropout": self._lora_cfg.dropout,
+                        "target_modules": self._lora_cfg.target_modules,
+                        "quantize_base": self._lora_cfg.quantize_base,
+                        "base_model": self.sft_cfg.model,
+                        "adapter_path": adapter_path,
+                        "loadable_via": "fusion-mlx --lora-path or request.adapters",
+                    },
+                    f,
+                    indent=2,
+                )
+            return adapter_path or str(adapter_dir)
         return str(self._output_dir)
 
     def _cleanup_checkpoints(self):
@@ -299,6 +388,7 @@ class SFTTrainer:
         while len(checkpoints) > self.sft_cfg.save_total_limit:
             oldest = checkpoints.pop(0)
             import shutil
+
             shutil.rmtree(oldest, ignore_errors=True)
             # Re-scan to keep the list in sync with the filesystem
             checkpoints = sorted(ckpt_base.iterdir())

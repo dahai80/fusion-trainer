@@ -4,8 +4,41 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# D1 cleaned-dataset schemas (architecture/future-mlx-landing-plan.md A2):
+#   SFT  : messages-JSONL  -> {"messages": [{"role","content"}, ...]}
+#          ShareGPT        -> {"conversations": [{"from","value"}, ...]}
+#   DPO  : DPO-pair        -> {"prompt","chosen","rejected"}
+#   GRPO : GRPO-prompt     -> {"prompt", ...} (optional "answer"/"solution"/"tests")
+SCHEMA_MESSAGES = "messages"
+SCHEMA_SHAREGPT = "sharegpt"
+SCHEMA_DPO_PAIR = "dpo_pair"
+SCHEMA_GRPO_PROMPT = "grpo_prompt"
+SCHEMA_INPUT_OUTPUT = "input_output"
+
+VALID_SCHEMAS = (
+    SCHEMA_MESSAGES,
+    SCHEMA_SHAREGPT,
+    SCHEMA_DPO_PAIR,
+    SCHEMA_GRPO_PROMPT,
+    SCHEMA_INPUT_OUTPUT,
+)
+
+# ShareGPT "from" -> standard role mapping
+_SHAREGPT_ROLE_MAP = {
+    "human": "user",
+    "user": "user",
+    "gpt": "assistant",
+    "assistant": "assistant",
+    "system": "system",
+    "tool": "tool",
+    "function": "tool",
+}
 
 
 def detect_format(path: Path) -> str:
@@ -20,6 +53,82 @@ def detect_format(path: Path) -> str:
         ".arrow": "arrow",
     }
     return mapping.get(suffix, "")
+
+
+def detect_dataset_schema(item: dict[str, Any]) -> str:
+    """Detect the D1 cleaned-dataset schema of a single sample.
+
+    Returns one of VALID_SCHEMAS, or "" if the schema is unrecognized.
+    Inspection order matters: messages/sharegpt are chat formats, dpo is a
+    preference triple, grpo is a single prompt, input_output is the legacy
+    flat-text shape.
+    """
+    if not isinstance(item, dict):
+        return ""
+    if "messages" in item and isinstance(item["messages"], list):
+        return SCHEMA_MESSAGES
+    if "conversations" in item and isinstance(item["conversations"], list):
+        return SCHEMA_SHAREGPT
+    if "chosen" in item and "rejected" in item and "prompt" in item:
+        return SCHEMA_DPO_PAIR
+    if "prompt" in item and "chosen" not in item and "rejected" not in item:
+        # GRPO-prompt: a prompt with optional reference answer / tests, but
+        # no chosen/rejected (that would be DPO).
+        return SCHEMA_GRPO_PROMPT
+    if "input" in item or "output" in item or "text" in item:
+        return SCHEMA_INPUT_OUTPUT
+    return ""
+
+
+def validate_format(data: list[dict[str, Any]], schema: str = "") -> tuple[bool, str]:
+    """Validate that all samples conform to the given (or detected) schema.
+
+    Returns (ok, message). When schema is empty, the first sample's detected
+    schema is used and every sample must match it. Empty data is invalid.
+    """
+    if not data:
+        return False, "dataset is empty"
+    detected = schema
+    if not detected:
+        detected = detect_dataset_schema(data[0])
+        if not detected:
+            return (
+                False,
+                f"could not detect schema of first sample: {list(data[0].keys())}",
+            )
+    if detected not in VALID_SCHEMAS:
+        return False, f"unknown schema: {detected}"
+    bad = 0
+    for i, item in enumerate(data):
+        if detect_dataset_schema(item) != detected:
+            bad += 1
+            if bad <= 3:
+                logger.warning(
+                    "sample #%d does not match schema %s: keys=%s",
+                    i,
+                    detected,
+                    list(item.keys()),
+                )
+    if bad > 0:
+        return False, f"{bad}/{len(data)} samples do not match schema '{detected}'"
+    logger.info("validated %d samples against schema '%s'", len(data), detected)
+    return True, detected
+
+
+def sharegpt_to_messages(item: dict[str, Any]) -> list[dict[str, str]]:
+    """Convert one ShareGPT sample {"conversations":[{"from","value"}]} to
+    standard messages [{"role","content"}]. Unknown 'from' values map to
+    'user' as a safe default."""
+    convs = item.get("conversations", [])
+    messages = []
+    for turn in convs:
+        if not isinstance(turn, dict):
+            continue
+        role = _SHAREGPT_ROLE_MAP.get(str(turn.get("from", "")).lower(), "user")
+        content = turn.get("value", turn.get("content", ""))
+        if content:
+            messages.append({"role": role, "content": str(content)})
+    return messages
 
 
 def load_dataset_file(path: Path, format: str = "") -> list[dict[str, Any]]:

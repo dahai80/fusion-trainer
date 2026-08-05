@@ -32,6 +32,7 @@ class TrainingVisualizer:
 
         try:
             import matplotlib
+
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             import numpy as np
@@ -51,10 +52,12 @@ class TrainingVisualizer:
                 smoothed = np.convolve(
                     arr, np.ones(smooth_window) / smooth_window, mode="valid"
                 )
-                smooth_steps = steps[len(steps) - len(smoothed):]
+                smooth_steps = steps[len(steps) - len(smoothed) :]
                 ax.plot(
-                    smooth_steps, smoothed,
-                    color="red", linewidth=2,
+                    smooth_steps,
+                    smoothed,
+                    color="red",
+                    linewidth=2,
                     label=f"Smoothed (window={smooth_window})",
                 )
 
@@ -84,15 +87,13 @@ class TrainingVisualizer:
 
         try:
             import matplotlib
+
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
 
             if metric_keys is None:
                 # Auto-detect numeric keys
-                metric_keys = [
-                    k for k in metrics[0]
-                    if k not in ("step", "timestamp")
-                ]
+                metric_keys = [k for k in metrics[0] if k not in ("step", "timestamp")]
 
             n = len(metric_keys)
             fig, axes = plt.subplots(n, 1, figsize=(10, 3 * n), squeeze=False)

@@ -20,6 +20,7 @@ from fusion_trainer.config import (
 # DatasetConfig
 # ===========================================================================
 
+
 class TestDatasetConfig:
     def test_defaults(self):
         cfg = DatasetConfig()
@@ -72,6 +73,7 @@ class TestDatasetConfig:
 # SFTConfig
 # ===========================================================================
 
+
 class TestSFTConfig:
     def test_defaults(self):
         cfg = SFTConfig()
@@ -109,7 +111,9 @@ class TestSFTConfig:
         assert cfg.quant_bits == 8
 
     def test_custom_lora(self):
-        cfg = SFTConfig(lora_rank=32, lora_alpha=64.0, lora_target_modules=["q_proj", "v_proj"])
+        cfg = SFTConfig(
+            lora_rank=32, lora_alpha=64.0, lora_target_modules=["q_proj", "v_proj"]
+        )
         assert cfg.lora_rank == 32
         assert cfg.lora_alpha == 64.0
         assert cfg.lora_target_modules == ["q_proj", "v_proj"]
@@ -147,6 +151,7 @@ class TestSFTConfig:
 # ===========================================================================
 # RLSLConfig
 # ===========================================================================
+
 
 class TestRLSLConfig:
     def test_defaults(self):
@@ -202,6 +207,7 @@ class TestRLSLConfig:
 # ===========================================================================
 # TrainerConfig
 # ===========================================================================
+
 
 class TestTrainerConfig:
     def test_defaults(self):
@@ -264,6 +270,7 @@ class TestTrainerConfig:
 # ===========================================================================
 # Path helpers
 # ===========================================================================
+
 
 class TestPathHelpers:
     def test_default_hub_path_env(self):

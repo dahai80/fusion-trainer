@@ -29,6 +29,7 @@ from fusion_trainer.dataset import (
 # formats.py — detect_format
 # ===========================================================================
 
+
 class TestDetectFormat:
     def test_jsonl(self):
         assert detect_format(Path("data.jsonl")) == "jsonl"
@@ -62,9 +63,12 @@ class TestDetectFormat:
 # formats.py — load_dataset_file
 # ===========================================================================
 
+
 class TestLoadDatasetFile:
     def test_jsonl(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+        ) as f:
             for i in range(3):
                 f.write(json.dumps({"id": i, "text": f"hello {i}"}) + "\n")
             p = f.name
@@ -76,9 +80,11 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_jsonl_skip_empty_lines(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+        ) as f:
             f.write('{"a": 1}\n')
-            f.write('\n')
+            f.write("\n")
             f.write('{"a": 2}\n')
             p = f.name
         try:
@@ -88,7 +94,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_json_list(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
             json.dump([{"x": 1}, {"x": 2}], f)
             p = f.name
         try:
@@ -98,7 +106,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_json_dict_with_data_key(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
             json.dump({"data": [{"a": 1}, {"a": 2}]}, f)
             p = f.name
         try:
@@ -108,7 +118,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_json_dict_with_entries_key(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
             json.dump({"entries": [{"b": 3}]}, f)
             p = f.name
         try:
@@ -118,7 +130,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_json_dict_single_fallback(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
             json.dump({"key": "value"}, f)  # Not a list, no known wrapper key
             p = f.name
         try:
@@ -129,7 +143,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_json_invalid_structure(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
             f.write('"just a string"')
             p = f.name
         try:
@@ -139,7 +155,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_csv(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, encoding="utf-8"
+        ) as f:
             f.write("name,age\nAlice,30\nBob,25\n")
             p = f.name
         try:
@@ -151,7 +169,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_tsv(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".tsv", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".tsv", delete=False, encoding="utf-8"
+        ) as f:
             f.write("name\tage\nAlice\t30\nBob\t25\n")
             p = f.name
         try:
@@ -162,7 +182,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_unknown_format(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".xyz", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xyz", delete=False, encoding="utf-8"
+        ) as f:
             f.write("data")
             p = f.name
         try:
@@ -172,7 +194,9 @@ class TestLoadDatasetFile:
             Path(p).unlink(missing_ok=True)
 
     def test_format_override(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".custom", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".custom", delete=False, encoding="utf-8"
+        ) as f:
             for i in range(2):
                 f.write(json.dumps({"n": i}) + "\n")
             p = f.name
@@ -187,6 +211,7 @@ class TestLoadDatasetFile:
         # Force import error by checking if pyarrow is available
         try:
             import pyarrow  # noqa: F401
+
             pytest.skip("pyarrow is installed, can't test missing dependency")
         except ImportError:
             with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
@@ -201,6 +226,7 @@ class TestLoadDatasetFile:
 # ===========================================================================
 # formats.py — save_dataset_file
 # ===========================================================================
+
 
 class TestSaveDatasetFile:
     def test_save_jsonl(self):
@@ -230,6 +256,7 @@ class TestSaveDatasetFile:
 # ===========================================================================
 # transforms.py
 # ===========================================================================
+
 
 class TestCleanDataset:
     def test_strips_whitespace(self):
@@ -367,6 +394,7 @@ class TestToChatFormat:
 # loader.py — DatasetLoader
 # ===========================================================================
 
+
 class TestDatasetLoader:
     def test_load_from_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -470,9 +498,12 @@ class TestDatasetLoader:
             p = Path(tmpdir) / "pref.jsonl"
             with open(p, "w") as f:
                 for i in range(5):
-                    f.write(json.dumps({
-                        "prompt": f"P{i}", "chosen": f"C{i}", "rejected": f"R{i}"
-                    }) + "\n")
+                    f.write(
+                        json.dumps(
+                            {"prompt": f"P{i}", "chosen": f"C{i}", "rejected": f"R{i}"}
+                        )
+                        + "\n"
+                    )
             loader = DatasetLoader()
             result = loader.load_preference(path=str(p))
             assert len(result) == 5
@@ -482,8 +513,12 @@ class TestDatasetLoader:
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir) / "pref.jsonl"
             with open(p, "w") as f:
-                f.write(json.dumps({"prompt": "p", "chosen": "c"}) + "\n")  # missing rejected
-                f.write(json.dumps({"prompt": "p", "chosen": "c", "rejected": "r"}) + "\n")
+                f.write(
+                    json.dumps({"prompt": "p", "chosen": "c"}) + "\n"
+                )  # missing rejected
+                f.write(
+                    json.dumps({"prompt": "p", "chosen": "c", "rejected": "r"}) + "\n"
+                )
             loader = DatasetLoader()
             result = loader.load_preference(path=str(p))
             assert len(result) == 1
@@ -492,7 +527,9 @@ class TestDatasetLoader:
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir) / "pref.jsonl"
             with open(p, "w") as f:
-                f.write(json.dumps({"input": "p", "chosen": "c", "rejected": "r"}) + "\n")
+                f.write(
+                    json.dumps({"input": "p", "chosen": "c", "rejected": "r"}) + "\n"
+                )
             loader = DatasetLoader()
             result = loader.load_preference(path=str(p))
             assert result[0]["prompt"] == "p"
@@ -502,9 +539,10 @@ class TestDatasetLoader:
             p = Path(tmpdir) / "pref.jsonl"
             with open(p, "w") as f:
                 for i in range(10):
-                    f.write(json.dumps({
-                        "prompt": f"P{i}", "chosen": "c", "rejected": "r"
-                    }) + "\n")
+                    f.write(
+                        json.dumps({"prompt": f"P{i}", "chosen": "c", "rejected": "r"})
+                        + "\n"
+                    )
             loader = DatasetLoader()
             result = loader.load_preference(path=str(p), max_samples=3)
             assert len(result) == 3
@@ -513,9 +551,16 @@ class TestDatasetLoader:
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir) / "pref.jsonl"
             with open(p, "w") as f:
-                f.write(json.dumps({
-                    "prompt": "hello world", "chosen": "foo bar", "rejected": "baz qux"
-                }) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "prompt": "hello world",
+                            "chosen": "foo bar",
+                            "rejected": "baz qux",
+                        }
+                    )
+                    + "\n"
+                )
             loader = DatasetLoader()
             result = loader.load_preference(path=str(p), max_seq_length=5)
             assert result[0]["prompt"] == "hello"
@@ -530,9 +575,10 @@ class TestDatasetLoader:
             p = ds_dir / "pref_data.jsonl"
             with open(p, "w") as f:
                 for i in range(3):
-                    f.write(json.dumps({
-                        "prompt": f"P{i}", "chosen": "c", "rejected": "r"
-                    }) + "\n")
+                    f.write(
+                        json.dumps({"prompt": f"P{i}", "chosen": "c", "rejected": "r"})
+                        + "\n"
+                    )
             loader = DatasetLoader(model_hub_path=str(hub_dir))
             result = loader.load_preference(hub_dataset="pref_data")
             assert len(result) == 3
@@ -557,9 +603,12 @@ class TestDatasetLoader:
 # versioning.py — DatasetVersion
 # ===========================================================================
 
+
 class TestDatasetVersion:
     def test_constructor(self):
-        v = DatasetVersion(name="test", version="v2", path="/p", hash="abc", num_samples=50)
+        v = DatasetVersion(
+            name="test", version="v2", path="/p", hash="abc", num_samples=50
+        )
         assert v.name == "test"
         assert v.version == "v2"
         assert v.num_samples == 50
@@ -571,7 +620,13 @@ class TestDatasetVersion:
         assert d["version"] == "v1"
 
     def test_from_dict(self):
-        d = {"dataset": "foo", "version": "v3", "file_path": "/a", "file_hash": "h", "num_samples": 7}
+        d = {
+            "dataset": "foo",
+            "version": "v3",
+            "file_path": "/a",
+            "file_hash": "h",
+            "num_samples": 7,
+        }
         v = DatasetVersion.from_dict(d)
         assert v.name == "foo"
         assert v.version == "v3"
@@ -584,7 +639,256 @@ class TestDatasetVersion:
         assert v.num_samples == 0
 
     def test_from_dict_with_name_key(self):
-        d = {"name": "bar", "version": "v2", "path": "/b", "hash": "x", "num_samples": 3}
+        d = {
+            "name": "bar",
+            "version": "v2",
+            "path": "/b",
+            "hash": "x",
+            "num_samples": 3,
+        }
         v = DatasetVersion.from_dict(d)
         assert v.name == "bar"
         assert v.path == "/b"
+
+
+# ===========================================================================
+# Issue #7 — D1 cleaned-dataset schema detection / validation / loading
+# (ShareGPT / messages-JSONL / DPO-pair / GRPO-prompt)
+# ===========================================================================
+from fusion_trainer.dataset import (
+    SCHEMA_DPO_PAIR,
+    SCHEMA_GRPO_PROMPT,
+    SCHEMA_INPUT_OUTPUT,
+    SCHEMA_MESSAGES,
+    SCHEMA_SHAREGPT,
+    detect_dataset_schema,
+    sharegpt_to_messages,
+    validate_format,
+)
+
+
+class TestDetectDatasetSchema:
+    def test_messages(self):
+        assert (
+            detect_dataset_schema({"messages": [{"role": "user", "content": "hi"}]})
+            == SCHEMA_MESSAGES
+        )
+
+    def test_sharegpt(self):
+        assert (
+            detect_dataset_schema({"conversations": [{"from": "human", "value": "hi"}]})
+            == SCHEMA_SHAREGPT
+        )
+
+    def test_dpo_pair(self):
+        assert (
+            detect_dataset_schema({"prompt": "p", "chosen": "c", "rejected": "r"})
+            == SCHEMA_DPO_PAIR
+        )
+
+    def test_grpo_prompt(self):
+        assert (
+            detect_dataset_schema({"prompt": "p", "answer": "a"}) == SCHEMA_GRPO_PROMPT
+        )
+        assert detect_dataset_schema({"prompt": "p"}) == SCHEMA_GRPO_PROMPT
+
+    def test_input_output(self):
+        assert (
+            detect_dataset_schema({"input": "q", "output": "a"}) == SCHEMA_INPUT_OUTPUT
+        )
+        assert detect_dataset_schema({"text": "raw"}) == SCHEMA_INPUT_OUTPUT
+
+    def test_unknown(self):
+        assert detect_dataset_schema({"foo": "bar"}) == ""
+        assert detect_dataset_schema("not a dict") == ""
+
+
+class TestValidateFormat:
+    def test_valid_messages(self):
+        data = [
+            {"messages": [{"role": "user", "content": "a"}]},
+            {"messages": [{"role": "user", "content": "b"}]},
+        ]
+        ok, msg = validate_format(data)
+        assert ok and msg == SCHEMA_MESSAGES
+
+    def test_explicit_schema(self):
+        data = [{"prompt": "p", "chosen": "c", "rejected": "r"}]
+        ok, msg = validate_format(data, SCHEMA_DPO_PAIR)
+        assert ok
+
+    def test_mixed_schema_fails(self):
+        data = [
+            {"messages": [{"role": "user", "content": "a"}]},
+            {"input": "q", "output": "a"},
+        ]
+        ok, msg = validate_format(data)
+        assert not ok
+        assert "do not match schema" in msg
+
+    def test_empty_fails(self):
+        ok, msg = validate_format([])
+        assert not ok
+        assert "empty" in msg
+
+    def test_undetectable_first_sample(self):
+        ok, msg = validate_format([{"foo": "bar"}])
+        assert not ok
+
+
+class TestSharegptToMessages:
+    def test_basic(self):
+        item = {
+            "conversations": [
+                {"from": "human", "value": "hello"},
+                {"from": "gpt", "value": "hi there"},
+            ]
+        }
+        msgs = sharegpt_to_messages(item)
+        assert msgs == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+    def test_system_role(self):
+        msgs = sharegpt_to_messages(
+            {"conversations": [{"from": "system", "value": "sys"}]}
+        )
+        assert msgs[0]["role"] == "system"
+
+    def test_unknown_role_defaults_user(self):
+        msgs = sharegpt_to_messages(
+            {"conversations": [{"from": "alien", "value": "x"}]}
+        )
+        assert msgs[0]["role"] == "user"
+
+    def test_skips_empty(self):
+        msgs = sharegpt_to_messages({"conversations": [{"from": "gpt", "value": ""}]})
+        assert msgs == []
+
+
+class TestLoadMessages:
+    def _write(self, tmp_path, name, samples):
+        p = tmp_path / name
+        with open(p, "w") as f:
+            for s in samples:
+                f.write(json.dumps(s) + "\n")
+        return p
+
+    def test_messages_jsonl(self, tmp_path):
+        p = self._write(
+            tmp_path,
+            "m.jsonl",
+            [
+                {
+                    "messages": [
+                        {"role": "user", "content": "q1"},
+                        {"role": "assistant", "content": "a1"},
+                    ]
+                },
+                {
+                    "messages": [
+                        {"role": "user", "content": "q2"},
+                        {"role": "assistant", "content": "a2"},
+                    ]
+                },
+            ],
+        )
+        loader = DatasetLoader()
+        train, val = loader.load_messages(path=str(p), val_ratio=0.0)
+        assert len(train) == 2
+        assert train[0]["messages"][0]["content"] == "q1"
+
+    def test_sharegpt_jsonl(self, tmp_path):
+        p = self._write(
+            tmp_path,
+            "s.jsonl",
+            [
+                {
+                    "conversations": [
+                        {"from": "human", "value": "hi"},
+                        {"from": "gpt", "value": "yo"},
+                    ]
+                },
+            ],
+        )
+        loader = DatasetLoader()
+        train, val = loader.load_messages(path=str(p), val_ratio=0.0)
+        assert len(train) == 1
+        assert train[0]["messages"][0] == {"role": "user", "content": "hi"}
+        assert train[0]["messages"][1] == {"role": "assistant", "content": "yo"}
+
+    def test_val_split(self, tmp_path):
+        samples = [
+            {"messages": [{"role": "user", "content": f"q{i}"}]} for i in range(10)
+        ]
+        p = self._write(tmp_path, "m.jsonl", samples)
+        loader = DatasetLoader()
+        train, val = loader.load_messages(path=str(p), val_ratio=0.2)
+        assert len(train) == 8
+        assert len(val) == 2
+
+    def test_max_samples(self, tmp_path):
+        samples = [
+            {"messages": [{"role": "user", "content": f"q{i}"}]} for i in range(10)
+        ]
+        p = self._write(tmp_path, "m.jsonl", samples)
+        loader = DatasetLoader()
+        train, val = loader.load_messages(path=str(p), val_ratio=0.0, max_samples=3)
+        assert len(train) == 3
+
+    def test_skips_non_chat(self, tmp_path):
+        p = self._write(
+            tmp_path,
+            "m.jsonl",
+            [
+                {"messages": [{"role": "user", "content": "ok"}]},
+                {"input": "q", "output": "a"},
+            ],
+        )
+        loader = DatasetLoader()
+        train, val = loader.load_messages(path=str(p), val_ratio=0.0)
+        assert len(train) == 1
+
+
+class TestLoadGrpo:
+    def test_basic(self, tmp_path):
+        p = tmp_path / "g.jsonl"
+        with open(p, "w") as f:
+            f.write(json.dumps({"prompt": "solve 1+1", "answer": "2"}) + "\n")
+            f.write(json.dumps({"prompt": "solve 2+2"}) + "\n")
+        loader = DatasetLoader()
+        result = loader.load_grpo(path=str(p))
+        assert len(result) == 2
+        assert result[0]["prompt"] == "solve 1+1"
+        assert result[0]["answer"] == "2"
+        assert "answer" not in result[1]
+
+    def test_skips_missing_prompt(self, tmp_path):
+        p = tmp_path / "g.jsonl"
+        with open(p, "w") as f:
+            f.write(json.dumps({"prompt": "ok"}) + "\n")
+            f.write(json.dumps({"answer": "no prompt"}) + "\n")
+        loader = DatasetLoader()
+        result = loader.load_grpo(path=str(p))
+        assert len(result) == 1
+
+    def test_preserves_reference_fields(self, tmp_path):
+        p = tmp_path / "g.jsonl"
+        with open(p, "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "prompt": "p",
+                        "tests": ["t1"],
+                        "reward": 1.0,
+                        "metadata": {"k": "v"},
+                    }
+                )
+                + "\n"
+            )
+        loader = DatasetLoader()
+        result = loader.load_grpo(path=str(p))
+        assert result[0]["tests"] == ["t1"]
+        assert result[0]["reward"] == 1.0
+        assert result[0]["metadata"] == {"k": "v"}

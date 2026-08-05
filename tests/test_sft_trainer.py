@@ -39,6 +39,7 @@ def _make_config(
 
 def _make_dataset_file(tmpdir: str, n: int = 10, field: str = "input") -> str:
     import json
+
     p = Path(tmpdir) / "train.jsonl"
     with open(p, "w") as f:
         for i in range(n):
@@ -49,6 +50,7 @@ def _make_dataset_file(tmpdir: str, n: int = 10, field: str = "input") -> str:
 # ===========================================================================
 # Initialization
 # ===========================================================================
+
 
 class TestSFTTrainerInit:
     def test_init_default(self):
@@ -95,6 +97,7 @@ class TestSFTTrainerInit:
 # ===========================================================================
 # _prepare_dataloader
 # ===========================================================================
+
 
 class TestPrepareDataloader:
     def test_with_tokenizer(self):
@@ -156,6 +159,7 @@ class TestPrepareDataloader:
 # _load_model
 # ===========================================================================
 
+
 class TestLoadModel:
     def test_no_model_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -179,12 +183,14 @@ class TestLoadModel:
 # Checkpointing
 # ===========================================================================
 
+
 class TestCheckpointing:
     def test_save_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(cache_path=tmpdir)
             trainer = SFTTrainer(cfg)
             from fusion_trainer.experiment import ExperimentLogger
+
             logger = ExperimentLogger("test", tmpdir)
             path = trainer._save_checkpoint(100, logger)
             assert path is not None
@@ -233,6 +239,7 @@ class TestCheckpointing:
             cfg = _make_config(cache_path=tmpdir, save_total_limit=2)
             trainer = SFTTrainer(cfg)
             from fusion_trainer.experiment import ExperimentLogger
+
             logger = ExperimentLogger("test", tmpdir)
 
             # Create 4 checkpoints
@@ -253,37 +260,110 @@ class TestCheckpointing:
 
 
 # ===========================================================================
-# _run_training
+# _run_training — mocked HTTP client (real training needs fusion-mlx up)
 # ===========================================================================
 
+
+def _patch_mlx_client(
+    monkeypatch,
+    events: list[dict] | None = None,
+    final_status: str = "completed",
+    adapter_path: str = "/fake/adapters/m/adapter",
+):
+    """Patch MLXFineTuneClient so _run_training runs without a server.
+
+    Returns a list that records create_job calls for assertions.
+    """
+    calls: list[dict] = []
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def create_job(self, model_id, dataset, config=None, adapter_name=""):
+            calls.append(
+                {
+                    "model_id": model_id,
+                    "dataset": dataset,
+                    "config": config,
+                    "adapter_name": adapter_name,
+                }
+            )
+            return {"job_id": "fake-job-123", "status": "queued"}
+
+        def wait_for_job(self, job_id, on_progress=None, **kw):
+            for ev in events or [
+                {
+                    "type": "train_loss",
+                    "step": 1,
+                    "train_loss": 2.3,
+                    "learning_rate": 2e-5,
+                    "tokens_per_second": 100,
+                    "it_sec": 1.0,
+                    "peak_memory_gb": 5.0,
+                },
+                {
+                    "type": "train_loss",
+                    "step": 2,
+                    "train_loss": 1.1,
+                    "learning_rate": 2e-5,
+                    "tokens_per_second": 100,
+                    "it_sec": 1.0,
+                    "peak_memory_gb": 5.0,
+                },
+            ]:
+                if on_progress is not None:
+                    on_progress({"status": "running", "events": [ev]}, [ev])
+            return {
+                "status": final_status,
+                "adapter_path": adapter_path,
+                "events": events or [],
+                "error": "" if final_status == "completed" else "boom",
+            }
+
+    import fusion_trainer.mlx_client as mlx_mod
+    import fusion_trainer.sft.trainer as tr_mod
+
+    _real_stage = mlx_mod.MLXFineTuneClient.stage_dataset
+    monkeypatch.setattr(mlx_mod, "MLXFineTuneClient", _FakeClient)
+    monkeypatch.setattr(tr_mod, "MLXFineTuneClient", _FakeClient, raising=False)
+    # rebind the staticmethod captured before patching
+    _FakeClient.stage_dataset = staticmethod(_real_stage)
+    return calls
+
+
 class TestRunTraining:
-    def test_run_training_basic(self):
+    def test_run_training_basic(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(
                 method="lora",
                 cache_path=tmpdir,
                 num_epochs=2,
                 log_every=5,
-                save_every=10,
             )
             trainer = SFTTrainer(cfg)
-            train_loader = [{"text": f"sample {i}"} for i in range(20)]
+            train_loader = [{"input": f"Q{i}", "output": f"A{i}"} for i in range(20)]
+            calls = _patch_mlx_client(monkeypatch)
             result = trainer._run_training(train_loader, [])
             assert result["status"] == "completed"
             assert result["total_steps"] > 0
             assert result["method"] == "lora"
             assert result["output_dir"] == str(trainer._output_dir)
+            assert result["job_id"] == "fake-job-123"
+            assert calls[0]["model_id"] == "test-model"
+            assert calls[0]["config"]["fine_tune_type"] == "lora"
 
-    def test_run_training_with_val(self):
+    def test_run_training_with_val(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(method="lora", cache_path=tmpdir, num_epochs=1)
             trainer = SFTTrainer(cfg)
-            train_loader = [{"text": f"sample {i}"} for i in range(10)]
-            val_data = [{"text": "val1"}, {"text": "val2"}]
+            train_loader = [{"input": f"Q{i}", "output": f"A{i}"} for i in range(10)]
+            val_data = [{"input": "vq", "output": "va"}]
+            _patch_mlx_client(monkeypatch)
             result = trainer._run_training(train_loader, val_data)
             assert result["status"] == "completed"
 
-    def test_run_training_early_stop(self):
+    def test_run_training_early_stop(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(
                 method="lora",
@@ -292,11 +372,13 @@ class TestRunTraining:
                 num_epochs=10,
             )
             trainer = SFTTrainer(cfg)
-            train_loader = [{"text": f"sample {i}"} for i in range(100)]
+            train_loader = [{"input": f"Q{i}", "output": f"A{i}"} for i in range(100)]
+            calls = _patch_mlx_client(monkeypatch)
             result = trainer._run_training(train_loader, [])
-            assert result["total_steps"] == 5  # stopped at max_steps
+            assert result["status"] == "completed"
+            assert calls[0]["config"]["iters"] == 5
 
-    def test_run_training_full_method(self):
+    def test_run_training_full_method(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(
                 method="full",
@@ -305,15 +387,58 @@ class TestRunTraining:
                 batch_size=2,
             )
             trainer = SFTTrainer(cfg)
-            train_loader = [{"text": f"sample {i}"} for i in range(10)]
+            train_loader = [{"input": f"Q{i}", "output": f"A{i}"} for i in range(10)]
+            calls = _patch_mlx_client(monkeypatch)
             result = trainer._run_training(train_loader, [])
             assert result["method"] == "full"
             assert result["lora_rank"] == 0
+            assert calls[0]["config"]["fine_tune_type"] == "full"
+
+    def test_run_training_qlora_falls_back(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(method="qlora", cache_path=tmpdir, num_epochs=1)
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
+            calls = _patch_mlx_client(monkeypatch)
+            result = trainer._run_training(train_loader, [])
+            assert result["status"] == "completed"
+            assert calls[0]["config"]["fine_tune_type"] == "lora"
+
+    def test_run_training_failure(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(method="lora", cache_path=tmpdir, num_epochs=1)
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
+            _patch_mlx_client(monkeypatch, final_status="failed")
+            result = trainer._run_training(train_loader, [])
+            assert result["status"] == "failed"
+
+    def test_run_training_val_loss_event(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(method="lora", cache_path=tmpdir, num_epochs=1)
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
+            events = [
+                {
+                    "type": "train_loss",
+                    "step": 1,
+                    "train_loss": 2.0,
+                    "learning_rate": 1e-5,
+                    "tokens_per_second": 50,
+                    "it_sec": 1.0,
+                    "peak_memory_gb": 3.0,
+                },
+                {"type": "val_loss", "step": 1, "val_loss": 1.8},
+            ]
+            _patch_mlx_client(monkeypatch, events=events)
+            result = trainer._run_training(train_loader, [])
+            assert result["status"] == "completed"
 
 
 # ===========================================================================
 # train() — full pipeline
 # ===========================================================================
+
 
 class TestTrain:
     def test_train_no_model_raises(self):
@@ -339,8 +464,8 @@ class TestTrain:
             with pytest.raises(ValueError, match="must be provided"):
                 trainer.train()
 
-    def test_train_with_mock_integration(self):
-        """Integration test: mock model loading, verify end-to-end flow."""
+    def test_train_with_mock_integration(self, monkeypatch):
+        """Integration test: mock model loading + HTTP client, verify flow."""
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = _make_dataset_file(tmpdir, n=5)
             cfg = TrainerConfig(
@@ -357,22 +482,108 @@ class TestTrain:
             )
             trainer = SFTTrainer(cfg)
 
-            # Mock the model loading
             mock_model = MagicMock()
             mock_tokenizer = MagicMock()
             mock_tokenizer.apply_chat_template.return_value = "<formatted>"
-            trainer._model = mock_model
-            trainer._tokenizer = mock_tokenizer
-
-            # We need to patch _load_model to avoid the actual import
-            original_load = trainer._load_model
 
             def mock_load():
                 return mock_model, mock_tokenizer
+
             trainer._load_model = mock_load
 
+            calls = _patch_mlx_client(monkeypatch)
             result = trainer.train()
             assert result["status"] == "completed"
             assert result["total_steps"] > 0
             assert result["method"] == "lora"
             assert result["lora_rank"] == 8
+            assert calls[0]["model_id"] == "test-model"
+
+
+import os
+
+from fusion_trainer.mlx_client import MLXFineTuneClient
+
+
+def _real_model_env() -> bool:
+    return os.environ.get("FUSION_TRAINER_REAL") == "1"
+
+
+@pytest.mark.skipif(
+    not _real_model_env(), reason="needs fusion-mlx server; set FUSION_TRAINER_REAL=1"
+)
+class TestRealFusionMLXIntegration:
+    # Real-model verification (per project rule: 涉及到大模型测试，须真实加载模型).
+    # Requires a running fusion-mlx server with the Qwen3-0.6B-4bit model
+    # available. Start it standalone:
+    #   FUSION_MLX_API_KEY=dahai168 FUSION_ROUTE_WARN_ONLY=true \
+    #     python -m fusion_mlx serve --base-path ~/.fusion-mlx \
+    #     --host 127.0.0.1 --port 11434
+    # Then: FUSION_TRAINER_REAL=1 FUSION_MLX_ADMIN_TOKEN=dahai168 pytest \
+    #   tests/test_sft_trainer.py::TestRealFusionMLXIntegration -v
+
+    def test_real_lora_job_runs_and_writes_adapter(self, tmp_path):
+        client = MLXFineTuneClient(port=11434)
+        # health() hits /v1/models; reachable server returns a dict (not raises)
+        health = client.health()
+        assert isinstance(health, dict)
+
+        samples = []
+        for i in range(6):
+            samples.append(
+                {
+                    "messages": [
+                        {"role": "user", "content": f"What is {i}+1?"},
+                        {"role": "assistant", "content": f"{i + 1}"},
+                    ]
+                }
+            )
+        data_dir = tmp_path / "staged"
+        adapter_name = "ft_real_ci"
+        dataset_dir = MLXFineTuneClient.stage_dataset(samples, data_dir)
+
+        job = client.create_job(
+            model_id="Qwen3-0.6B-4bit",
+            dataset=dataset_dir,
+            config={"fine_tune_type": "lora", "iters": 2, "batch_size": 1},
+            adapter_name=adapter_name,
+        )
+        job_id = job["job_id"]
+        assert job["status"] in ("queued", "running")
+
+        final = client.wait_for_job(job_id, timeout=300.0, poll_interval=2.0)
+        assert final["status"] == "completed", f"job did not complete: {final}"
+        assert final.get("adapter_path"), "adapter_path missing on completed job"
+
+        adapter_file = Path(final["adapter_path"])
+        assert adapter_file.exists(), f"adapter not written: {adapter_file}"
+        assert adapter_file.stat().st_size > 0
+
+    def test_real_second_job_not_stuck_queued(self, tmp_path):
+        # Regression for fusion-mlx issue #361: a second job submitted after
+        # the first terminates must transition out of 'queued'.
+        client = MLXFineTuneClient(port=11434)
+        samples = [
+            {
+                "messages": [
+                    {"role": "user", "content": f"q{i}"},
+                    {"role": "assistant", "content": f"a{i}"},
+                ]
+            }
+            for i in range(6)
+        ]
+        names = ["ft_real_ci_a", "ft_real_ci_b"]
+        for name in names:
+            data_dir = tmp_path / name
+            dataset_dir = MLXFineTuneClient.stage_dataset(samples, data_dir)
+            client.create_job(
+                model_id="Qwen3-0.6B-4bit",
+                dataset=dataset_dir,
+                config={"fine_tune_type": "lora", "iters": 1, "batch_size": 1},
+                adapter_name=name,
+            )
+        jobs = {j["adapter_name"]: j for j in client.list_jobs()}
+        for name in names:
+            job_id = jobs[name]["job_id"]
+            final = client.wait_for_job(job_id, timeout=300.0, poll_interval=2.0)
+            assert final["status"] == "completed", f"{name} stuck: {final}"

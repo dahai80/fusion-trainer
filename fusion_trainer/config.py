@@ -16,6 +16,7 @@ from typing import Literal
 # Path helpers
 # ---------------------------------------------------------------------------
 
+
 def _default_hub_path() -> str:
     """Return the default fusion-model-hub path (read-only reference)."""
     return os.environ.get(
@@ -95,6 +96,7 @@ class DatasetConfig:
 # SFT config
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SFTConfig:
     """Supervised Fine-Tuning configuration."""
@@ -161,6 +163,7 @@ class SFTConfig:
 # RLSL config
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RLSLConfig:
     """Reinforcement Learning from Supervised Learning configuration."""
@@ -177,8 +180,8 @@ class RLSLConfig:
     reward_num_epochs: int = 2
 
     # Alignment method
-    method: Literal["dpo", "orpo", "rlsl"] = "dpo"
-    """Alignment method."""
+    method: Literal["dpo", "orpo", "rlsl", "grpo"] = "dpo"
+    """Alignment method. 'grpo' = Group Relative Policy Optimization."""
 
     # DPO / ORPO parameters
     beta: float = 0.1
@@ -188,6 +191,25 @@ class RLSLConfig:
     clip_epsilon: float = 0.2
     kl_coef: float = 0.04
     ppo_epochs: int = 4
+
+    # GRPO parameters
+    group_size: int = 8
+    """G: samples per prompt for group-relative advantage."""
+
+    grpo_iterations: int = 1
+    """Number of GRPO outer iterations (sample → score → SFT-update)."""
+
+    sandbox_mode: Literal["off", "code", "math", "auto"] = "off"
+    """Sandbox reward source. 'code' executes tests, 'math' compares answers, 'auto' picks by dataset field."""
+
+    reward_top_k: int = 4
+    """Keep top-k of G samples by reward for the SFT-style update (reward-filtered GRPO approximation)."""
+
+    reward_scale: float = 1.0
+    """Multiplier applied to raw sandbox reward before ranking."""
+
+    max_tool_calls: int = 3
+    """Max tool-call rounds during on-policy generation (Thinking + Tool reinforcement)."""
 
     # Training
     batch_size: int = 1
@@ -212,6 +234,7 @@ class RLSLConfig:
 # ---------------------------------------------------------------------------
 # Top-level trainer config
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TrainerConfig:

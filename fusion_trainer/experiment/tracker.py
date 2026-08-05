@@ -35,7 +35,9 @@ class ExperimentTracker:
         Returns:
             Experiment ID string.
         """
-        exp_id = f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        exp_id = (
+            f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        )
 
         record = {
             "experiment_id": exp_id,
@@ -57,43 +59,35 @@ class ExperimentTracker:
 
         return exp_id
 
-    def update_status(
-        self, experiment_id: str, status: str
-    ) -> None:
+    def update_status(self, experiment_id: str, status: str) -> None:
         """Update experiment status."""
         record = self._load(experiment_id)
         if record:
             record["status"] = status
             self._save(experiment_id, record)
 
-    def update_metrics(
-        self, experiment_id: str, metrics: dict[str, Any]
-    ) -> None:
+    def update_metrics(self, experiment_id: str, metrics: dict[str, Any]) -> None:
         """Update metrics summary."""
         record = self._load(experiment_id)
         if record:
             record["metrics_summary"].update(metrics)
             self._save(experiment_id, record)
 
-    def update_outputs(
-        self, experiment_id: str, outputs: dict[str, str]
-    ) -> None:
+    def update_outputs(self, experiment_id: str, outputs: dict[str, str]) -> None:
         """Record output paths."""
         record = self._load(experiment_id)
         if record:
             record["output_paths"].update(outputs)
             self._save(experiment_id, record)
 
-    def list_experiments(
-        self, status: str | None = None
-    ) -> list[dict[str, Any]]:
+    def list_experiments(self, status: str | None = None) -> list[dict[str, Any]]:
         """List all experiments, optionally filtered by status."""
         results = []
         for exp_dir in sorted(self._experiments_dir.iterdir()):
             if exp_dir.is_dir():
                 record = self._load(exp_dir.name)
                 if record and (status is None or record.get("status") == status):
-                        results.append(record)
+                    results.append(record)
         return results
 
     def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
@@ -123,6 +117,7 @@ class ExperimentTracker:
     def _get_git_commit() -> str:
         try:
             import subprocess
+
             result = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
                 capture_output=True,

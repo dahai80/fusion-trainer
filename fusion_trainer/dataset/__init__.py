@@ -5,7 +5,20 @@ from file paths. The fusion-model-hub integration is purely a
 path convention: {model_hub_path}/datasets/{name}.jsonl.
 """
 
-from .formats import detect_format, load_dataset_file, save_dataset_file
+from .formats import (
+    SCHEMA_DPO_PAIR,
+    SCHEMA_GRPO_PROMPT,
+    SCHEMA_INPUT_OUTPUT,
+    SCHEMA_MESSAGES,
+    SCHEMA_SHAREGPT,
+    VALID_SCHEMAS,
+    detect_dataset_schema,
+    detect_format,
+    load_dataset_file,
+    save_dataset_file,
+    sharegpt_to_messages,
+    validate_format,
+)
 from .loader import DatasetLoader
 from .transforms import (
     clean_dataset,
@@ -20,9 +33,18 @@ from .versioning import DatasetVersion
 __all__ = [
     "DatasetLoader",
     "DatasetVersion",
+    "SCHEMA_DPO_PAIR",
+    "SCHEMA_GRPO_PROMPT",
+    "SCHEMA_INPUT_OUTPUT",
+    "SCHEMA_MESSAGES",
+    "SCHEMA_SHAREGPT",
+    "VALID_SCHEMAS",
+    "detect_dataset_schema",
     "detect_format",
     "load_dataset_file",
     "save_dataset_file",
+    "sharegpt_to_messages",
+    "validate_format",
     "clean_dataset",
     "deduplicate",
     "filter_by_length",

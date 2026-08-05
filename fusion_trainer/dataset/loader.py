@@ -11,11 +11,23 @@ never creates, modifies, or version-manages it.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
-from .formats import load_dataset_file
+from .formats import (
+    SCHEMA_DPO_PAIR,
+    SCHEMA_GRPO_PROMPT,
+    SCHEMA_MESSAGES,
+    SCHEMA_SHAREGPT,
+    detect_dataset_schema,
+    load_dataset_file,
+    sharegpt_to_messages,
+    validate_format,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetLoader:
@@ -96,6 +108,10 @@ class DatasetLoader:
         if max_samples > 0 and len(data) > max_samples:
             data = data[:max_samples]
 
+        ok, msg = validate_format(data, SCHEMA_DPO_PAIR)
+        if not ok:
+            logger.warning("DPO dataset validation: %s", msg)
+
         result = []
         for item in data:
             prompt = item.get("prompt") or item.get("input", "")
@@ -107,11 +123,114 @@ class DatasetLoader:
                 prompt = prompt[:max_seq_length]
                 chosen = chosen[:max_seq_length]
                 rejected = rejected[:max_seq_length]
-            result.append({
-                "prompt": prompt,
-                "chosen": chosen,
-                "rejected": rejected,
-            })
+            result.append(
+                {
+                    "prompt": prompt,
+                    "chosen": chosen,
+                    "rejected": rejected,
+                }
+            )
+        logger.info("loaded %d DPO preference pairs from %s", len(result), resolved)
+        return result
+
+    def load_messages(
+        self,
+        path: str = "",
+        hub_dataset: str = "",
+        model_hub_path: str = "",
+        split: str = "train",
+        val_ratio: float = 0.05,
+        max_samples: int = 0,
+        max_seq_length: int = 4096,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Load a D1 SFT chat dataset (messages-JSONL or ShareGPT).
+
+        Accepts both {"messages":[{"role","content"}]} and
+        {"conversations":[{"from","value"}]} samples, normalizing the latter
+        to standard messages. Returns (train, val) where each sample is
+        {"messages": [...]}. Downstream stage_dataset passes messages through
+        unchanged so the tokenizer chat template applies.
+        """
+        resolved = self._resolve_path(path, hub_dataset, model_hub_path)
+        data = load_dataset_file(resolved)
+        if max_samples > 0 and len(data) > max_samples:
+            data = data[:max_samples]
+
+        normalized = []
+        for item in data:
+            schema = detect_dataset_schema(item)
+            if schema == SCHEMA_MESSAGES:
+                messages = item["messages"]
+            elif schema == SCHEMA_SHAREGPT:
+                messages = sharegpt_to_messages(item)
+            else:
+                logger.warning(
+                    "skip non-chat sample (schema=%s): %s", schema, list(item.keys())
+                )
+                continue
+            if not messages:
+                continue
+            if max_seq_length > 0:
+                messages = [
+                    {"role": m["role"], "content": str(m["content"])[:max_seq_length]}
+                    for m in messages
+                ]
+            normalized.append({"messages": messages})
+
+        if val_ratio > 0 and len(normalized) > 1:
+            split_idx = int(len(normalized) * (1 - val_ratio))
+            train = normalized[:split_idx]
+            val = normalized[split_idx:]
+        else:
+            train = normalized
+            val = []
+        logger.info(
+            "loaded %d chat samples (train=%d val=%d) from %s",
+            len(normalized),
+            len(train),
+            len(val),
+            resolved,
+        )
+        return train, val
+
+    def load_grpo(
+        self,
+        path: str = "",
+        hub_dataset: str = "",
+        model_hub_path: str = "",
+        max_samples: int = 0,
+        max_seq_length: int = 4096,
+    ) -> list[dict[str, Any]]:
+        """Load a D1 GRPO-prompt dataset.
+
+        Each sample is {"prompt": str, ...} with optional reference fields
+        ("answer", "solution", "tests", "reward") preserved for sandbox
+        feedback. Samples missing a prompt are skipped.
+        """
+        resolved = self._resolve_path(path, hub_dataset, model_hub_path)
+        data = load_dataset_file(resolved)
+        if max_samples > 0 and len(data) > max_samples:
+            data = data[:max_samples]
+
+        ok, msg = validate_format(data, SCHEMA_GRPO_PROMPT)
+        if not ok:
+            logger.warning("GRPO dataset validation: %s", msg)
+
+        result = []
+        for item in data:
+            prompt = item.get("prompt", "")
+            if not prompt:
+                continue
+            entry = {
+                "prompt": str(prompt)[:max_seq_length]
+                if max_seq_length > 0
+                else str(prompt)
+            }
+            for ref_key in ("answer", "solution", "tests", "reward", "metadata"):
+                if ref_key in item:
+                    entry[ref_key] = item[ref_key]
+            result.append(entry)
+        logger.info("loaded %d GRPO prompts from %s", len(result), resolved)
         return result
 
     # ------------------------------------------------------------------

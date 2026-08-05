@@ -70,7 +70,15 @@ def truncate_fields(
 ) -> list[dict[str, Any]]:
     """Truncate specified fields to max_length."""
     if fields is None:
-        fields = ["text", "input", "output", "prompt", "completion", "chosen", "rejected"]
+        fields = [
+            "text",
+            "input",
+            "output",
+            "prompt",
+            "completion",
+            "chosen",
+            "rejected",
+        ]
 
     result = []
     for item in data:
