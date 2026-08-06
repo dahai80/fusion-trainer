@@ -33,7 +33,7 @@ def _default_cache_path() -> str:
 
 
 def _default_mlx_port() -> int:
-    return int(os.environ.get("FUSION_MLX_PORT", "11432"))
+    return int(os.environ.get("FUSION_MLX_PORT", "11434"))
 
 
 # ---------------------------------------------------------------------------
