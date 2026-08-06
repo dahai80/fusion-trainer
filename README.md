@@ -100,7 +100,7 @@ source .venv/bin/activate
 Verify the install:
 
 ```bash
-ft --version     # ft 0.1.4
+ft --version     # ft 0.1.5
 ```
 
 ### 2. Import a Dataset
