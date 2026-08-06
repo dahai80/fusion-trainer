@@ -100,59 +100,43 @@ class TestSFTTrainerInit:
 
 
 class TestPrepareDataloader:
-    def test_with_tokenizer(self):
+    def test_preserves_input_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(cache_path=tmpdir)
             trainer = SFTTrainer(cfg)
-            # Mock tokenizer with apply_chat_template
-            mock_tokenizer = MagicMock()
-            mock_tokenizer.apply_chat_template.return_value = "<formatted>"
-            trainer._tokenizer = mock_tokenizer
-
             data = [{"input": "hello", "output": "world"}]
             result = trainer._prepare_dataloader(data)
             assert len(result) == 1
-            assert result[0]["text"] == "<formatted>"
-            mock_tokenizer.apply_chat_template.assert_called_once()
+            assert result[0] == {"input": "hello", "output": "world"}
 
-    def test_with_tokenizer_fallback_on_error(self):
+    def test_passthrough_messages(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(cache_path=tmpdir)
             trainer = SFTTrainer(cfg)
-            # Tokenizer that raises an error
-            mock_tokenizer = MagicMock()
-            mock_tokenizer.apply_chat_template.side_effect = Exception("template error")
-            trainer._tokenizer = mock_tokenizer
-
-            data = [{"input": "hi", "output": "ho"}]
+            msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ho"}]
+            data = [{"messages": msgs}]
             result = trainer._prepare_dataloader(data)
             assert len(result) == 1
-            assert "|user|" in result[0]["text"]
-            assert "hi" in result[0]["text"]
-            assert "ho" in result[0]["text"]
+            assert result[0]["messages"] == msgs
 
-    def test_without_tokenizer(self):
+    def test_passthrough_text(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(cache_path=tmpdir)
             trainer = SFTTrainer(cfg)
-            trainer._tokenizer = None
-
-            data = [{"input": "hello", "output": "world"}]
+            data = [{"text": "raw text sample"}]
             result = trainer._prepare_dataloader(data)
             assert len(result) == 1
-            assert "|user|" in result[0]["text"]
-            assert "hello" in result[0]["text"]
-            assert "world" in result[0]["text"]
+            assert result[0]["text"] == "raw text sample"
 
     def test_uses_get_defensive(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(cache_path=tmpdir)
             trainer = SFTTrainer(cfg)
-            # Data with missing keys should not crash
+            # Data with missing keys should not crash; empty strings used
             data = [{"other": "data"}]
             result = trainer._prepare_dataloader(data)
             assert len(result) == 1
-            assert "|user|" in result[0]["text"]
+            assert result[0] == {"input": "", "output": ""}
 
 
 # ===========================================================================

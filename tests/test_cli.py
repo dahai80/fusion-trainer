@@ -20,6 +20,30 @@ def test_cli_info():
     assert "Fusion-Trainer" in result.stdout
 
 
+def test_cli_version_long_flag():
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    from fusion_trainer._version import __version__
+
+    assert __version__ in result.stdout
+    assert "ft" in result.stdout
+
+
+def test_cli_version_short_flag():
+    result = runner.invoke(app, ["-V"])
+    assert result.exit_code == 0
+    from fusion_trainer._version import __version__
+
+    assert __version__ in result.stdout
+
+
+def test_cli_version_exits_zero_no_usage_error():
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert "Usage" not in result.stdout
+    assert "Error" not in result.stdout
+
+
 def test_cli_sft_help():
     """Test that `fusion-trainer sft --help` shows help."""
     result = runner.invoke(app, ["sft", "--help"])

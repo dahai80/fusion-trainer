@@ -25,6 +25,25 @@ app = typer.Typer(
 )
 
 
+@app.callback(invoke_without_command=True)
+def _root(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the fusion-trainer version and exit.",
+        is_eager=True,
+    ),
+):
+    if version:
+        typer.echo(f"ft {_get_version()}")
+        raise typer.Exit(0)
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+
+
 # ---------------------------------------------------------------------------
 # SFT command
 # ---------------------------------------------------------------------------

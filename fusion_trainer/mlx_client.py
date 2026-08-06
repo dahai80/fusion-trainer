@@ -57,7 +57,9 @@ class MLXFineTuneClient:
     ):
         self._base = f"{base_url}:{port}"
         token = admin_token or os.environ.get("FUSION_MLX_ADMIN_TOKEN", "")
-        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self._headers = {"X-Fusion-Route": "admin"}
+        if token:
+            self._headers["Authorization"] = f"Bearer {token}"
         self._timeout = timeout
         logger.info(
             "MLXFineTuneClient init base=%s auth=%s",
@@ -217,7 +219,7 @@ class MLXFineTuneClient:
         we convert to chat messages so the tokenizer's chat template
         applies correctly and mask_prompt can work.
         """
-        dest = Path(dest_dir)
+        dest = Path(dest_dir).resolve()
         dest.mkdir(parents=True, exist_ok=True)
         out_path = dest / filename
         with open(out_path, "w") as f:

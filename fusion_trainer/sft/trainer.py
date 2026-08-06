@@ -145,26 +145,22 @@ class SFTTrainer:
         return None, None
 
     def _prepare_dataloader(self, data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Prepare the training data loader."""
+        """Prepare the training data loader.
+
+        Preserves {input, output} so stage_dataset can emit chat messages
+        (required by mask_prompt). Pre-flattening to {text} breaks prompt
+        masking because the user/assistant boundary is lost.
+        """
         formatted = []
         for item in data:
+            if "messages" in item or "text" in item:
+                formatted.append(item)
+                continue
             inp = item.get("input", "")
             out = item.get("output", "")
-            if self._tokenizer is not None:
-                try:
-                    messages = [
-                        {"role": "user", "content": inp},
-                        {"role": "assistant", "content": out},
-                    ]
-                    text = self._tokenizer.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=False
-                    )
-                    formatted.append({"text": text})
-                except Exception:
-                    formatted.append({"text": f"<|user|>\n{inp}\n<|assistant|>\n{out}"})
-            else:
-                formatted.append({"text": f"<|user|>\n{inp}\n<|assistant|>\n{out}"})
+            formatted.append({"input": str(inp), "output": str(out)})
         return formatted
+
 
     def _build_mlx_config(self) -> dict[str, Any]:
         """Map SFTConfig → fusion-mlx FineTuneConfig dict.
