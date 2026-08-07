@@ -44,10 +44,10 @@ fusion-* products (consumption layer)
 ### Supervised Fine-Tuning (SFT)
 - Real SFT loop over fusion-mlx HTTP fine-tune API (LoRA / DoRA / full)
 - LoRA fine-tuning (rank 8–32) for 7B–32B models
-- QLoRA with 4-bit quantization for 32B models on M5 96GB
+- QLoRA ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` has no `quantize_base`/`qlora` (tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). `_build_mlx_config` raises `SFTUnsupportedError` on `method=qlora` rather than silently falling back to lora — use `lora` or `full` until upstream lands.
 - Domain-specific presets (code, finance, science)
 - **fusion-router-light presets** — 1.5B LoRA + 3B full, for the gateway intent classifier / spec-decoding draft model
-- MXFP8 mixed precision training (MLX-native)
+- MXFP8 mixed precision ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` has no `mxfp8` field (tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). Training runs at default precision today; `use_mxfp8=True` emits a warning (peak memory may exceed the preset estimate) rather than silently dropping the flag.
 
 ### Reinforcement Learning from Supervised Learning (RLSL)
 - **GRPO** ✅ — Group Relative Policy Optimization with sandbox reward (math + code). Two backends: `rft` (reward-filtered SFT approximation, default) and `grpo` (true policy-gradient via fusion-mlx `/api/fine-tune/grpo/jobs`, #363 Phase 2). See [GRPO backend](#5-run-grpo-with-sandbox-reward).
@@ -72,12 +72,12 @@ fusion-* products (consumption layer)
 |---|---|---|---|
 | Full FT | 7B | ~32 GB | M5 96GB ✓ |
 | LoRA | 7B | ~16 GB | M5 96GB ✓ |
-| QLoRA (4-bit) | 14B | ~28 GB | M5 96GB ✓ |
-| QLoRA (4-bit) | 32B | ~48 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ⏳ | 14B | ~28 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ⏳ | 32B | ~48 GB | M5 96GB ✓ |
 | RM Training | 14B | ~22 GB | M5 96GB ✓ |
 | RLSL (PPO-light) | 14B | ~62 GB | M5 96GB ✓ |
 
-All estimates assume MXFP8 mixed precision on Apple Silicon.
+All estimates assume MXFP8 mixed precision on Apple Silicon (⏳ = upstream-blocked, see [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402); today training runs at default precision, so actual peak memory may be higher).
 
 ---
 
