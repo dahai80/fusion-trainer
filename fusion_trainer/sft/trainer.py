@@ -165,18 +165,41 @@ class SFTTrainer:
     def _build_mlx_config(self) -> dict[str, Any]:
         """Map SFTConfig → fusion-mlx FineTuneConfig dict.
 
-        fusion-mlx currently supports fine_tune_type = lora | dora | full.
-        QLoRA is not yet supported upstream — qlora is mapped to lora and
-        a warning is logged. An upstream issue should track QLoRA support.
+        fusion-mlx currently supports fine_tune_type = lora | dora | full and
+        has NO mxfp8 / quantize_base fields in FineTuneConfig
+        (fusion_mlx/training/service.py:51). QLoRA and MXFP8 therefore cannot
+        be honored over HTTP. Per Rule 12 (fail visibly), we raise
+        SFTUnsupportedError instead of silently dropping the flags or faking a
+        lora fallback. Tracked in fusion-mlx#402.
         """
+        from ._errors import SFTUnsupportedError
+
         method = self.sft_cfg.method
+        upstream_issue = "https://github.com/dahai80/fusion-mlx/issues/402"
+
         if method == "qlora":
-            logger.warning(
-                "QLoRA not yet supported by fusion-mlx; falling back to lora. "
-                "File an upstream issue to add quantized-base LoRA."
+            logger.error(
+                "QLoRA (quantized-base LoRA) is not yet supported by fusion-mlx "
+                "(FineTuneConfig has no quantize_base/qlora). Refusing to silently "
+                "fall back to lora. Tracked in %s.", upstream_issue
             )
-            fine_tune_type = "lora"
-        elif method == "full":
+            raise SFTUnsupportedError(
+                "QLoRA training is not yet supported by fusion-mlx "
+                "(FineTuneConfig has no quantize_base/qlora fine_tune_type). "
+                f"Tracked in {upstream_issue}. "
+                "Use method='lora' or 'full' until upstream lands."
+            )
+
+        if self.sft_cfg.use_mxfp8:
+            logger.warning(
+                "MXFP8 mixed-precision training is not yet supported by fusion-mlx "
+                "(FineTuneConfig has no mxfp8 field). Training will run at default "
+                "precision — peak memory may exceed the preset estimate. "
+                "Set use_mxfp8=False to silence. Tracked in %s.",
+                upstream_issue,
+            )
+
+        if method == "full":
             fine_tune_type = "full"
         else:
             fine_tune_type = "lora"

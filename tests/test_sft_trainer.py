@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
+from fusion_trainer.sft import SFTUnsupportedError
 from fusion_trainer.sft.trainer import SFTTrainer
 
 
@@ -31,6 +32,7 @@ def _make_config(
             lora_rank=16,
             lora_alpha=32.0,
             output_dir=output_dir,
+            use_mxfp8=kwargs.pop("use_mxfp8", False),  # default off; mxfp8 has its own test
             **kwargs,
         ),
         cache_path=cache_path or "/tmp",
@@ -378,15 +380,29 @@ class TestRunTraining:
             assert result["lora_rank"] == 0
             assert calls[0]["config"]["fine_tune_type"] == "full"
 
-    def test_run_training_qlora_falls_back(self, monkeypatch):
+    def test_run_training_qlora_raises_upstream_blocked(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(method="qlora", cache_path=tmpdir, num_epochs=1)
             trainer = SFTTrainer(cfg)
             train_loader = [{"input": "Q", "output": "A"}]
+            _patch_mlx_client(monkeypatch)
+            with pytest.raises(SFTUnsupportedError, match="fusion-mlx/issues/402"):
+                trainer._run_training(train_loader, [])
+
+    def test_run_training_mxfp8_warns_not_raises(self, monkeypatch, caplog):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(
+                method="lora", cache_path=tmpdir, num_epochs=1, use_mxfp8=True
+            )
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
             calls = _patch_mlx_client(monkeypatch)
-            result = trainer._run_training(train_loader, [])
+            with caplog.at_level("WARNING"):
+                result = trainer._run_training(train_loader, [])
             assert result["status"] == "completed"
             assert calls[0]["config"]["fine_tune_type"] == "lora"
+            assert "MXFP8" in caplog.text
+            assert "fusion-mlx/issues/402" in caplog.text
 
     def test_run_training_failure(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:

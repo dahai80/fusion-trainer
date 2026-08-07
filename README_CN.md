@@ -44,9 +44,9 @@ fusion-* 产品（消费层）
 ### 监督微调（SFT）
 - 7B 及以下模型全参数微调
 - 7B–32B 模型 LoRA 微调（rank 8–32）
-- 32B 模型 4-bit QLoRA 微调（M5 96GB）
+- QLoRA ⏳ — **上游阻塞**：fusion-mlx `FineTuneConfig` 无 `quantize_base`/`qlora`（见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)）。`_build_mlx_config` 在 `method=qlora` 时抛 `SFTUnsupportedError`，而非静默回退 lora —— 在上游落地前请用 `lora` 或 `full`。
 - 领域专属预设配置（代码、金融、科学）
-- MXFP8 混合精度训练（MLX 原生）
+- MXFP8 混合精度 ⏳ — **上游阻塞**：fusion-mlx `FineTuneConfig` 无 `mxfp8` 字段（见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)）。当前以默认精度训练；`use_mxfp8=True` 会发出警告（峰值内存可能超过预设估算），而非静默丢弃该开关。
 
 ### 强化监督学习（RLSL）
 - **GRPO** ✅ — 带沙盒奖励的组相对策略优化（数学 + 代码）。两种后端：`rft`（奖励过滤 SFT 近似，默认）与 `grpo`（经 fusion-mlx `/api/fine-tune/grpo/jobs` 的真实策略梯度，#363 Phase 2）。
@@ -71,12 +71,12 @@ fusion-* 产品（消费层）
 |---|---|---|---|
 | 全量微调 | 7B | ~32 GB | M5 96GB ✓ |
 | LoRA | 7B | ~16 GB | M5 96GB ✓ |
-| QLoRA (4-bit) | 14B | ~28 GB | M5 96GB ✓ |
-| QLoRA (4-bit) | 32B | ~48 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ⏳ | 14B | ~28 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ⏳ | 32B | ~48 GB | M5 96GB ✓ |
 | 奖励模型训练 | 14B | ~22 GB | M5 96GB ✓ |
 | RLSL (PPO-light) | 14B | ~62 GB | M5 96GB ✓ |
 
-以上估算基于 MXFP8 混合精度。
+以上估算基于 MXFP8 混合精度（⏳ = 上游阻塞，见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)；当前以默认精度训练，实际峰值内存可能更高）。
 
 ---
 
