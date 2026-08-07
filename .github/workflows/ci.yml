@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff>=0.1.0"
+
+      - name: ruff check
+        run: ruff check .
+
+      # NOTE: ruff format --check 暂不纳入门禁——master 上有 5 个历史文件
+      # 未格式化,纳入会立即飘红。待单独清理 issue 落地后再启用。
+
+  test:
+    name: Test (pytest, mock unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        env:
+          # 真实集成测试需 Apple Silicon + 运行中的 fusion-mlx,CI 中跳过。
+          # 不设 FUSION_TRAINER_REAL → TestRealFusionMLXIntegration 自动 skipif。
+          FUSION_MLX_PORT: "11434"
+        run: pytest tests/ -q
