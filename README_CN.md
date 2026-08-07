@@ -58,7 +58,7 @@ fusion-* 产品（消费层）
 > **为何 DPO/ORPO/RLSL 抛错而非训练：** 按项目规则，fusion-trainer **只**通过 HTTP 对接 fusion-mlx，绝不直接 import `mlx-lm`。这些方法需要模型内 logprob + 梯度更新，必须由 fusion-mlx 承载。在 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) 落地前，它们显式失败而非静默返回假 "completed"。GRPO 当前已完整可用。
 
 ### 实验追踪
-- 指标日志记录，支持 TensorBoard
+- 指标日志记录，支持 TensorBoard —— **默认开启**，每个指标/步通过 `add_scalar` 流式写入 `output_dir/tensorboard`（设 `enable_tensorboard=False` 关闭）；JSONL 流式始终并行写入
 - Loss 曲线可视化（matplotlib）
 - 实验元数据与可复现追踪
 - Git commit 绑定，全程可追溯

@@ -59,7 +59,7 @@ fusion-* products (consumption layer)
 > **Why DPO/ORPO/RLSL raise instead of training:** per the project rule, fusion-trainer talks **only** to fusion-mlx over HTTP and never imports `mlx-lm` directly. These methods need in-model logprob + gradient updates, which must live in fusion-mlx. Until [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) lands, they fail visibly rather than silently returning fake "completed" results. GRPO is fully available today.
 
 ### Experiment Tracking
-- Metrics logging with TensorBoard support
+- Metrics logging with TensorBoard support — **on by default**, streams `add_scalar` per metric/step to `output_dir/tensorboard` (set `enable_tensorboard=False` to disable); JSONL streaming always runs alongside
 - Loss curve visualization (matplotlib)
 - Experiment metadata and reproducibility tracking
 - Git commit binding for full traceability

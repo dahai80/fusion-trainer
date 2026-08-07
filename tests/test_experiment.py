@@ -9,6 +9,8 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from fusion_trainer.experiment import (
     ExperimentLogger,
     ExperimentTracker,
@@ -43,7 +45,11 @@ class TestExperimentLogger:
 
     def test_bounded_memory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            logger = ExperimentLogger("mem_test", tmpdir, max_in_memory=3)
+            # TB writer disabled: this test never calls save(), and an open
+            # async TB thread would error when the tempdir is removed.
+            logger = ExperimentLogger(
+                "mem_test", tmpdir, max_in_memory=3, enable_tensorboard=False
+            )
             for i in range(10):
                 logger.log_metrics(step=i, metrics={"loss": float(i)})
             assert len(logger.recent_metrics) == 3
@@ -87,7 +93,8 @@ class TestExperimentLogger:
 
     def test_log_dir_property(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            logger = ExperimentLogger("prop_test", tmpdir)
+            # No save() here; disable TB so no async thread outlives the tempdir.
+            logger = ExperimentLogger("prop_test", tmpdir, enable_tensorboard=False)
             assert logger.log_dir.name == "prop_test"
             assert logger.log_dir.exists()
 
@@ -125,6 +132,54 @@ class TestExperimentLogger:
             assert logger.log_dir == output_dir / "logs" / "deep_test"
             logger.save()
             assert logger.log_dir.exists()
+
+    def test_tensorboard_writes_events(self):
+        # Default enable_tensorboard=True -> TB dir created with event files.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = ExperimentLogger("tb_test", tmpdir)
+            if logger.tensorboard_dir is None:
+                pytest.skip("tensorboard backend not importable in this env")
+            logger.log_metrics(step=0, metrics={"loss": 0.5})
+            logger.log_metrics(step=1, metrics={"loss": 0.3, "lr": 1e-5})
+            log_dir = logger.save()
+            assert logger.tensorboard_dir == log_dir / "tensorboard"
+            events = list(logger.tensorboard_dir.glob("events.out.tfevents.*"))
+            assert len(events) >= 1
+            assert events[0].stat().st_size > 0
+            with open(log_dir / "metadata.json") as f:
+                meta = json.load(f)
+            assert meta["tensorboard"] is True
+
+    def test_tensorboard_disabled(self):
+        # enable_tensorboard=False -> no TB dir, metadata flag False.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = ExperimentLogger("tb_off", tmpdir, enable_tensorboard=False)
+            assert logger.tensorboard_dir is None
+            logger.log_metrics(step=0, metrics={"loss": 0.5})
+            log_dir = logger.save()
+            assert not (log_dir / "tensorboard").exists()
+            with open(log_dir / "metadata.json") as f:
+                meta = json.load(f)
+            assert meta["tensorboard"] is False
+
+    def test_tensorboard_missing_dep_noop(self, monkeypatch):
+        # If the TB backend import fails, logging still works (graceful degrade).
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "torch.utils.tensorboard":
+                raise ImportError("simulated missing torch")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = ExperimentLogger("tb_missing", tmpdir, enable_tensorboard=True)
+            assert logger.tensorboard_dir is None  # degraded, not crashed
+            logger.log_metrics(step=0, metrics={"loss": 0.5})
+            log_dir = logger.save()
+            assert (log_dir / "metrics.jsonl").exists()  # JSONL still works
 
 
 # ===========================================================================
