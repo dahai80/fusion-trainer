@@ -53,6 +53,7 @@ fusion-* 产品（消费层）
 - **DPO** ⏳ — 直接偏好优化。**上游阻塞**：需要 fusion-mlx DPO 端点（见 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）。在此之前 `DPOTrainer.train` 抛 `RLSLUnsupportedError` —— 请改用 GRPO。
 - **ORPO** ⏳ — 胜率比偏好优化。**上游阻塞**（[fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）；`ORPOTrainer.train` 抛 `RLSLUnsupportedError`。
 - **RLSL** ⏳ — 完整 PPO-light 流水线（含奖励模型训练）。**上游阻塞**（[fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）；`RewardTrainer.train`/`predict` 抛 `RLSLUnsupportedError`。
+- **RLSL 预设** —— `RLSL_PRESETS`（`fusion_trainer.rlsl.presets`）提供命名 GRPO 超参束，含 `memory_estimate_gb` 供 M5 96GB 规划：`rlsl_grpo_7b`（~22 GB，`rft` 后端）、`rlsl_grpo_14b`（~62 GB，`rft` 后端）、`rlsl_grpo_14b_true`（~62 GB，`grpo` 后端，需 fusion-mlx #363 Phase 2）。DPO/ORPO/RLSL 预设因上游阻塞（#399）有意省略。CLI `--preset` 当前仅 SFT 支持；RLSL 预设供编程式使用与作为文档化参考配置。
 - 专为 M5 96GB 统一内存设计（14B–32B 模型）
 
 > **为何 DPO/ORPO/RLSL 抛错而非训练：** 按项目规则，fusion-trainer **只**通过 HTTP 对接 fusion-mlx，绝不直接 import `mlx-lm`。这些方法需要模型内 logprob + 梯度更新，必须由 fusion-mlx 承载。在 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) 落地前，它们显式失败而非静默返回假 "completed"。GRPO 当前已完整可用。
