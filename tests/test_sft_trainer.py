@@ -509,21 +509,32 @@ def _real_model_env() -> bool:
     return os.environ.get("FUSION_TRAINER_REAL") == "1"
 
 
+def _real_mlx_port() -> int:
+    # 真实微调测试走 fusion-mlx 的 admin fine-tune API (/admin/api/fine-tune/*)。
+    # 该 admin API 仅在 fusion-mlx 直连端口暴露,fusion-gateway(11432)不代理
+    # /admin/api/fine-tune/*(gateway 的 /admin/api/* 是其自身密钥/渠道管理 API)。
+    # 故默认直连 11434;若 fusion-mlx 监听非标准端口,用 FUSION_MLX_PORT 覆盖。
+    # 注:这与 config._default_mlx_port() 的 11432(推理走 gateway)有意不同。
+    return int(os.environ.get("FUSION_MLX_PORT", "11434"))
+
+
 @pytest.mark.skipif(
     not _real_model_env(), reason="needs fusion-mlx server; set FUSION_TRAINER_REAL=1"
 )
 class TestRealFusionMLXIntegration:
     # Real-model verification (per project rule: 涉及到大模型测试，须真实加载模型).
-    # Requires a running fusion-mlx server with the Qwen3-0.6B-4bit model
-    # available. Start it standalone:
+    # Requires a running fusion-mlx server (direct, port 11434 by default) with
+    # the Qwen3-0.6B-4bit model available. 用 FUSION_MLX_PORT 覆盖非标准端口。
+    # 启动示例:
     #   FUSION_MLX_API_KEY=dahai168 FUSION_ROUTE_WARN_ONLY=true \
-    #     python -m fusion_mlx serve --base-path ~/.fusion-mlx \
-    #     --host 127.0.0.1 --port 11434
+    #     ~/claude-home/fusion-mlx/start.sh start
+    # 注意:避免在已加载 VL(VLM)模型的环境冷启动跑(上游 fusion-mlx#413 VLM
+    # 冷启动崩溃),干净启动(不预加载 VLM)即可正常 SFT 训练。
     # Then: FUSION_TRAINER_REAL=1 FUSION_MLX_ADMIN_TOKEN=dahai168 pytest \
     #   tests/test_sft_trainer.py::TestRealFusionMLXIntegration -v
 
     def test_real_lora_job_runs_and_writes_adapter(self, tmp_path):
-        client = MLXFineTuneClient(port=11434)
+        client = MLXFineTuneClient(port=_real_mlx_port())
         # health() hits /v1/models; reachable server returns a dict (not raises)
         health = client.health()
         assert isinstance(health, dict)
@@ -562,7 +573,7 @@ class TestRealFusionMLXIntegration:
     def test_real_second_job_not_stuck_queued(self, tmp_path):
         # Regression for fusion-mlx issue #361: a second job submitted after
         # the first terminates must transition out of 'queued'.
-        client = MLXFineTuneClient(port=11434)
+        client = MLXFineTuneClient(port=_real_mlx_port())
         samples = [
             {
                 "messages": [
