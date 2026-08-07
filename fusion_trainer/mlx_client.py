@@ -34,6 +34,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 JOBS_PATH = "/admin/api/fine-tune/jobs"
+GRPO_JOBS_PATH = "/api/fine-tune/grpo/jobs"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
 
 
@@ -175,6 +176,98 @@ class MLXFineTuneClient:
                 return job
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"job {job_id} timed out after {timeout}s")
+
+    # ------------------------------------------------------------------
+    # GRPO job lifecycle (fusion-mlx #363 Phase 2: /api/fine-tune/grpo/jobs)
+    # ------------------------------------------------------------------
+
+    def create_grpo_job(
+        self,
+        model_id: str,
+        prompts: list[str],
+        config: dict[str, Any] | None = None,
+        adapter_name: str = "",
+    ) -> dict[str, Any]:
+        """Create a real GRPO training job (policy-gradient, not RFT).
+
+        fusion-mlx runs the GRPO loop server-side and scores rewards via an
+        HTTP callback to config['reward_endpoint'] (POST {prompt, completions}
+        -> {rewards}). Returns the GRPOJob dict.
+        """
+        body = {
+            "model_id": model_id,
+            "prompts": prompts,
+            "adapter_name": adapter_name,
+            "config": config or {},
+        }
+        logger.info(
+            "Creating GRPO job model=%s prompts=%d adapter=%s",
+            model_id,
+            len(prompts),
+            adapter_name or "(auto)",
+        )
+        resp = httpx.post(
+            f"{self._base}{GRPO_JOBS_PATH}",
+            json=body,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if resp.status_code >= 400:
+            raise MLXFineTuneError(
+                f"create_grpo_job failed {resp.status_code}: {resp.text}"
+            )
+        return resp.json()
+
+    def get_grpo_job(self, job_id: str) -> dict[str, Any]:
+        resp = httpx.get(
+            f"{self._base}{GRPO_JOBS_PATH}/{job_id}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def cancel_grpo_job(self, job_id: str) -> dict[str, Any]:
+        resp = httpx.post(
+            f"{self._base}{GRPO_JOBS_PATH}/{job_id}/cancel",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_grpo_jobs(self) -> list[dict[str, Any]]:
+        resp = httpx.get(
+            f"{self._base}{GRPO_JOBS_PATH}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def wait_for_grpo_job(
+        self,
+        job_id: str,
+        on_progress=None,
+        poll_interval: float = 2.0,
+        timeout: float = 86400.0,
+    ) -> dict[str, Any]:
+        """Block until a GRPO job reaches a terminal state, emitting progress."""
+        deadline = time.monotonic() + timeout
+        last_seen = 0
+        while time.monotonic() < deadline:
+            job = self.get_grpo_job(job_id)
+            events = job.get("events", [])
+            if len(events) > last_seen:
+                new_events = events[last_seen:]
+                last_seen = len(events)
+                if on_progress is not None:
+                    on_progress(job, new_events)
+            status = job.get("status", "")
+            if status in ("completed", "failed", "cancelled"):
+                return job
+            time.sleep(poll_interval)
+        raise MLXFineTuneError(f"grpo job {job_id} timed out after {timeout}s")
 
     # ------------------------------------------------------------------
     # Adapter management

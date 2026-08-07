@@ -169,6 +169,17 @@ GRPO prompt dataset (one JSON object per line):
 
 `--sandbox auto` picks **code** mode when a `tests` field is present, **math** mode when an `answer`/`solution` field is present. See `fusion_trainer/rlsl/sandbox.py` for the reward functions.
 
+#### GRPO backend (`grpo_backend`)
+
+`RLSLConfig.grpo_backend` selects the GRPO execution path:
+
+| backend | behavior | endpoint |
+|---|---|---|
+| `rft` (default) | reward-filtered SFT approximation: on-policy sample → sandbox score → top-k → SFT/LoRA job | `/admin/api/fine-tune/jobs` |
+| `grpo` | real policy-gradient GRPO, runs server-side in fusion-mlx; trainer hosts a local reward HTTP endpoint that fusion-mlx calls back (`reward_server.py` → `sandbox.reward_completion`) | `/api/fine-tune/grpo/jobs` |
+
+`grpo` requires fusion-mlx #363 Phase 2. Set in YAML (`rlsl.grpo_backend: grpo`) or pass via config. Per the project rule the trainer talks **only** to fusion-mlx's HTTP API — no direct `mlx-lm` imports.
+
 ---
 
 ## CLI Reference
