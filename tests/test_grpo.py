@@ -326,3 +326,159 @@ class TestRLSLEngineGRPO:
         engine = RLSLEngine(cfg)
         with pytest.raises(ValueError, match="No valid GRPO prompt data found"):
             engine.run()
+
+
+# ===========================================================================
+# RewardServer — local HTTP reward endpoint for true GRPO
+# ===========================================================================
+
+
+class TestRewardServer:
+    def test_scores_via_sandbox(self):
+        import httpx
+
+        from fusion_trainer.rlsl.reward_server import RewardServer
+
+        dataset = [{"prompt": "2+3=?", "answer": "5"}]
+        srv = RewardServer(dataset, mode="math", scale=1.0)
+        endpoint = srv.start()
+        try:
+            resp = httpx.post(
+                endpoint,
+                json={"prompt": "2+3=?", "completions": ["<answer>5</answer>", "<answer>7</answer>"]},
+                timeout=5.0,
+            )
+            assert resp.status_code == 200
+            rewards = resp.json()["rewards"]
+            assert rewards == [1.0, 0.0]
+        finally:
+            srv.stop()
+
+    def test_unknown_prompt_falls_back(self):
+        import httpx
+
+        from fusion_trainer.rlsl.reward_server import RewardServer
+
+        srv = RewardServer([{"prompt": "known", "answer": "5"}], mode="math")
+        endpoint = srv.start()
+        try:
+            resp = httpx.post(
+                endpoint,
+                json={"prompt": "unknown prompt", "completions": ["x", "y"]},
+                timeout=5.0,
+            )
+            assert resp.status_code == 200
+            # auto/math with no reference sample -> 0.5 per completion
+            rewards = resp.json()["rewards"]
+            assert rewards == [0.5, 0.5]
+        finally:
+            srv.stop()
+
+    def test_stop_is_idempotent(self):
+        from fusion_trainer.rlsl.reward_server import RewardServer
+
+        srv = RewardServer([], mode="off")
+        srv.start()
+        srv.stop()
+        srv.stop()  # no error
+
+
+# ===========================================================================
+# GRPOTrainer — true GRPO backend (grpo_backend="grpo")
+# ===========================================================================
+
+
+class TestGRPOTrueBackend:
+    def _patch_grpo_client(self, monkeypatch, job_status="completed", events=None):
+        """Stub MLXFineTuneClient GRPO methods so no real HTTP."""
+        events = events or [
+            {"type": "grpo_step", "iter": 0, "loss": 1.2, "mean_reward": 0.5,
+             "mean_ratio": 1.0, "n_samples": 4},
+            {"type": "grpo_step", "iter": 1, "loss": 0.8, "mean_reward": 0.8,
+             "mean_ratio": 0.9, "n_samples": 4},
+            {"type": "done", "adapter_path": "/fake/grpo_adapter"},
+        ]
+
+        class FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            def create_grpo_job(self, model_id, prompts, config, adapter_name=""):
+                return {"job_id": "grpo-job-1", "model_id": model_id,
+                        "prompts": prompts, "adapter_name": adapter_name}
+
+            def wait_for_grpo_job(self, job_id, on_progress=None, poll_interval=2.0,
+                                  timeout=86400.0):
+                if on_progress is not None:
+                    on_progress({"job_id": job_id, "status": job_status,
+                                 "events": events}, list(events))
+                return {"job_id": job_id, "status": job_status,
+                        "adapter_path": "/fake/grpo_adapter",
+                        "adapter_name": "grpo_run", "events": events}
+
+        monkeypatch.setattr("fusion_trainer.rlsl.grpo.MLXFineTuneClient", FakeClient)
+
+    def test_true_grpo_completed(self, monkeypatch, tmp_path):
+        self._patch_grpo_client(monkeypatch)
+        cfg = TrainerConfig(
+            dataset=DatasetConfig(path="/tmp/grpo.jsonl"),
+            sft=SFTConfig(model="qwen-7b", lora_rank=8, lora_alpha=16.0),
+            rlsl=RLSLConfig(
+                method="grpo",
+                grpo_backend="grpo",
+                run_name="true_grpo",
+                sandbox_mode="math",
+                group_size=4,
+                grpo_iterations=2,
+                response_length=64,
+            ),
+            cache_path=str(tmp_path),
+        )
+        t = GRPOTrainer(cfg)
+        data = [{"prompt": "2+3=?", "answer": "5"}]
+        result = t.train(data)
+        assert result["status"] == "completed"
+        assert result["method"] == "grpo"
+        assert result["backend"] == "grpo"
+        assert result["adapter_path"] == "/fake/grpo_adapter"
+        assert result["num_prompts"] == 1
+
+    def test_true_grpo_empty_prompts_noop(self, monkeypatch, tmp_path):
+        self._patch_grpo_client(monkeypatch)
+        cfg = TrainerConfig(
+            dataset=DatasetConfig(path="/tmp/grpo.jsonl"),
+            sft=SFTConfig(model="m"),
+            rlsl=RLSLConfig(method="grpo", grpo_backend="grpo", run_name="g"),
+            cache_path=str(tmp_path),
+        )
+        t = GRPOTrainer(cfg)
+        result = t.train([{"prompt": ""}, {}])
+        assert result["status"] == "completed"
+        assert result["iterations"] == 0
+        assert result["num_prompts"] == 0
+
+    def test_true_grpo_failed_propagates(self, monkeypatch, tmp_path):
+        self._patch_grpo_client(monkeypatch, job_status="failed")
+        cfg = TrainerConfig(
+            dataset=DatasetConfig(path="/tmp/grpo.jsonl"),
+            sft=SFTConfig(model="m"),
+            rlsl=RLSLConfig(
+                method="grpo", grpo_backend="grpo", run_name="g",
+                sandbox_mode="off",
+            ),
+            cache_path=str(tmp_path),
+        )
+        t = GRPOTrainer(cfg)
+        result = t.train([{"prompt": "q", "answer": "5"}])
+        assert result["status"] == "failed"
+
+    def test_default_backend_is_rft(self, tmp_path):
+        # Without grpo_backend set, RFT path is used (existing behavior).
+        cfg = TrainerConfig(
+            dataset=DatasetConfig(path="/tmp/grpo.jsonl"),
+            sft=SFTConfig(model="m"),
+            rlsl=RLSLConfig(method="grpo", run_name="g"),
+            cache_path=str(tmp_path),
+        )
+        assert cfg.rlsl.grpo_backend == "rft"
+

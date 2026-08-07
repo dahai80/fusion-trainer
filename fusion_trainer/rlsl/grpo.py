@@ -5,33 +5,34 @@ GRPO samples G completions per prompt, computes group-relative advantages
 A_i = (r_i - mean(r)) / (std(r) + eps), and updates the policy with a
 clipped surrogate loss using the policy/ref logprob ratio.
 
-HTTP-only constraint: fusion-mlx currently has NO logprob/RL endpoint
-(upstream issue dahai80/fusion-mlx#363). True policy-gradient GRPO is
-therefore impossible without that upstream capability. Per the project
-rule ("只能对接fusion-mlx...遇到上游问题，先提issue，在提pr"), this
-trainer implements a **reward-filtered SFT approximation** of GRPO that
-runs entirely over the existing fine-tune HTTP API:
+Two backends (config.rlsl.grpo_backend):
 
-  For each GRPO iteration:
-    1. on-policy sample G completions per prompt via /v1/chat/completions
-    2. score each with the sandbox reward (sandbox.py)
-    3. compute group-relative advantage A_i = (r_i - mean_g) / (std_g + eps)
-    4. keep the top-k highest-advantage completions per prompt
-    5. stage those (prompt -> best completions) as chat SFT data
-    6. submit one SFT/LoRA fine-tune job to /admin/api/fine-tune/jobs
-    7. poll to completion, log real loss + mean reward
+  'rft' (default) — reward-filtered SFT approximation. Runs entirely over
+    the existing fine-tune HTTP API (no RL endpoint needed):
+      1. on-policy sample G completions per prompt via /v1/chat/completions
+      2. score each with the sandbox reward (sandbox.py)
+      3. compute group-relative advantage A_i = (r_i - mean_g) / (std_g + eps)
+      4. keep the top-k highest-advantage completions per prompt
+      5. stage those (prompt -> best completions) as chat SFT data
+      6. submit one SFT/LoRA fine-tune job to /admin/api/fine-tune/jobs
+      7. poll to completion, log real loss + mean reward
+    Converges toward higher-reward outputs (RFT/RAFT-style); shares GRPO's
+    group-relative ranking signal.
 
-This converges toward higher-reward outputs (RFT/RAFT-style) and shares
-GRPO's group-relative ranking signal. When fusion-mlx#363 lands a logprob
-endpoint, swap step 4-6 for a real ratio-based policy update with no
-change to the reward/sampling code here.
+  'grpo' — real policy-gradient GRPO via fusion-mlx /api/fine-tune/grpo/jobs
+    (upstream dahai80/fusion-mlx#363 Phase 2, landed 2026-08-05). fusion-mlx
+    runs the GRPO loop server-side and calls back a local reward HTTP endpoint
+    (reward_server.py -> sandbox.reward_completion) to score completions.
+    Per the project rule ("只能对接fusion-mlx...遇到上游问题，先提issue，
+    在提pr"), this path talks ONLY to fusion-mlx's HTTP API.
 
 Importers/callers: fusion_trainer.rlsl.pipeline.RLSLEngine (method="grpo")
 Affected API: GRPOTrainer(config).train(dataset) -> dict
 Data schemas:
   dataset: list of GRPO-prompt samples {"prompt": str, "answer"?, "tests"?, ...}
   generated: chat completion strings from fusion-mlx
-  staged SFT: {"messages": [{"role":"user",...},{"role":"assistant",...}]}
+  staged SFT (rft): {"messages": [{"role":"user",...},{"role":"assistant",...}]}
+  grpo job (grpo): {model_id, prompts:[str], config:GRPOConfig, adapter_name}
 """
 
 from __future__ import annotations
@@ -40,12 +41,15 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from ..config import TrainerConfig
 from ..mlx_client import MLXFineTuneClient, MLXFineTuneError
+
+if TYPE_CHECKING:
+    from ..experiment import ExperimentLogger
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +86,11 @@ class GRPOTrainer:
 
         if not self._model:
             raise ValueError("GRPO needs sft.model set to a fusion-mlx model id")
+
+        backend = self.rlsl_cfg.grpo_backend
+        logger.info("GRPO backend=%s", backend)
+        if backend == "grpo":
+            return self._run_true_grpo(dataset)
 
         g = max(2, int(self.rlsl_cfg.group_size))
         top_k = max(1, min(int(self.rlsl_cfg.reward_top_k), g))
@@ -160,8 +169,159 @@ class GRPOTrainer:
             "final_mean_reward": reward_trajectory[-1] if reward_trajectory else 0.0,
             "adapter_path": last_adapter,
             "adapter_name": self._adapter_name,
-            "note": "reward-filtered SFT approx; needs fusion-mlx#363 for true policy-gradient",
+            "note": "reward-filtered SFT approx (backend=rft); use grpo_backend=grpo for true policy-gradient",
         }
+
+    # ------------------------------------------------------------------
+    # True GRPO backend (fusion-mlx #363 Phase 2): /api/fine-tune/grpo/jobs
+    # ------------------------------------------------------------------
+
+    def _run_true_grpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
+        """Submit a real policy-gradient GRPO job to fusion-mlx.
+
+        Hosts a local reward HTTP endpoint (reward_server.py) that fusion-mlx
+        calls back to score completions with the sandbox reward. Polls the
+        job, streaming grpo_step events (loss, mean_reward, mean_ratio) into
+        ExperimentLogger. Returns a summary dict with the final adapter path.
+        """
+        from ..experiment import ExperimentLogger
+        from ..mlx_client import MLXFineTuneError
+        from .reward_server import RewardServer
+
+        prompts = [s.get("prompt", "") for s in dataset if s.get("prompt")]
+        if not prompts:
+            logger.warning("GRPO(grpo): no prompts with non-empty text, no-op")
+            return {
+                "status": "completed",
+                "method": "grpo",
+                "backend": "grpo",
+                "iterations": 0,
+                "num_prompts": 0,
+            }
+
+        g = max(2, int(self.rlsl_cfg.group_size))
+        iters = max(1, int(self.rlsl_cfg.grpo_iterations))
+        mode = self.rlsl_cfg.sandbox_mode
+        scale = float(self.rlsl_cfg.reward_scale)
+        adapter_name = self.rlsl_cfg.run_name or "grpo_run"
+
+        print("╔══ Fusion-Trainer GRPO (true, policy-gradient) ══════")
+        print(f"║  Model:      {self._model}")
+        print(f"║  Prompts:    {len(prompts)}")
+        print(f"║  Group G:    {g}")
+        print(f"║  Iters:      {iters}")
+        print(f"║  Sandbox:    {mode}  (scale={scale})")
+        print("║  Engine:     fusion-mlx /api/fine-tune/grpo/jobs")
+        print("╚══════════════════════════════════════════════════════")
+
+        exp = ExperimentLogger(
+            run_name=self.rlsl_cfg.run_name or "grpo_default",
+            output_dir=self._output_dir,
+        )
+
+        reward_server = RewardServer(dataset, mode=mode, scale=scale)
+        endpoint = reward_server.start()
+        final_status = "completed"
+        last_adapter = ""
+        job_id = ""
+        try:
+            cfg = {
+                "group_size": g,
+                "iters": iters,
+                "batch_size": max(1, int(self.rlsl_cfg.batch_size)),
+                "learning_rate": float(self.rlsl_cfg.learning_rate),
+                "lora_layers": 16,
+                "lora_rank": int(self.config.sft.lora_rank),
+                "lora_alpha": float(self.config.sft.lora_alpha),
+                "lora_dropout": float(self.config.sft.lora_dropout),
+                "max_completion_len": int(self.rlsl_cfg.response_length),
+                "clip_ratio": float(self.rlsl_cfg.clip_epsilon),
+                "reward_endpoint": endpoint,
+                "temperature": float(self.rlsl_cfg.temperature),
+                "seed": int(self.config.seed),
+            }
+            job = self._client.create_grpo_job(
+                model_id=self._model,
+                prompts=prompts,
+                config=cfg,
+                adapter_name=adapter_name,
+            )
+            job_id = job.get("job_id", "")
+            print(f"      Submitted GRPO job: {job_id}  reward_endpoint={endpoint}")
+
+            try:
+                final_job = self._client.wait_for_grpo_job(
+                    job_id,
+                    on_progress=lambda j, ev: self._ingest_grpo_progress(
+                        j, ev, exp
+                    ),
+                    poll_interval=2.0,
+                )
+            except MLXFineTuneError as exc:
+                print(f"      ✗ GRPO job failed: {exc}")
+                exp.save()
+                return {
+                    "status": "failed",
+                    "error": str(exc),
+                    "method": "grpo",
+                    "backend": "grpo",
+                    "job_id": job_id,
+                    "output_dir": str(self._output_dir),
+                }
+
+            status = final_job.get("status", "")
+            if status != "completed":
+                final_status = status
+                logger.error("GRPO job ended with status: %s", status)
+            last_adapter = final_job.get("adapter_path", "")
+            self._adapter_name = final_job.get("adapter_name", adapter_name)
+        finally:
+            reward_server.stop()
+
+        exp.save()
+        print("\n      ✓ GRPO complete!")
+        print(f"      Final adapter: {last_adapter}")
+        return {
+            "status": final_status,
+            "method": "grpo",
+            "backend": "grpo",
+            "iterations": iters,
+            "num_prompts": len(prompts),
+            "group_size": g,
+            "job_id": job_id,
+            "adapter_path": last_adapter,
+            "adapter_name": self._adapter_name,
+            "output_dir": str(self._output_dir),
+            "note": "true policy-gradient GRPO via fusion-mlx #363 Phase 2",
+        }
+
+    def _ingest_grpo_progress(
+        self,
+        job: dict[str, Any],
+        new_events: list[dict[str, Any]],
+        exp_logger: ExperimentLogger,
+    ) -> None:
+        """Stream fusion-mlx GRPO grpo_step events into ExperimentLogger."""
+        for ev in new_events:
+            etype = ev.get("type", "")
+            if etype == "grpo_step":
+                step = ev.get("iter", 0)
+                exp_logger.log_metrics(
+                    step=step,
+                    metrics={
+                        "grpo_loss": ev.get("loss", 0.0),
+                        "mean_reward": ev.get("mean_reward", 0.0),
+                        "mean_ratio": ev.get("mean_ratio", 0.0),
+                        "n_samples": ev.get("n_samples", 0),
+                    },
+                )
+                print(
+                    f"      iter {step:4d}  loss={ev.get('loss', 0.0):.4f}  "
+                    f"mean_reward={ev.get('mean_reward', 0.0):.4f}  "
+                    f"ratio={ev.get('mean_ratio', 0.0):.4f}"
+                )
+            elif etype == "done":
+                logger.info("GRPO job done: adapter=%s", ev.get("adapter_path", ""))
 
     # ------------------------------------------------------------------
     # Step 1-2: on-policy sampling + sandbox scoring

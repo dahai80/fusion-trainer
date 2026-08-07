@@ -202,6 +202,15 @@ class RLSLConfig:
     sandbox_mode: Literal["off", "code", "math", "auto"] = "off"
     """Sandbox reward source. 'code' executes tests, 'math' compares answers, 'auto' picks by dataset field."""
 
+    grpo_backend: Literal["rft", "grpo"] = "rft"
+    """GRPO execution backend.
+    'rft'  — reward-filtered SFT approximation (on-policy sample -> sandbox
+             score -> top-k -> SFT job via /admin/api/fine-tune/jobs). Works
+             today; converges toward higher-reward outputs (RFT/RAFT-style).
+    'grpo' — real policy-gradient GRPO via fusion-mlx /api/fine-tune/grpo/jobs
+             (requires fusion-mlx #363 Phase 2). Trainer hosts a local reward
+             HTTP endpoint that fusion-mlx calls back to score completions."""
+
     reward_top_k: int = 4
     """Keep top-k of G samples by reward for the SFT-style update (reward-filtered GRPO approximation)."""
 
