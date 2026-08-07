@@ -89,6 +89,7 @@ class SFTTrainer:
             max_seq_length=self.dataset_cfg.max_seq_length,
             input_field=self.dataset_cfg.input_field,
             output_field=self.dataset_cfg.output_field,
+            remove_duplicates=self.dataset_cfg.remove_duplicates,
         )
         print(f"      Train: {len(train_data)} samples")
         print(f"      Val:   {len(val_data)} samples")
