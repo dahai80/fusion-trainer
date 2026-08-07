@@ -50,11 +50,13 @@ fusion-* products (consumption layer)
 - MXFP8 mixed precision training (MLX-native)
 
 ### Reinforcement Learning from Supervised Learning (RLSL)
-- **DPO** — Direct Preference Optimization (no reward model needed)
-- **ORPO** — Odds Ratio Preference Optimization (single-stage SFT + alignment)
-- **RLSL** — Full PPO-light pipeline with reward model training
-- **GRPO** — Group Relative Policy Optimization with sandbox reward (math + code). Samples G completions per prompt, scores them in a deterministic sandbox, keeps the top-k by group-relative advantage, and runs a reward-filtered SFT update through the fusion-mlx fine-tune API. Converges toward higher reward without an external reward model. (True policy-gradient GRPO needs a logprob endpoint tracked upstream in fusion-mlx#363.)
+- **GRPO** ✅ — Group Relative Policy Optimization with sandbox reward (math + code). Two backends: `rft` (reward-filtered SFT approximation, default) and `grpo` (true policy-gradient via fusion-mlx `/api/fine-tune/grpo/jobs`, #363 Phase 2). See [GRPO backend](#5-run-grpo-with-sandbox-reward).
+- **DPO** ⏳ — Direct Preference Optimization. **Upstream-blocked**: needs a fusion-mlx DPO endpoint (tracked in [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)). `DPOTrainer.train` raises `RLSLUnsupportedError` until then — use GRPO instead.
+- **ORPO** ⏳ — Odds Ratio Preference Optimization. **Upstream-blocked** ([fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)); `ORPOTrainer.train` raises `RLSLUnsupportedError`.
+- **RLSL** ⏳ — Full PPO-light pipeline with reward model training. **Upstream-blocked** ([fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)); `RewardTrainer.train`/`predict` raise `RLSLUnsupportedError`.
 - Designed for M5 96GB unified memory (14B–32B models)
+
+> **Why DPO/ORPO/RLSL raise instead of training:** per the project rule, fusion-trainer talks **only** to fusion-mlx over HTTP and never imports `mlx-lm` directly. These methods need in-model logprob + gradient updates, which must live in fusion-mlx. Until [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) lands, they fail visibly rather than silently returning fake "completed" results. GRPO is fully available today.
 
 ### Experiment Tracking
 - Metrics logging with TensorBoard support

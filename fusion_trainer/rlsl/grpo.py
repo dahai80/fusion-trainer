@@ -252,9 +252,7 @@ class GRPOTrainer:
             try:
                 final_job = self._client.wait_for_grpo_job(
                     job_id,
-                    on_progress=lambda j, ev: self._ingest_grpo_progress(
-                        j, ev, exp
-                    ),
+                    on_progress=lambda j, ev: self._ingest_grpo_progress(j, ev, exp),
                     poll_interval=2.0,
                 )
             except MLXFineTuneError as exc:

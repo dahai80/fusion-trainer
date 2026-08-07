@@ -119,7 +119,14 @@ class RLSLEngine:
         return trainer.train(dataset)
 
     def _run_rlsl(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
-        """Run full RLSL pipeline (Reward Model + PPO-light)."""
+        """Run full RLSL pipeline (Reward Model + PPO-light).
+
+        Phase 1 trains a reward model; Phase 2 runs a PPO-light loop. Both need
+        in-model gradient updates that, per the project rule, must live in
+        fusion-mlx. Neither endpoint exists yet (fusion-mlx#399), so Phase 1's
+        RewardTrainer.train raises RLSLUnsupportedError and this method never
+        reaches the placeholder Phase 2.
+        """
         print("\n  [Phase 1/2] Training Reward Model...")
         rm_trainer = RewardTrainer(self.config)
         rm_result = rm_trainer.train(dataset)
