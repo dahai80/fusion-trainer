@@ -175,7 +175,7 @@ class TestCheckpointing:
             trainer = SFTTrainer(cfg)
             from fusion_trainer.experiment import ExperimentLogger
 
-            logger = ExperimentLogger("test", tmpdir)
+            logger = ExperimentLogger("test", tmpdir, enable_tensorboard=False)
             path = trainer._save_checkpoint(100, logger)
             assert path is not None
             ckpt_dir = Path(path)
@@ -224,7 +224,7 @@ class TestCheckpointing:
             trainer = SFTTrainer(cfg)
             from fusion_trainer.experiment import ExperimentLogger
 
-            logger = ExperimentLogger("test", tmpdir)
+            logger = ExperimentLogger("test", tmpdir, enable_tensorboard=False)
 
             # Create 4 checkpoints
             for step in [100, 200, 300, 400]:
