@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 
 from fusion_trainer.config import DatasetConfig, RLSLConfig, SFTConfig, TrainerConfig
-from fusion_trainer.rlsl import DPOTrainer, ORPOTrainer, RewardTrainer, RLSLEngine
+from fusion_trainer.rlsl import (
+    DPOTrainer,
+    ORPOTrainer,
+    RewardTrainer,
+    RLSLEngine,
+    RLSLUnsupportedError,
+)
 
 
 def _make_preference_data(n: int = 5) -> list[dict]:
@@ -40,28 +46,22 @@ class TestRewardTrainer:
         trainer = RewardTrainer(_make_config())
         assert trainer is not None
 
-    def test_train(self):
+    def test_train_raises_upstream_unsupported(self):
+        # RM training needs fusion-mlx endpoint (fusion-mlx#399) -> fail visibly.
         trainer = RewardTrainer(_make_config("rlsl"))
         data = _make_preference_data(3)
-        result = trainer.train(data)
-        assert result["status"] == "completed"
-        assert result["num_pairs"] == 3
+        with pytest.raises(RLSLUnsupportedError, match="fusion-mlx/issues/399"):
+            trainer.train(data)
 
     def test_train_empty(self):
         trainer = RewardTrainer(_make_config("rlsl"))
         result = trainer.train([])
         assert result["num_pairs"] == 0
 
-    def test_predict(self):
+    def test_predict_raises_upstream_unsupported(self):
         trainer = RewardTrainer(_make_config("rlsl"))
-        scores = trainer.predict("/fake/model", ["hello", "world"])
-        assert len(scores) == 2
-        assert all(s == 0.5 for s in scores)
-
-    def test_predict_empty(self):
-        trainer = RewardTrainer(_make_config("rlsl"))
-        scores = trainer.predict("/fake/model", [])
-        assert scores == []
+        with pytest.raises(RLSLUnsupportedError, match="fusion-mlx/issues/399"):
+            trainer.predict("/fake/model", ["hello", "world"])
 
 
 # ===========================================================================
@@ -74,26 +74,12 @@ class TestDPOTrainer:
         trainer = DPOTrainer(_make_config("dpo"))
         assert trainer is not None
 
-    def test_train(self):
+    def test_train_raises_upstream_unsupported(self):
+        # DPO needs fusion-mlx endpoint (fusion-mlx#399) -> fail visibly.
         trainer = DPOTrainer(_make_config("dpo"))
         data = _make_preference_data(4)
-        result = trainer.train(data)
-        assert result["status"] == "completed"
-        assert result["method"] == "dpo"
-        assert result["num_pairs"] == 4
-        assert result["beta"] == 0.1
-
-    def test_train_custom_beta(self):
-        trainer = DPOTrainer(_make_config("dpo", beta=0.3))
-        data = _make_preference_data(2)
-        result = trainer.train(data)
-        assert result["beta"] == 0.3
-
-    def test_train_with_model(self):
-        trainer = DPOTrainer(_make_config("dpo"))
-        data = _make_preference_data(2)
-        result = trainer.train(data, base_model="mock", tokenizer="mock")
-        assert result["status"] == "completed"
+        with pytest.raises(RLSLUnsupportedError, match="fusion-mlx/issues/399"):
+            trainer.train(data)
 
     def test_train_empty(self):
         trainer = DPOTrainer(_make_config("dpo"))
@@ -111,26 +97,12 @@ class TestORPOTrainer:
         trainer = ORPOTrainer(_make_config("orpo"))
         assert trainer is not None
 
-    def test_train(self):
+    def test_train_raises_upstream_unsupported(self):
+        # ORPO needs fusion-mlx endpoint (fusion-mlx#399) -> fail visibly.
         trainer = ORPOTrainer(_make_config("orpo"))
         data = _make_preference_data(3)
-        result = trainer.train(data)
-        assert result["status"] == "completed"
-        assert result["method"] == "orpo"
-        assert result["num_pairs"] == 3
-        assert result["beta"] == 0.1
-
-    def test_train_custom_beta(self):
-        trainer = ORPOTrainer(_make_config("orpo", beta=0.5))
-        data = _make_preference_data(2)
-        result = trainer.train(data)
-        assert result["beta"] == 0.5
-
-    def test_train_with_model(self):
-        trainer = ORPOTrainer(_make_config("orpo"))
-        data = _make_preference_data(2)
-        result = trainer.train(data, base_model="mock", tokenizer="mock")
-        assert result["status"] == "completed"
+        with pytest.raises(RLSLUnsupportedError, match="fusion-mlx/issues/399"):
+            trainer.train(data)
 
     def test_train_empty(self):
         trainer = ORPOTrainer(_make_config("orpo"))
@@ -166,9 +138,8 @@ class TestRLSLEngine:
                 cache_path=tmpdir,
             )
             engine = RLSLEngine(config)
-            result = engine.run()
-            assert result["status"] == "completed"
-            assert result["method"] == "dpo"
+            with pytest.raises(RLSLUnsupportedError, match="DPO alignment"):
+                engine.run()
 
     def test_run_orpo(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -187,8 +158,8 @@ class TestRLSLEngine:
                 cache_path=tmpdir,
             )
             engine = RLSLEngine(config)
-            result = engine.run()
-            assert result["method"] == "orpo"
+            with pytest.raises(RLSLUnsupportedError, match="ORPO alignment"):
+                engine.run()
 
     def test_run_rlsl(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -209,9 +180,9 @@ class TestRLSLEngine:
                 cache_path=tmpdir,
             )
             engine = RLSLEngine(config)
-            result = engine.run()
-            assert result["method"] == "rlsl"
-            assert "reward_model" in result
+            # RLSL = RM training (Phase 1) -> unsupported upstream.
+            with pytest.raises(RLSLUnsupportedError, match="Reward-model training"):
+                engine.run()
 
     def test_run_empty_dataset_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -266,5 +237,5 @@ class TestRLSLEngine:
                 model_hub_path=str(hub_dir),
             )
             engine = RLSLEngine(config)
-            result = engine.run()
-            assert result["status"] == "completed"
+            with pytest.raises(RLSLUnsupportedError, match="DPO alignment"):
+                engine.run()

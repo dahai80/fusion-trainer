@@ -6,10 +6,16 @@ explicit reward modeling or PPO.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..config import TrainerConfig
 from ..dataset import DatasetLoader
+from ._errors import RLSLUnsupportedError
+
+logger = logging.getLogger(__name__)
+
+_UPSTREAM_ISSUE = "https://github.com/dahai80/fusion-mlx/issues/399"
 
 
 class DPOTrainer:
@@ -39,34 +45,29 @@ class DPOTrainer:
             tokenizer: Pre-loaded tokenizer (optional).
 
         Returns:
-            Training summary dict.
+            Training summary dict (noop for empty dataset).
         """
+        total_pairs = len(dataset)
+        if total_pairs == 0:
+            logger.warning("DPO: empty dataset, no-op")
+            return {"status": "completed", "num_pairs": 0, "method": "dpo"}
 
         beta = self.rlsl_cfg.beta
         lr = self.rlsl_cfg.learning_rate
-
-        print("  [DPO] Running DPO alignment...")
-        print(f"       Dataset: {len(dataset)} preference pairs")
+        print("  [DPO] DPO alignment requested")
+        print(f"       Dataset: {total_pairs} preference pairs")
         print(f"       Beta: {beta}")
         print(f"       Learning rate: {lr}")
         print(f"       Epochs: {self.rlsl_cfg.num_epochs}")
 
-        # Placeholder: actual DPO training loop goes here
-        # In production, this would:
-        #   1. Load the SFT model as reference + policy
-        #   2. For each batch:
-        #      - Compute log probs for chosen and rejected
-        #      - DPO loss = -log σ(β(log π(chosen) - log π_ref(chosen)
-        #                         - β(log π(rejected) - log π_ref(rejected)))
-        #      - Gradient update on policy model
-        #   3. Save the aligned model adapter
-
-        total_pairs = len(dataset)
-        print(f"  [DPO] Training complete. {total_pairs} pairs processed.")
-
-        return {
-            "status": "completed",
-            "num_pairs": total_pairs,
-            "method": "dpo",
-            "beta": beta,
-        }
+        # DPO needs in-model logprob + gradient updates on chosen/rejected.
+        # Per the project rule this must run in fusion-mlx, whose DPO endpoint
+        # does not exist yet (tracked in %s). Fail visibly — no fake training.
+        logger.error(
+            "DPO unsupported: fusion-mlx has no DPO endpoint yet (%s)", _UPSTREAM_ISSUE
+        )
+        raise RLSLUnsupportedError(
+            f"DPO alignment is not available: fusion-mlx has no DPO training "
+            f"endpoint yet (upstream {_UPSTREAM_ISSUE}). Use GRPO "
+            f"(method=grpo, already supported) or wait for the upstream fix."
+        )

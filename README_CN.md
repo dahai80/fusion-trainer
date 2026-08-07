@@ -49,10 +49,13 @@ fusion-* 产品（消费层）
 - MXFP8 混合精度训练（MLX 原生）
 
 ### 强化监督学习（RLSL）
-- **DPO** — 直接偏好优化（无需奖励模型）
-- **ORPO** — 胜率比偏好优化（单阶段 SFT+对齐）
-- **RLSL** — 完整 PPO-light 流水线（含奖励模型训练）
+- **GRPO** ✅ — 带沙盒奖励的组相对策略优化（数学 + 代码）。两种后端：`rft`（奖励过滤 SFT 近似，默认）与 `grpo`（经 fusion-mlx `/api/fine-tune/grpo/jobs` 的真实策略梯度，#363 Phase 2）。
+- **DPO** ⏳ — 直接偏好优化。**上游阻塞**：需要 fusion-mlx DPO 端点（见 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）。在此之前 `DPOTrainer.train` 抛 `RLSLUnsupportedError` —— 请改用 GRPO。
+- **ORPO** ⏳ — 胜率比偏好优化。**上游阻塞**（[fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）；`ORPOTrainer.train` 抛 `RLSLUnsupportedError`。
+- **RLSL** ⏳ — 完整 PPO-light 流水线（含奖励模型训练）。**上游阻塞**（[fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）；`RewardTrainer.train`/`predict` 抛 `RLSLUnsupportedError`。
 - 专为 M5 96GB 统一内存设计（14B–32B 模型）
+
+> **为何 DPO/ORPO/RLSL 抛错而非训练：** 按项目规则，fusion-trainer **只**通过 HTTP 对接 fusion-mlx，绝不直接 import `mlx-lm`。这些方法需要模型内 logprob + 梯度更新，必须由 fusion-mlx 承载。在 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) 落地前，它们显式失败而非静默返回假 "completed"。GRPO 当前已完整可用。
 
 ### 实验追踪
 - 指标日志记录，支持 TensorBoard
