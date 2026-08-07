@@ -8,11 +8,19 @@ from __future__ import annotations
 import os
 import tempfile
 
+import click
+import typer
 from typer.testing import CliRunner
 
 from fusion_trainer.cli import _parse_dataset_arg, app
 
 runner = CliRunner()
+
+
+def _cli_params(command: str) -> dict[str, click.Parameter]:
+    # 渲染后的 --help 文本宽度随终端/rich 版本变化(CI 非 TTY 环境下 option 行会折叠),
+    # 用 click 注册参数做确定性断言,不依赖渲染文本。见 Rule 5。
+    return {p.name: p for p in typer.main.get_command(app).commands[command].params}
 
 
 # ===========================================================================
@@ -108,15 +116,16 @@ class TestCLIHelp:
         result = runner.invoke(app, ["sft", "--help"])
         assert result.exit_code == 0
         assert "Run supervised fine-tuning" in result.stdout
-        assert "--model-hub-path" in result.stdout
         assert "hub:" in result.stdout
+        # 渲染宽度敏感,改用注册参数确定性断言
+        assert "model_hub_path" in _cli_params("sft")
 
     def test_rlsl_help(self):
         result = runner.invoke(app, ["rlsl", "--help"])
         assert result.exit_code == 0
         assert "Run RLSL" in result.stdout
-        assert "--model-hub-path" in result.stdout
         assert "hub:" in result.stdout
+        assert "model_hub_path" in _cli_params("rlsl")
 
     def test_no_dataset_command(self):
         result = runner.invoke(app, ["dataset", "--help"])
@@ -149,7 +158,7 @@ class TestCLIPreset:
     def test_sft_help_lists_preset(self):
         result = runner.invoke(app, ["sft", "--help"])
         assert result.exit_code == 0
-        assert "--preset" in result.stdout
+        assert "preset" in _cli_params("sft")
 
     def test_unknown_preset_rejected(self, monkeypatch):
         called: dict = {}
