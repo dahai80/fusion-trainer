@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -68,6 +69,12 @@ def sft(
         "--dataset",
         "-d",
         help="Dataset file path, or 'hub:category/name' to load from model hub",
+    ),
+    preset: str = typer.Option(
+        "",
+        "--preset",
+        "-p",
+        help="Named preset from SFT_PRESETS (e.g. sft_7b_lora). Loads hyperparameters; CLI flags still override the preset.",
     ),
     output_dir: str = typer.Option(
         "",
@@ -140,11 +147,57 @@ def sft(
       - A local file path:  --dataset /path/to/data.jsonl
       - A hub reference:    --dataset hub:sft/my_dataset
         Resolved as: {model_hub_path}/datasets/sft/my_dataset.jsonl
+
+    Use --preset to load a named hyperparameter bundle (e.g. sft_7b_lora,
+    sft_14b_qlora) from SFT_PRESETS. Explicit CLI flags override the preset.
     """
+    import logging
+
     from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
+    from fusion_trainer.sft.presets import SFT_PRESETS
     from fusion_trainer.sft.trainer import SFTTrainer
 
+    log = logging.getLogger(__name__)
+
+    # --preset seeds SFTConfig from a named bundle. Preset values fill the
+    # exposed CLI options only when the user did NOT pass that flag (detected
+    # by comparing to the option default), and always fill the fields the CLI
+    # does not expose (lora_alpha, dropout, target_modules, lr_scheduler,
+    # warmup_steps, weight_decay, max_grad_norm, gradient_accumulation_steps).
+    preset_vals: dict = {}
+    if preset:
+        if preset not in SFT_PRESETS:
+            raise typer.BadParameter(
+                f"Unknown preset '{preset}'. Available: {', '.join(sorted(SFT_PRESETS))}"
+            )
+        preset_vals = SFT_PRESETS[preset]
+        log.info("Loaded preset '%s' (%s)", preset, preset_vals.get("description", ""))
+        method = _preset_or_flag(method, preset_vals, "method", "lora")
+        lora_rank = _preset_or_flag(lora_rank, preset_vals, "lora_rank", 16)
+        batch_size = _preset_or_flag(batch_size, preset_vals, "batch_size", 1)
+        learning_rate = _preset_or_flag(
+            learning_rate, preset_vals, "learning_rate", 2e-5
+        )
+        num_epochs = _preset_or_flag(num_epochs, preset_vals, "num_epochs", 3)
+        max_seq_length = _preset_or_flag(
+            max_seq_length, preset_vals, "max_seq_length", 4096
+        )
+
     _path, _hub_dataset = _parse_dataset_arg(dataset)
+
+    sft_cfg = SFTConfig(
+        model=model,
+        method=method,  # type: ignore[arg-type]
+        lora_rank=lora_rank,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        num_epochs=num_epochs,
+        use_mxfp8=use_mxfp8,
+        run_name=run_name,
+        output_dir=output_dir,
+    )
+    if preset_vals:
+        _apply_preset_extras(sft_cfg, preset_vals)
 
     cfg = TrainerConfig(
         seed=seed,
@@ -154,17 +207,7 @@ def sft(
             hub_dataset=_hub_dataset,
             max_seq_length=max_seq_length,
         ),
-        sft=SFTConfig(
-            model=model,
-            method=method,  # type: ignore[arg-type]
-            lora_rank=lora_rank,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-            num_epochs=num_epochs,
-            use_mxfp8=use_mxfp8,
-            run_name=run_name,
-            output_dir=output_dir,
-        ),
+        sft=sft_cfg,
     )
 
     trainer = SFTTrainer(cfg)
@@ -338,6 +381,55 @@ def info():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _preset_or_flag(
+    flag_val: Any,
+    preset_vals: dict,
+    key: str,
+    option_default: Any,
+) -> Any:
+    """Return the preset value when the user did NOT pass the CLI flag.
+
+    Typer fills in the option default when a flag is absent, so "not passed"
+    is detected by equality with option_default. If the user passed the flag
+    (flag_val != option_default), their value wins.
+    """
+    if flag_val == option_default:
+        return preset_vals.get(key, flag_val)
+    return flag_val
+
+
+def _apply_preset_extras(sft_cfg: Any, preset_vals: dict) -> None:
+    """Fill SFTConfig fields the CLI does not expose, from the preset.
+
+    Only sets fields present in the preset; leaves SFTConfig defaults intact
+    otherwise. Mutates sft_cfg in place.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    extras = [
+        "lora_alpha",
+        "lora_dropout",
+        "lora_target_modules",
+        "lr_scheduler",
+        "warmup_steps",
+        "weight_decay",
+        "max_grad_norm",
+        "gradient_accumulation_steps",
+        "model_type",
+    ]
+    for key in extras:
+        if key in preset_vals:
+            setattr(sft_cfg, key, preset_vals[key])
+    log.info(
+        "Preset extras applied: method=%s rank=%s alpha=%s grad_accum=%s",
+        sft_cfg.method,
+        sft_cfg.lora_rank,
+        sft_cfg.lora_alpha,
+        sft_cfg.gradient_accumulation_steps,
+    )
 
 
 def _parse_dataset_arg(arg: str) -> tuple[str, str]:

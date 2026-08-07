@@ -111,6 +111,12 @@ fusion-trainer dataset import /path/to/data.jsonl \
     --dataset /path/to/data.jsonl \
     --run-name my_first_finetune
 
+# --preset 从 SFT_PRESETS 加载超参数（method、lora_rank、lr、epochs 等）。
+# 显式 CLI 参数覆盖预设；CLI 未暴露的字段（lora_alpha、dropout、
+# target_modules、warmup、weight_decay、gradient_accumulation_steps）取自预设。
+# --preset 同时适用于 shell 脚本和 CLI：
+#   fusion-trainer sft --preset sft_7b_lora --model … --dataset …
+
 # 或使用配置文件
 fusion-trainer sft --config configs/sft_7b.yaml \
     --model qwen2.5-7b-4bit \

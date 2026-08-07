@@ -67,6 +67,9 @@ fi
 if [ -n "$DATASET" ]; then
     CMD="$CMD --dataset $DATASET"
 fi
+if [ -n "$PRESET" ]; then
+    CMD="$CMD --preset $PRESET"
+fi
 if [ -n "$OUTPUT" ]; then
     CMD="$CMD --output $OUTPUT"
 fi

@@ -139,6 +139,101 @@ class TestCLIHelp:
 
 
 # ===========================================================================
+# CLI preset option
+# ===========================================================================
+
+
+class TestCLIPreset:
+    """--preset loads SFT_PRESETS into SFTConfig; CLI flags override."""
+
+    def test_sft_help_lists_preset(self):
+        result = runner.invoke(app, ["sft", "--help"])
+        assert result.exit_code == 0
+        assert "--preset" in result.stdout
+
+    def test_unknown_preset_rejected(self, monkeypatch):
+        called: dict = {}
+
+        class FakeTrainer:
+            def __init__(self, cfg):
+                called["cfg"] = cfg
+
+            def train(self):
+                called["trained"] = True
+
+        monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
+        result = runner.invoke(
+            app,
+            ["sft", "--preset", "no_such_preset", "--model", "m", "--dataset", "/x.jsonl"],
+        )
+        assert result.exit_code != 0
+        assert "Unknown preset" in result.output
+
+    def test_preset_seeds_config(self, monkeypatch):
+        called: dict = {}
+
+        class FakeTrainer:
+            def __init__(self, cfg):
+                called["cfg"] = cfg
+
+            def train(self):
+                called["trained"] = True
+
+        monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
+        # sft_7b_full: method=full, gradient_accumulation_steps=8, lr=1e-5
+        result = runner.invoke(
+            app,
+            [
+                "sft",
+                "--preset",
+                "sft_7b_full",
+                "--model",
+                "qwen2.5-7b",
+                "--dataset",
+                "/data.jsonl",
+                "--run-name",
+                "preset_test",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        cfg = called["cfg"]
+        assert cfg.sft.method == "full"
+        assert cfg.sft.gradient_accumulation_steps == 8
+        assert cfg.sft.learning_rate == 1e-5
+        assert cfg.sft.lora_alpha == 32.0  # preset extra field applied
+        assert called.get("trained") is True
+
+    def test_cli_flag_overrides_preset(self, monkeypatch):
+        called: dict = {}
+
+        class FakeTrainer:
+            def __init__(self, cfg):
+                called["cfg"] = cfg
+
+            def train(self):
+                pass
+
+        monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
+        # sft_7b_lora has lora_rank=16; CLI --lora-rank 32 wins
+        result = runner.invoke(
+            app,
+            [
+                "sft",
+                "--preset",
+                "sft_7b_lora",
+                "--model",
+                "m",
+                "--dataset",
+                "/d.jsonl",
+                "--lora-rank",
+                "32",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert called["cfg"].sft.lora_rank == 32
+
+
+# ===========================================================================
 # CLI edge cases
 # ===========================================================================
 
