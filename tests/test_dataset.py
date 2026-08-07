@@ -493,6 +493,41 @@ class TestDatasetLoader:
             train, val = loader.load(path=str(p), val_ratio=0.0)
             assert len(train) == 0
 
+    def test_load_dedup_default_removes_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "data.jsonl"
+            with open(p, "w") as f:
+                f.write(json.dumps({"input": "dup", "output": "A"}) + "\n")
+                f.write(json.dumps({"input": "dup", "output": "A"}) + "\n")
+                f.write(json.dumps({"input": "uniq", "output": "B"}) + "\n")
+            loader = DatasetLoader()
+            train, val = loader.load(path=str(p), val_ratio=0.0)
+            assert len(train) == 2
+
+    def test_load_dedup_disabled_keeps_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "data.jsonl"
+            with open(p, "w") as f:
+                for _ in range(3):
+                    f.write(json.dumps({"input": "dup", "output": "A"}) + "\n")
+            loader = DatasetLoader()
+            train, val = loader.load(
+                path=str(p), val_ratio=0.0, remove_duplicates=False
+            )
+            assert len(train) == 3
+
+    def test_load_dedup_runs_before_split(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "data.jsonl"
+            with open(p, "w") as f:
+                for _ in range(8):
+                    f.write(json.dumps({"input": "dup", "output": "A"}) + "\n")
+                for i in range(2):
+                    f.write(json.dumps({"input": f"Q{i}", "output": f"A{i}"}) + "\n")
+            loader = DatasetLoader()
+            train, val = loader.load(path=str(p), val_ratio=0.5)
+            assert len(train) + len(val) == 3
+
     def test_preference(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir) / "pref.jsonl"

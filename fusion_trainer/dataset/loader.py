@@ -26,6 +26,7 @@ from .formats import (
     sharegpt_to_messages,
     validate_format,
 )
+from .transforms import deduplicate
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class DatasetLoader:
         max_seq_length: int = 4096,
         input_field: str = "text",
         output_field: str = "output",
+        remove_duplicates: bool = True,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Load a dataset, returning (train_data, val_data).
 
@@ -64,6 +66,9 @@ class DatasetLoader:
             max_seq_length: Truncate text fields to this length.
             input_field: Field name for input/prompt text.
             output_field: Field name for output/target text.
+            remove_duplicates: Drop exact-duplicate text entries (whitespace-
+                normalized, case-insensitive) before the train/val split.
+                Default True to match DatasetConfig.remove_duplicates.
 
         Returns:
             (train_data, val_data), each a list of dicts with 'input' and 'output' keys.
@@ -75,6 +80,20 @@ class DatasetLoader:
         data = load_dataset_file(resolved)
         if max_samples > 0 and len(data) > max_samples:
             data = data[:max_samples]
+
+        # Deduplicate before the split so identical samples don't leak across
+        # train/val and val counts stay correct.
+        if remove_duplicates:
+            before = len(data)
+            data = deduplicate(data)
+            if len(data) < before:
+                logger.info(
+                    "removed %d duplicate samples from %s (%d → %d)",
+                    before - len(data),
+                    resolved,
+                    before,
+                    len(data),
+                )
 
         # Split train/val
         if val_ratio > 0:
