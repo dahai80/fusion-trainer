@@ -121,6 +121,13 @@ fusion-trainer dataset import /path/to/data.jsonl \
     --dataset /path/to/data.jsonl \
     --run-name my_first_finetune
 
+# --preset loads hyperparameters (method, lora_rank, lr, epochs, …) from
+# SFT_PRESETS. Explicit CLI flags override the preset; fields the CLI does
+# not expose (lora_alpha, dropout, target_modules, warmup, weight_decay,
+# gradient_accumulation_steps) come from the preset. `--preset` works both
+# on the shell wrapper and the CLI directly:
+#   fusion-trainer sft --preset sft_7b_lora --model … --dataset …
+
 # Or with a config file
 fusion-trainer sft --config configs/sft_7b.yaml \
     --model qwen2.5-7b-4bit \
