@@ -44,20 +44,20 @@ fusion-* products (consumption layer)
 ### Supervised Fine-Tuning (SFT)
 - Real SFT loop over fusion-mlx HTTP fine-tune API (LoRA / DoRA / full)
 - LoRA fine-tuning (rank 8–32) for 7B–32B models
-- QLoRA ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` has no `quantize_base`/`qlora` (tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). `_build_mlx_config` raises `SFTUnsupportedError` on `method=qlora` rather than silently falling back to lora — use `lora` or `full` until upstream lands.
+- QLoRA ✅ — 4-bit quantized-base LoRA via fusion-mlx `FineTuneConfig` (`fine_tune_type=qlora`, `quantize_base=True`, `quant_bits=4`), landed in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402). `_build_mlx_config` maps `method=qlora` to these fields.
 - Domain-specific presets (code, finance, science)
 - **fusion-router-light presets** — 1.5B LoRA + 3B full, for the gateway intent classifier / spec-decoding draft model
-- MXFP8 mixed precision ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` has no `mxfp8` field (tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). Training runs at default precision today; `use_mxfp8=True` emits a warning (peak memory may exceed the preset estimate) rather than silently dropping the flag.
+- MXFP8 mixed precision ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` accepts `mxfp8` but the training loop still rejects it (service.py raises `ValueError`, tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). Training runs at default precision today; `use_mxfp8=True` emits a warning and trains at default precision (fail-visible) rather than silently dropping the flag.
 
 ### Reinforcement Learning from Supervised Learning (RLSL)
 - **GRPO** ✅ — Group Relative Policy Optimization with sandbox reward (math + code). Two backends: `rft` (reward-filtered SFT approximation, default) and `grpo` (true policy-gradient via fusion-mlx `/api/fine-tune/grpo/jobs`, #363 Phase 2). See [GRPO backend](#5-run-grpo-with-sandbox-reward).
-- **DPO** ⏳ — Direct Preference Optimization. **Upstream-blocked**: needs a fusion-mlx DPO endpoint (tracked in [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)). `DPOTrainer.train` raises `RLSLUnsupportedError` until then — use GRPO instead.
-- **ORPO** ⏳ — Odds Ratio Preference Optimization. **Upstream-blocked** ([fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)); `ORPOTrainer.train` raises `RLSLUnsupportedError`.
-- **RLSL** ⏳ — Full PPO-light pipeline with reward model training. **Upstream-blocked** ([fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)); `RewardTrainer.train`/`predict` raise `RLSLUnsupportedError`.
-- **RLSL presets** — `RLSL_PRESETS` (`fusion_trainer.rlsl.presets`) provides named GRPO hyperparameter bundles with `memory_estimate_gb` for M5 96GB planning: `rlsl_grpo_7b` (~22 GB, `rft` backend), `rlsl_grpo_14b` (~62 GB, `rft` backend), `rlsl_grpo_14b_true` (~62 GB, `grpo` backend, needs fusion-mlx #363 Phase 2). DPO/ORPO/RLSL presets are intentionally omitted (upstream-blocked, #399). CLI `--preset` support is SFT-only today; RLSL presets are for programmatic use and as documented reference configs.
+- **DPO** ✅ — Direct Preference Optimization via fusion-mlx `/admin/api/fine-tune/dpo/jobs` (landed in [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399), DPO-list bug fixed in [#420](https://github.com/dahai80/fusion-mlx/issues/420)). `DPOTrainer.train` builds a `DPOConfig` (iters, beta, lora params from SFT config), submits preference pairs, and polls to completion; the adapter is written to `output_dir`.
+- **ORPO** ✅ — Odds Ratio Preference Optimization via `/admin/api/fine-tune/orpo/jobs` ([fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)). Same shape as DPO but uses `lambda_odds` (mapped from `RLSLConfig.beta`) instead of the DPO temperature; no reference model.
+- **RLSL** ⏳ — Full PPO-light pipeline with reward model training. **Upstream-blocked**: fusion-mlx has no reward-model training endpoint (tracked in [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)); `RewardTrainer.train`/`predict` raise `RLSLUnsupportedError`. Use DPO/ORPO/GRPO instead.
+- **RLSL presets** — `RLSL_PRESETS` (`fusion_trainer.rlsl.presets`) provides named GRPO hyperparameter bundles with `memory_estimate_gb` for M5 96GB planning: `rlsl_grpo_7b` (~22 GB, `rft` backend), `rlsl_grpo_14b` (~62 GB, `rft` backend), `rlsl_grpo_14b_true` (~62 GB, `grpo` backend, needs fusion-mlx #363 Phase 2). DPO/ORPO presets are intentionally omitted (hyperparameters map from SFT config); RLSL (reward-model) presets are omitted (still upstream-blocked). CLI `--preset` support is SFT-only today; RLSL presets are for programmatic use and as documented reference configs.
 - Designed for M5 96GB unified memory (14B–32B models)
 
-> **Why DPO/ORPO/RLSL raise instead of training:** per the project rule, fusion-trainer talks **only** to fusion-mlx over HTTP and never imports `mlx-lm` directly. These methods need in-model logprob + gradient updates, which must live in fusion-mlx. Until [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) lands, they fail visibly rather than silently returning fake "completed" results. GRPO is fully available today.
+> **Why reward-model RLSL still raises:** per the project rule, fusion-trainer talks **only** to fusion-mlx over HTTP and never imports `mlx-lm` directly. Reward-model training needs an in-model logprob + gradient endpoint, which must live in fusion-mlx. Until [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) lands a reward endpoint, `RewardTrainer` fails visibly rather than silently returning fake "completed" results. DPO, ORPO and GRPO are fully available today.
 
 ### Experiment Tracking
 - Metrics logging with TensorBoard support — **on by default**, streams `add_scalar` per metric/step to `output_dir/tensorboard` (set `enable_tensorboard=False` to disable); JSONL streaming always runs alongside
@@ -73,12 +73,12 @@ fusion-* products (consumption layer)
 |---|---|---|---|
 | Full FT | 7B | ~32 GB | M5 96GB ✓ |
 | LoRA | 7B | ~16 GB | M5 96GB ✓ |
-| QLoRA (4-bit) ⏳ | 14B | ~28 GB | M5 96GB ✓ |
-| QLoRA (4-bit) ⏳ | 32B | ~48 GB | M5 96GB ✓ |
-| RM Training | 14B | ~22 GB | M5 96GB ✓ |
-| RLSL (PPO-light) | 14B | ~62 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ✅ | 14B | ~28 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ✅ | 32B | ~48 GB | M5 96GB ✓ |
+| RM Training ⏳ | 14B | ~22 GB | M5 96GB ✓ |
+| RLSL (PPO-light) ⏳ | 14B | ~62 GB | M5 96GB ✓ |
 
-All estimates assume MXFP8 mixed precision on Apple Silicon (⏳ = upstream-blocked, see [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402); today training runs at default precision, so actual peak memory may be higher).
+Memory estimates assume MXFP8 mixed precision on Apple Silicon. QLoRA is now real ([#402](https://github.com/dahai80/fusion-mlx/issues/402)); MXFP8 is still upstream-blocked (⏳, see [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)), so today training runs at default precision and actual peak memory may be higher. RM Training / RLSL (reward-model path) remain ⏳ ([#399](https://github.com/dahai80/fusion-mlx/issues/399)).
 
 ---
 

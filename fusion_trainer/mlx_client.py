@@ -13,6 +13,9 @@ Affected API:
   GET    /admin/api/fine-tune/jobs/{id}           — poll job status
   GET    /admin/api/fine-tune/jobs/{id}/stream    — SSE progress stream
   POST   /admin/api/fine-tune/jobs/{id}/cancel    — cancel job
+  POST   /admin/api/fine-tune/dpo/jobs            — create DPO job (#399)
+  POST   /admin/api/fine-tune/orpo/jobs           — create ORPO job (#399)
+  GET    /admin/api/fine-tune/dpo/jobs/{id}       — poll DPO/ORPO job (#399)
   GET    /admin/api/fine-tune/adapters            — list saved adapters
   POST   /admin/api/fine-tune/adapters/{model}/{name}/serve — serve adapter
 
@@ -35,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 JOBS_PATH = "/admin/api/fine-tune/jobs"
 GRPO_JOBS_PATH = "/api/fine-tune/grpo/jobs"
+DPO_JOBS_PATH = "/admin/api/fine-tune/dpo/jobs"
+ORPO_JOBS_PATH = "/admin/api/fine-tune/orpo/jobs"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
 
 
@@ -268,6 +273,112 @@ class MLXFineTuneClient:
                 return job
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"grpo job {job_id} timed out after {timeout}s")
+
+    # ------------------------------------------------------------------
+    # DPO/ORPO job lifecycle (fusion-mlx #399: /admin/api/fine-tune/dpo|orpo/jobs)
+    # ------------------------------------------------------------------
+
+    def create_dpo_job(
+        self,
+        model_id: str,
+        preference_pairs: list[dict[str, Any]],
+        config: dict[str, Any] | None = None,
+        adapter_name: str = "",
+        method: str = "dpo",
+    ) -> dict[str, Any]:
+        # method in {"dpo","orpo"}:选端点。fusion-mlx 路由会强制 config.method 匹配端点。
+        path = DPO_JOBS_PATH if method == "dpo" else ORPO_JOBS_PATH
+        body = {
+            "model_id": model_id,
+            "preference_pairs": preference_pairs,
+            "adapter_name": adapter_name,
+            "config": config or {},
+        }
+        logger.info(
+            "Creating %s job model=%s pairs=%d adapter=%s",
+            method.upper(),
+            model_id,
+            len(preference_pairs),
+            adapter_name or "(auto)",
+        )
+        resp = httpx.post(
+            f"{self._base}{path}",
+            json=body,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if resp.status_code >= 400:
+            raise MLXFineTuneError(
+                f"create_{method}_job failed {resp.status_code}: {resp.text}"
+            )
+        return resp.json()
+
+    def create_orpo_job(
+        self,
+        model_id: str,
+        preference_pairs: list[dict[str, Any]],
+        config: dict[str, Any] | None = None,
+        adapter_name: str = "",
+    ) -> dict[str, Any]:
+        return self.create_dpo_job(
+            model_id=model_id,
+            preference_pairs=preference_pairs,
+            config=config,
+            adapter_name=adapter_name,
+            method="orpo",
+        )
+
+    def get_dpo_job(self, job_id: str) -> dict[str, Any]:
+        # DPO 与 ORPO 共用 /dpo/jobs/{id} 查询端点(fusion-mlx 路由:GET /dpo/jobs/{id})。
+        resp = httpx.get(
+            f"{self._base}{DPO_JOBS_PATH}/{job_id}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def cancel_dpo_job(self, job_id: str) -> dict[str, Any]:
+        resp = httpx.post(
+            f"{self._base}{DPO_JOBS_PATH}/{job_id}/cancel",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_dpo_jobs(self) -> list[dict[str, Any]]:
+        resp = httpx.get(
+            f"{self._base}{DPO_JOBS_PATH}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def wait_for_dpo_job(
+        self,
+        job_id: str,
+        on_progress=None,
+        poll_interval: float = 2.0,
+        timeout: float = 86400.0,
+    ) -> dict[str, Any]:
+        # 轮询 DPO/ORPO job 到终态。事件流同 SFT/GRPO 模式。
+        deadline = time.monotonic() + timeout
+        last_seen = 0
+        while time.monotonic() < deadline:
+            job = self.get_dpo_job(job_id)
+            events = job.get("events", [])
+            if len(events) > last_seen:
+                new_events = events[last_seen:]
+                last_seen = len(events)
+                if on_progress is not None:
+                    on_progress(job, new_events)
+            status = job.get("status", "")
+            if status in ("completed", "failed", "cancelled"):
+                return job
+            time.sleep(poll_interval)
+        raise MLXFineTuneError(f"dpo job {job_id} timed out after {timeout}s")
 
     # ------------------------------------------------------------------
     # Adapter management

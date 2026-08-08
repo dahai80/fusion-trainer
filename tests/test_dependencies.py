@@ -68,6 +68,4 @@ class TestDependencyManifest:
         deps = _declared_deps()
         assert deps is not None
         for dep in deps:
-            assert not dep.startswith("file://"), (
-                f"file:// pin is non-portable: {dep}"
-            )
+            assert not dep.startswith("file://"), f"file:// pin is non-portable: {dep}"
