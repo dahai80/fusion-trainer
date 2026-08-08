@@ -173,7 +173,15 @@ class TestCLIPreset:
         monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
         result = runner.invoke(
             app,
-            ["sft", "--preset", "no_such_preset", "--model", "m", "--dataset", "/x.jsonl"],
+            [
+                "sft",
+                "--preset",
+                "no_such_preset",
+                "--model",
+                "m",
+                "--dataset",
+                "/x.jsonl",
+            ],
         )
         assert result.exit_code != 0
         assert "Unknown preset" in result.output

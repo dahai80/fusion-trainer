@@ -36,6 +36,51 @@ def _make_config(method: str = "dpo", **kwargs) -> TrainerConfig:
     )
 
 
+def _patch_pref_client(monkeypatch, final_status="completed"):
+    # Patch MLXFineTuneClient 让 DPO/ORPO 跑通,不连真实 fusion-mlx。
+    # 记录 create_dpo_job/create_orpo_job 调用供断言。
+    calls: list[dict] = []
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def create_dpo_job(
+            self, model_id, preference_pairs, config=None, adapter_name="", method="dpo"
+        ):
+            calls.append(
+                {
+                    "method": method,
+                    "model_id": model_id,
+                    "preference_pairs": preference_pairs,
+                    "config": config,
+                    "adapter_name": adapter_name,
+                }
+            )
+            return {"job_id": "fake-pref-job", "status": "queued"}
+
+        def create_orpo_job(
+            self, model_id, preference_pairs, config=None, adapter_name=""
+        ):
+            return self.create_dpo_job(
+                model_id, preference_pairs, config, adapter_name, method="orpo"
+            )
+
+        def wait_for_dpo_job(self, job_id, on_progress=None, **kw):
+            return {
+                "status": final_status,
+                "adapter_path": "/fake/adapters/dpo/adapter",
+                "adapter_name": "fake-adapter",
+            }
+
+    import fusion_trainer.rlsl.dpo as dpo_mod
+    import fusion_trainer.rlsl.orpo as orpo_mod
+
+    monkeypatch.setattr(dpo_mod, "MLXFineTuneClient", _FakeClient)
+    monkeypatch.setattr(orpo_mod, "MLXFineTuneClient", _FakeClient)
+    return calls
+
+
 # ===========================================================================
 # RewardTrainer
 # ===========================================================================
@@ -74,12 +119,29 @@ class TestDPOTrainer:
         trainer = DPOTrainer(_make_config("dpo"))
         assert trainer is not None
 
-    def test_train_raises_upstream_unsupported(self):
-        # DPO needs fusion-mlx endpoint (fusion-mlx#399) -> fail visibly.
+    def test_train_real(self, monkeypatch):
+        # fusion-mlx #399 已落地:DPO 经 /admin/api/fine-tune/dpo/jobs 真实训练。
+        # patch 须在实例化前(DPOTrainer.__init__ 创建 client)。
+        calls = _patch_pref_client(monkeypatch)
         trainer = DPOTrainer(_make_config("dpo"))
         data = _make_preference_data(4)
-        with pytest.raises(RLSLUnsupportedError, match="fusion-mlx/issues/399"):
-            trainer.train(data)
+        result = trainer.train(data)
+        assert result["status"] == "completed"
+        assert result["method"] == "dpo"
+        assert result["num_pairs"] == 4
+        assert calls[0]["method"] == "dpo"
+        assert calls[0]["model_id"] == "test-model"
+        assert len(calls[0]["preference_pairs"]) == 4
+        assert calls[0]["preference_pairs"][0]["prompt"] == "Q0"
+        assert "beta" in calls[0]["config"]
+
+    def test_train_no_model_raises(self, monkeypatch):
+        _patch_pref_client(monkeypatch)
+        config = _make_config("dpo")
+        config.sft.model = ""
+        trainer = DPOTrainer(config)
+        with pytest.raises(ValueError, match="sft.model"):
+            trainer.train(_make_preference_data(2))
 
     def test_train_empty(self):
         trainer = DPOTrainer(_make_config("dpo"))
@@ -97,12 +159,26 @@ class TestORPOTrainer:
         trainer = ORPOTrainer(_make_config("orpo"))
         assert trainer is not None
 
-    def test_train_raises_upstream_unsupported(self):
-        # ORPO needs fusion-mlx endpoint (fusion-mlx#399) -> fail visibly.
+    def test_train_real(self, monkeypatch):
+        # fusion-mlx #399 已落地:ORPO 经 /admin/api/fine-tune/orpo/jobs 真实训练。
+        calls = _patch_pref_client(monkeypatch)
         trainer = ORPOTrainer(_make_config("orpo"))
         data = _make_preference_data(3)
-        with pytest.raises(RLSLUnsupportedError, match="fusion-mlx/issues/399"):
-            trainer.train(data)
+        result = trainer.train(data)
+        assert result["status"] == "completed"
+        assert result["method"] == "orpo"
+        assert result["num_pairs"] == 3
+        assert calls[0]["method"] == "orpo"
+        assert calls[0]["model_id"] == "test-model"
+        assert "lambda_odds" in calls[0]["config"]
+
+    def test_train_no_model_raises(self, monkeypatch):
+        _patch_pref_client(monkeypatch)
+        config = _make_config("orpo")
+        config.sft.model = ""
+        trainer = ORPOTrainer(config)
+        with pytest.raises(ValueError, match="sft.model"):
+            trainer.train(_make_preference_data(2))
 
     def test_train_empty(self):
         trainer = ORPOTrainer(_make_config("orpo"))
@@ -121,7 +197,7 @@ class TestRLSLEngine:
         engine = RLSLEngine(config)
         assert engine is not None
 
-    def test_run_dpo_with_path(self):
+    def test_run_dpo_with_path(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = Path(tmpdir) / "pref.jsonl"
             import json
@@ -134,14 +210,18 @@ class TestRLSLEngine:
                     )
             config = TrainerConfig(
                 dataset=DatasetConfig(path=str(data_path)),
+                sft=SFTConfig(model="test-model"),
                 rlsl=RLSLConfig(method="dpo", run_name="test_dpo"),
                 cache_path=tmpdir,
             )
+            calls = _patch_pref_client(monkeypatch)
             engine = RLSLEngine(config)
-            with pytest.raises(RLSLUnsupportedError, match="DPO alignment"):
-                engine.run()
+            result = engine.run()
+            assert result["status"] == "completed"
+            assert calls[0]["method"] == "dpo"
+            assert len(calls[0]["preference_pairs"]) == 3
 
-    def test_run_orpo(self):
+    def test_run_orpo(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = Path(tmpdir) / "pref.jsonl"
             import json
@@ -154,12 +234,15 @@ class TestRLSLEngine:
                     )
             config = TrainerConfig(
                 dataset=DatasetConfig(path=str(data_path)),
+                sft=SFTConfig(model="test-model"),
                 rlsl=RLSLConfig(method="orpo", run_name="test_orpo"),
                 cache_path=tmpdir,
             )
+            calls = _patch_pref_client(monkeypatch)
             engine = RLSLEngine(config)
-            with pytest.raises(RLSLUnsupportedError, match="ORPO alignment"):
-                engine.run()
+            result = engine.run()
+            assert result["status"] == "completed"
+            assert calls[0]["method"] == "orpo"
 
     def test_run_rlsl(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -217,7 +300,7 @@ class TestRLSLEngine:
             with pytest.raises(ValueError, match="Unknown alignment method"):
                 engine.run()
 
-    def test_run_dpo_from_hub(self):
+    def test_run_dpo_from_hub(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
             hub_dir = Path(tmpdir)
             ds_dir = hub_dir / "datasets"
@@ -232,10 +315,14 @@ class TestRLSLEngine:
                     )
             config = TrainerConfig(
                 dataset=DatasetConfig(hub_dataset="pref_data"),
+                sft=SFTConfig(model="test-model"),
                 rlsl=RLSLConfig(method="dpo", run_name="hub_dpo"),
                 cache_path=tmpdir,
                 model_hub_path=str(hub_dir),
             )
+            calls = _patch_pref_client(monkeypatch)
             engine = RLSLEngine(config)
-            with pytest.raises(RLSLUnsupportedError, match="DPO alignment"):
-                engine.run()
+            result = engine.run()
+            assert result["status"] == "completed"
+            assert calls[0]["method"] == "dpo"
+            assert len(calls[0]["preference_pairs"]) == 3

@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
-from fusion_trainer.sft import SFTUnsupportedError
 from fusion_trainer.sft.trainer import SFTTrainer
 
 
@@ -32,7 +31,9 @@ def _make_config(
             lora_rank=16,
             lora_alpha=32.0,
             output_dir=output_dir,
-            use_mxfp8=kwargs.pop("use_mxfp8", False),  # default off; mxfp8 has its own test
+            use_mxfp8=kwargs.pop(
+                "use_mxfp8", False
+            ),  # default off; mxfp8 has its own test
             **kwargs,
         ),
         cache_path=cache_path or "/tmp",
@@ -115,7 +116,10 @@ class TestPrepareDataloader:
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(cache_path=tmpdir)
             trainer = SFTTrainer(cfg)
-            msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ho"}]
+            msgs = [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "ho"},
+            ]
             data = [{"messages": msgs}]
             result = trainer._prepare_dataloader(data)
             assert len(result) == 1
@@ -380,16 +384,22 @@ class TestRunTraining:
             assert result["lora_rank"] == 0
             assert calls[0]["config"]["fine_tune_type"] == "full"
 
-    def test_run_training_qlora_raises_upstream_blocked(self, monkeypatch):
+    def test_run_training_qlora_real(self, monkeypatch):
+        # fusion-mlx #402 已落地:qlora = fine_tune_type=qlora + quantize_base=True。
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(method="qlora", cache_path=tmpdir, num_epochs=1)
             trainer = SFTTrainer(cfg)
             train_loader = [{"input": "Q", "output": "A"}]
-            _patch_mlx_client(monkeypatch)
-            with pytest.raises(SFTUnsupportedError, match="fusion-mlx/issues/402"):
-                trainer._run_training(train_loader, [])
+            calls = _patch_mlx_client(monkeypatch)
+            result = trainer._run_training(train_loader, [])
+            assert result["status"] == "completed"
+            assert calls[0]["config"]["fine_tune_type"] == "qlora"
+            assert calls[0]["config"]["quantize_base"] is True
+            assert calls[0]["config"]["quant_bits"] == 4
 
     def test_run_training_mxfp8_warns_not_raises(self, monkeypatch, caplog):
+        # 上游 #402:mxfp8 字段已加但 service.py 仍 raise。不发送 mxfp8=True,
+        # 按默认精度训练并告警(fail-visible)。
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(
                 method="lora", cache_path=tmpdir, num_epochs=1, use_mxfp8=True
@@ -401,6 +411,7 @@ class TestRunTraining:
                 result = trainer._run_training(train_loader, [])
             assert result["status"] == "completed"
             assert calls[0]["config"]["fine_tune_type"] == "lora"
+            assert "mxfp8" not in calls[0]["config"]  # 不向上游发送未支持标志
             assert "MXFP8" in caplog.text
             assert "fusion-mlx/issues/402" in caplog.text
 
@@ -598,3 +609,99 @@ class TestRealFusionMLXIntegration:
             job_id = jobs[name]["job_id"]
             final = client.wait_for_job(job_id, timeout=300.0, poll_interval=2.0)
             assert final["status"] == "completed", f"{name} stuck: {final}"
+
+    def test_real_dpo_job_runs_and_writes_adapter(self, tmp_path):
+        # fusion-mlx #399 已落地:真实 DPO 训练。
+        client = MLXFineTuneClient(port=_real_mlx_port())
+        assert isinstance(client.health(), dict)
+
+        pairs = [
+            {
+                "prompt": f"What is {i}+1?",
+                "chosen": f"The answer is {i + 1}.",
+                "rejected": f"The answer is {i + 100}.",
+            }
+            for i in range(4)
+        ]
+        job = client.create_dpo_job(
+            model_id="Qwen3-0.6B-4bit",
+            preference_pairs=pairs,
+            config={"iters": 2, "batch_size": 1, "beta": 0.1},
+            adapter_name="ft_real_dpo",
+        )
+        job_id = job["job_id"]
+        assert job["status"] in ("queued", "running")
+
+        final = client.wait_for_dpo_job(job_id, timeout=300.0, poll_interval=2.0)
+        assert final["status"] == "completed", f"DPO job did not complete: {final}"
+        assert final.get("adapter_path"), "adapter_path missing on completed DPO job"
+        adapter_file = Path(final["adapter_path"])
+        assert adapter_file.exists(), f"DPO adapter not written: {adapter_file}"
+        assert adapter_file.stat().st_size > 0
+
+    def test_real_orpo_job_runs_and_writes_adapter(self, tmp_path):
+        # fusion-mlx #399 已落地:真实 ORPO 训练。
+        client = MLXFineTuneClient(port=_real_mlx_port())
+        assert isinstance(client.health(), dict)
+
+        pairs = [
+            {
+                "prompt": f"What is {i}+1?",
+                "chosen": f"The answer is {i + 1}.",
+                "rejected": f"The answer is {i + 100}.",
+            }
+            for i in range(4)
+        ]
+        job = client.create_orpo_job(
+            model_id="Qwen3-0.6B-4bit",
+            preference_pairs=pairs,
+            config={"iters": 2, "batch_size": 1, "lambda_odds": 1.0},
+            adapter_name="ft_real_orpo",
+        )
+        job_id = job["job_id"]
+        assert job["status"] in ("queued", "running")
+
+        final = client.wait_for_dpo_job(job_id, timeout=300.0, poll_interval=2.0)
+        assert final["status"] == "completed", f"ORPO job did not complete: {final}"
+        assert final.get("adapter_path"), "adapter_path missing on completed ORPO job"
+        adapter_file = Path(final["adapter_path"])
+        assert adapter_file.exists(), f"ORPO adapter not written: {adapter_file}"
+        assert adapter_file.stat().st_size > 0
+
+    def test_real_qlora_job_runs_and_writes_adapter(self, tmp_path):
+        # fusion-mlx #402 已落地:真实 QLoRA 训练(quantized-base LoRA)。
+        client = MLXFineTuneClient(port=_real_mlx_port())
+        assert isinstance(client.health(), dict)
+
+        samples = [
+            {
+                "messages": [
+                    {"role": "user", "content": f"What is {i}+1?"},
+                    {"role": "assistant", "content": f"{i + 1}"},
+                ]
+            }
+            for i in range(6)
+        ]
+        dataset_dir = MLXFineTuneClient.stage_dataset(samples, tmp_path / "qlora_data")
+
+        job = client.create_job(
+            model_id="Qwen3-0.6B-4bit",
+            dataset=dataset_dir,
+            config={
+                "fine_tune_type": "qlora",
+                "quantize_base": True,
+                "quant_bits": 4,
+                "iters": 2,
+                "batch_size": 1,
+            },
+            adapter_name="ft_real_qlora",
+        )
+        job_id = job["job_id"]
+        assert job["status"] in ("queued", "running")
+
+        final = client.wait_for_job(job_id, timeout=300.0, poll_interval=2.0)
+        assert final["status"] == "completed", f"QLoRA job did not complete: {final}"
+        assert final.get("adapter_path"), "adapter_path missing on completed QLoRA job"
+        adapter_file = Path(final["adapter_path"])
+        assert adapter_file.exists(), f"QLoRA adapter not written: {adapter_file}"
+        assert adapter_file.stat().st_size > 0

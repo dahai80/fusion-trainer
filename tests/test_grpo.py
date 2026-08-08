@@ -345,7 +345,10 @@ class TestRewardServer:
         try:
             resp = httpx.post(
                 endpoint,
-                json={"prompt": "2+3=?", "completions": ["<answer>5</answer>", "<answer>7</answer>"]},
+                json={
+                    "prompt": "2+3=?",
+                    "completions": ["<answer>5</answer>", "<answer>7</answer>"],
+                },
                 timeout=5.0,
             )
             assert resp.status_code == 200
@@ -392,10 +395,22 @@ class TestGRPOTrueBackend:
     def _patch_grpo_client(self, monkeypatch, job_status="completed", events=None):
         """Stub MLXFineTuneClient GRPO methods so no real HTTP."""
         events = events or [
-            {"type": "grpo_step", "iter": 0, "loss": 1.2, "mean_reward": 0.5,
-             "mean_ratio": 1.0, "n_samples": 4},
-            {"type": "grpo_step", "iter": 1, "loss": 0.8, "mean_reward": 0.8,
-             "mean_ratio": 0.9, "n_samples": 4},
+            {
+                "type": "grpo_step",
+                "iter": 0,
+                "loss": 1.2,
+                "mean_reward": 0.5,
+                "mean_ratio": 1.0,
+                "n_samples": 4,
+            },
+            {
+                "type": "grpo_step",
+                "iter": 1,
+                "loss": 0.8,
+                "mean_reward": 0.8,
+                "mean_ratio": 0.9,
+                "n_samples": 4,
+            },
             {"type": "done", "adapter_path": "/fake/grpo_adapter"},
         ]
 
@@ -404,17 +419,28 @@ class TestGRPOTrueBackend:
                 pass
 
             def create_grpo_job(self, model_id, prompts, config, adapter_name=""):
-                return {"job_id": "grpo-job-1", "model_id": model_id,
-                        "prompts": prompts, "adapter_name": adapter_name}
+                return {
+                    "job_id": "grpo-job-1",
+                    "model_id": model_id,
+                    "prompts": prompts,
+                    "adapter_name": adapter_name,
+                }
 
-            def wait_for_grpo_job(self, job_id, on_progress=None, poll_interval=2.0,
-                                  timeout=86400.0):
+            def wait_for_grpo_job(
+                self, job_id, on_progress=None, poll_interval=2.0, timeout=86400.0
+            ):
                 if on_progress is not None:
-                    on_progress({"job_id": job_id, "status": job_status,
-                                 "events": events}, list(events))
-                return {"job_id": job_id, "status": job_status,
-                        "adapter_path": "/fake/grpo_adapter",
-                        "adapter_name": "grpo_run", "events": events}
+                    on_progress(
+                        {"job_id": job_id, "status": job_status, "events": events},
+                        list(events),
+                    )
+                return {
+                    "job_id": job_id,
+                    "status": job_status,
+                    "adapter_path": "/fake/grpo_adapter",
+                    "adapter_name": "grpo_run",
+                    "events": events,
+                }
 
         monkeypatch.setattr("fusion_trainer.rlsl.grpo.MLXFineTuneClient", FakeClient)
 
@@ -463,7 +489,9 @@ class TestGRPOTrueBackend:
             dataset=DatasetConfig(path="/tmp/grpo.jsonl"),
             sft=SFTConfig(model="m"),
             rlsl=RLSLConfig(
-                method="grpo", grpo_backend="grpo", run_name="g",
+                method="grpo",
+                grpo_backend="grpo",
+                run_name="g",
                 sandbox_mode="off",
             ),
             cache_path=str(tmp_path),
@@ -481,4 +509,3 @@ class TestGRPOTrueBackend:
             cache_path=str(tmp_path),
         )
         assert cfg.rlsl.grpo_backend == "rft"
-

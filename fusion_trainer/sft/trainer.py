@@ -162,45 +162,34 @@ class SFTTrainer:
             formatted.append({"input": str(inp), "output": str(out)})
         return formatted
 
-
     def _build_mlx_config(self) -> dict[str, Any]:
         """Map SFTConfig → fusion-mlx FineTuneConfig dict.
 
-        fusion-mlx currently supports fine_tune_type = lora | dora | full and
-        has NO mxfp8 / quantize_base fields in FineTuneConfig
-        (fusion_mlx/training/service.py:51). QLoRA and MXFP8 therefore cannot
-        be honored over HTTP. Per Rule 12 (fail visibly), we raise
-        SFTUnsupportedError instead of silently dropping the flags or faking a
-        lora fallback. Tracked in fusion-mlx#402.
+        fusion-mlx #402 已落地:fine_tune_type = lora | dora | full | qlora,
+        FineTuneConfig 含 quantize_base / quant_bits / mxfp8 字段。
+        - QLoRA:fine_tune_type="qlora" + quantize_base=True,真实量化基座。
+        - MXFP8:上游 service.py 仍 raise(字段已加但训练未实现)。本仓库同步
+          fail-visible,不静默降精度(Rule 12)。
         """
-        from ._errors import SFTUnsupportedError
-
         method = self.sft_cfg.method
         upstream_issue = "https://github.com/dahai80/fusion-mlx/issues/402"
 
-        if method == "qlora":
-            logger.error(
-                "QLoRA (quantized-base LoRA) is not yet supported by fusion-mlx "
-                "(FineTuneConfig has no quantize_base/qlora). Refusing to silently "
-                "fall back to lora. Tracked in %s.", upstream_issue
-            )
-            raise SFTUnsupportedError(
-                "QLoRA training is not yet supported by fusion-mlx "
-                "(FineTuneConfig has no quantize_base/qlora fine_tune_type). "
-                f"Tracked in {upstream_issue}. "
-                "Use method='lora' or 'full' until upstream lands."
-            )
-
         if self.sft_cfg.use_mxfp8:
+            # 上游 FineTuneConfig.mxfp8 字段已存在,但 service.py 仍 raise
+            # "mxfp8 mixed-precision training is not yet supported"。
+            # 不向上游发送 mxfp8=True(否则 HTTP 报错);按默认精度训练并告警。
+            # 仍是 fail-visible:告警写明上游未落地,不静默吞掉用户意图(Rule 12)。
             logger.warning(
                 "MXFP8 mixed-precision training is not yet supported by fusion-mlx "
-                "(FineTuneConfig has no mxfp8 field). Training will run at default "
-                "precision — peak memory may exceed the preset estimate. "
-                "Set use_mxfp8=False to silence. Tracked in %s.",
+                "(service.py still raises). Training will run at default precision "
+                "— peak memory may exceed the preset estimate. Set use_mxfp8=False "
+                "to silence. Tracked in %s.",
                 upstream_issue,
             )
 
-        if method == "full":
+        if method == "qlora":
+            fine_tune_type = "qlora"
+        elif method == "full":
             fine_tune_type = "full"
         else:
             fine_tune_type = "lora"
@@ -228,6 +217,11 @@ class SFTTrainer:
             "mask_prompt": True,
             "seed": self.config.seed,
         }
+        if fine_tune_type == "qlora":
+            # QLoRA:量化基座 + LoRA。quant_bits 默认 4(上游 FineTuneConfig.quant_bits)。
+            cfg["quantize_base"] = True
+            cfg["quant_bits"] = 4
+            logger.info("QLoRA: fine_tune_type=qlora quantize_base=True quant_bits=4")
         return cfg
 
     def _run_training(
