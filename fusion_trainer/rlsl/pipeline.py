@@ -12,16 +12,23 @@ from external paths and writes outputs to its own cache directory.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from ..config import TrainerConfig
 from ..dataset import DatasetLoader
 from ..experiment import ExperimentLogger
+from ._errors import RLSLUnsupportedError
 from .dpo import DPOTrainer
 from .grpo import GRPOTrainer
 from .orpo import ORPOTrainer
 from .reward import RewardTrainer
+
+logger = logging.getLogger(__name__)
+
+# RLSL Phase 2 (PPO-light 策略梯度更新) 上游追踪 issue。
+_UPSTREAM_RLSL_PHASE2 = "https://github.com/dahai80/fusion-mlx/issues/399"
 
 
 class RLSLEngine:
@@ -121,24 +128,36 @@ class RLSLEngine:
     def _run_rlsl(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run full RLSL pipeline (Reward Model + PPO-light).
 
-        Phase 1 trains a reward model; Phase 2 runs a PPO-light loop. Both need
-        in-model gradient updates that, per the project rule, must live in
-        fusion-mlx. Neither endpoint exists yet (fusion-mlx#399), so Phase 1's
-        RewardTrainer.train raises RLSLUnsupportedError and this method never
-        reaches the placeholder Phase 2.
+        Phase 1 trains a reward model via fusion-mlx #424 (now landed).
+        Phase 2 runs a PPO-light policy-update loop, which needs an in-model
+        policy-gradient endpoint in fusion-mlx that does not exist yet
+        (tracked upstream). Phase 1 runs for real; Phase 2 fails visibly
+        rather than returning a fake "completed".
         """
         print("\n  [Phase 1/2] Training Reward Model...")
         rm_trainer = RewardTrainer(self.config)
         rm_result = rm_trainer.train(dataset)
+        if rm_result.get("status") != "completed":
+            return {
+                "status": "failed",
+                "method": "rlsl",
+                "phase": 1,
+                "reward_model": rm_result,
+                "num_pairs": len(dataset),
+            }
 
-        print("\n  [Phase 2/2] Running RLSL alignment...")
+        print("\n  [Phase 2/2] Running RLSL alignment (PPO-light)...")
         print(f"       KL coefficient: {self.rlsl_cfg.kl_coef}")
         print(f"       Clip epsilon: {self.rlsl_cfg.clip_epsilon}")
         print(f"       PPO epochs: {self.rlsl_cfg.ppo_epochs}")
-
-        return {
-            "status": "completed",
-            "method": "rlsl",
-            "reward_model": rm_result,
-            "num_pairs": len(dataset),
-        }
+        logger.error(
+            "RLSL Phase 2 (PPO-light) unsupported: fusion-mlx has no "
+            "policy-gradient endpoint yet (upstream %s)",
+            _UPSTREAM_RLSL_PHASE2,
+        )
+        raise RLSLUnsupportedError(
+            f"RLSL Phase 2 (PPO-light policy update) is not available: "
+            f"fusion-mlx has no policy-gradient training endpoint yet "
+            f"(upstream {_UPSTREAM_RLSL_PHASE2}). Phase 1 reward model trained "
+            f"successfully; use DPO/ORPO/GRPO for end-to-end alignment."
+        )

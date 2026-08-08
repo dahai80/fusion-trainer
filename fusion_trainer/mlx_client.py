@@ -16,6 +16,8 @@ Affected API:
   POST   /admin/api/fine-tune/dpo/jobs            — create DPO job (#399)
   POST   /admin/api/fine-tune/orpo/jobs           — create ORPO job (#399)
   GET    /admin/api/fine-tune/dpo/jobs/{id}       — poll DPO/ORPO job (#399)
+  POST   /admin/api/fine-tune/reward/jobs         — create reward-model job (#424)
+  GET    /admin/api/fine-tune/reward/jobs/{id}    — poll reward job (#424)
   GET    /admin/api/fine-tune/adapters            — list saved adapters
   POST   /admin/api/fine-tune/adapters/{model}/{name}/serve — serve adapter
 
@@ -40,6 +42,7 @@ JOBS_PATH = "/admin/api/fine-tune/jobs"
 GRPO_JOBS_PATH = "/api/fine-tune/grpo/jobs"
 DPO_JOBS_PATH = "/admin/api/fine-tune/dpo/jobs"
 ORPO_JOBS_PATH = "/admin/api/fine-tune/orpo/jobs"
+REWARD_JOBS_PATH = "/admin/api/fine-tune/reward/jobs"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
 
 
@@ -379,6 +382,95 @@ class MLXFineTuneClient:
                 return job
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"dpo job {job_id} timed out after {timeout}s")
+
+    # ------------------------------------------------------------------
+    # Reward-model job lifecycle (fusion-mlx #424:
+    # /admin/api/fine-tune/reward/jobs — Bradley-Terry value-head 训练)
+    # ------------------------------------------------------------------
+
+    def create_reward_job(
+        self,
+        model_id: str,
+        preference_pairs: list[dict[str, Any]],
+        config: dict[str, Any] | None = None,
+        adapter_name: str = "",
+    ) -> dict[str, Any]:
+        # 训练一个标量 reward head,使 chosen 分数 > rejected(Bradley-Terry)。
+        # preference_pairs 每对含 prompt/chosen/rejected。无 reference model。
+        body = {
+            "model_id": model_id,
+            "preference_pairs": preference_pairs,
+            "adapter_name": adapter_name,
+            "config": config or {},
+        }
+        logger.info(
+            "Creating REWARD job model=%s pairs=%d adapter=%s",
+            model_id,
+            len(preference_pairs),
+            adapter_name or "(auto)",
+        )
+        resp = httpx.post(
+            f"{self._base}{REWARD_JOBS_PATH}",
+            json=body,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if resp.status_code >= 400:
+            raise MLXFineTuneError(
+                f"create_reward_job failed {resp.status_code}: {resp.text}"
+            )
+        return resp.json()
+
+    def get_reward_job(self, job_id: str) -> dict[str, Any]:
+        resp = httpx.get(
+            f"{self._base}{REWARD_JOBS_PATH}/{job_id}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def cancel_reward_job(self, job_id: str) -> dict[str, Any]:
+        resp = httpx.post(
+            f"{self._base}{REWARD_JOBS_PATH}/{job_id}/cancel",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_reward_jobs(self) -> list[dict[str, Any]]:
+        resp = httpx.get(
+            f"{self._base}{REWARD_JOBS_PATH}",
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def wait_for_reward_job(
+        self,
+        job_id: str,
+        on_progress=None,
+        poll_interval: float = 2.0,
+        timeout: float = 86400.0,
+    ) -> dict[str, Any]:
+        # 轮询 reward job 到终态。progress 含 loss/reward_margin/acc_chosen。
+        deadline = time.monotonic() + timeout
+        last_seen = 0
+        while time.monotonic() < deadline:
+            job = self.get_reward_job(job_id)
+            events = job.get("events", [])
+            if len(events) > last_seen:
+                new_events = events[last_seen:]
+                last_seen = len(events)
+                if on_progress is not None:
+                    on_progress(job, new_events)
+            status = job.get("status", "")
+            if status in ("completed", "failed", "cancelled"):
+                return job
+            time.sleep(poll_interval)
+        raise MLXFineTuneError(f"reward job {job_id} timed out after {timeout}s")
 
     # ------------------------------------------------------------------
     # Adapter management

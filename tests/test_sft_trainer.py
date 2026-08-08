@@ -705,3 +705,34 @@ class TestRealFusionMLXIntegration:
         adapter_file = Path(final["adapter_path"])
         assert adapter_file.exists(), f"QLoRA adapter not written: {adapter_file}"
         assert adapter_file.stat().st_size > 0
+
+    def test_real_reward_job_runs_and_writes_adapter(self, tmp_path):
+        # fusion-mlx #424 已落地:真实 reward-model 训练(Bradley-Terry value head)。
+        client = MLXFineTuneClient(port=_real_mlx_port())
+        assert isinstance(client.health(), dict)
+
+        pairs = [
+            {
+                "prompt": f"What is {i}+1?",
+                "chosen": f"The answer is {i + 1}.",
+                "rejected": f"The answer is {i + 100}.",
+            }
+            for i in range(4)
+        ]
+        job = client.create_reward_job(
+            model_id="Qwen3-0.6B-4bit",
+            preference_pairs=pairs,
+            config={"iters": 4, "batch_size": 1, "learning_rate": 1e-4},
+            adapter_name="ft_real_reward",
+        )
+        job_id = job["job_id"]
+        assert job["status"] in ("queued", "running")
+
+        final = client.wait_for_reward_job(job_id, timeout=300.0, poll_interval=2.0)
+        assert final["status"] == "completed", f"reward job did not complete: {final}"
+        assert final.get("adapter_path"), "adapter_path missing on reward job"
+        adapter_file = Path(final["adapter_path"])
+        assert adapter_file.exists(), f"reward adapter not written: {adapter_file}"
+        assert adapter_file.stat().st_size > 0
+        progress = final.get("progress", {}) or {}
+        assert progress.get("reward_margin") is not None, "reward_margin missing"
