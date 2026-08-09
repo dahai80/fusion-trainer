@@ -40,7 +40,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 JOBS_PATH = "/admin/api/fine-tune/jobs"
-GRPO_JOBS_PATH = "/api/fine-tune/grpo/jobs"
+GRPO_JOBS_PATH = "/admin/api/fine-tune/grpo/jobs"
 DPO_JOBS_PATH = "/admin/api/fine-tune/dpo/jobs"
 ORPO_JOBS_PATH = "/admin/api/fine-tune/orpo/jobs"
 REWARD_JOBS_PATH = "/admin/api/fine-tune/reward/jobs"
