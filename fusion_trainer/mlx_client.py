@@ -18,6 +18,7 @@ Affected API:
   GET    /admin/api/fine-tune/dpo/jobs/{id}       — poll DPO/ORPO job (#399)
   POST   /admin/api/fine-tune/reward/jobs         — create reward-model job (#424)
   GET    /admin/api/fine-tune/reward/jobs/{id}    — poll reward job (#424)
+  POST   /admin/api/fine-tune/reward/score        — score completions with RM adapter (#431)
   GET    /admin/api/fine-tune/adapters            — list saved adapters
   POST   /admin/api/fine-tune/adapters/{model}/{name}/serve — serve adapter
 
@@ -43,6 +44,7 @@ GRPO_JOBS_PATH = "/api/fine-tune/grpo/jobs"
 DPO_JOBS_PATH = "/admin/api/fine-tune/dpo/jobs"
 ORPO_JOBS_PATH = "/admin/api/fine-tune/orpo/jobs"
 REWARD_JOBS_PATH = "/admin/api/fine-tune/reward/jobs"
+REWARD_SCORE_PATH = "/admin/api/fine-tune/reward/score"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
 
 
@@ -471,6 +473,41 @@ class MLXFineTuneClient:
                 return job
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"reward job {job_id} timed out after {timeout}s")
+
+    def score_reward(
+        self,
+        model_id: str,
+        adapter_name: str,
+        prompt: str,
+        completions: list[str],
+    ) -> dict[str, Any]:
+        # fusion-mlx #431: 用已训练的 RM adapter 对 (prompt, completions) 打分。
+        # POST /admin/api/fine-tune/reward/score -> {rewards, model_id, adapter_name}。
+        # 上游端点要求 model_id/adapter_name(可放 body 或 query),prompt 非空,
+        # completions 非空 list;不存在 adapter 返回 404,非 RM 返回 400。
+        body = {
+            "model_id": model_id,
+            "adapter_name": adapter_name,
+            "prompt": prompt,
+            "completions": completions,
+        }
+        logger.info(
+            "Scoring reward model=%s adapter=%s n_completions=%d",
+            model_id,
+            adapter_name,
+            len(completions),
+        )
+        resp = httpx.post(
+            f"{self._base}{REWARD_SCORE_PATH}",
+            json=body,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if resp.status_code >= 400:
+            raise MLXFineTuneError(
+                f"score_reward failed {resp.status_code}: {resp.text}"
+            )
+        return resp.json()
 
     # ------------------------------------------------------------------
     # Adapter management

@@ -736,3 +736,69 @@ class TestRealFusionMLXIntegration:
         assert adapter_file.stat().st_size > 0
         progress = final.get("progress", {}) or {}
         assert progress.get("reward_margin") is not None, "reward_margin missing"
+
+    def test_real_rlsl_closed_loop_runs(self, tmp_path):
+        # RLSL 闭环真实集成: Phase1 RM 训练(#424) -> Phase2 真实 GRPO(#363),
+        # reward 信号经本机 RM reward server -> 上游 reward/score(#431)。
+        # 验证 mean_reward 为真实 RM 分数(非 length fallback 58.0)。
+        # 启动:
+        #   FUSION_TRAINER_REAL=1 FUSION_MLX_ADMIN_TOKEN=dahai168 \
+        #     FUSION_MLX_PORT=11434 pytest \
+        #     tests/test_sft_trainer.py::TestRealFusionMLXIntegration::test_real_rlsl_closed_loop_runs -v -s
+        from fusion_trainer.config import (
+            DatasetConfig,
+            RLSLConfig,
+            SFTConfig,
+            TrainerConfig,
+        )
+        from fusion_trainer.rlsl.pipeline import RLSLEngine
+
+        data_path = tmp_path / "rlsl_pref.jsonl"
+        import json
+
+        with open(data_path, "w") as f:
+            for i in range(3):
+                f.write(
+                    json.dumps(
+                        {
+                            "prompt": f"What is {i}+1?",
+                            "chosen": f"The answer is {i + 1}.",
+                            "rejected": f"The answer is {i + 100}.",
+                        }
+                    )
+                    + "\n"
+                )
+        config = TrainerConfig(
+            dataset=DatasetConfig(path=str(data_path)),
+            sft=SFTConfig(
+                model="Qwen3-0.6B-4bit",
+                lora_rank=4,
+                lora_alpha=8.0,
+                lora_dropout=0.0,
+            ),
+            rlsl=RLSLConfig(
+                method="rlsl",
+                run_name="ft_real_rlsl",
+                group_size=2,
+                grpo_iterations=1,
+                reward_num_epochs=1,
+                batch_size=1,
+                response_length=32,
+                temperature=0.7,
+            ),
+            cache_path=str(tmp_path),
+            mlx_port=_real_mlx_port(),
+        )
+        engine = RLSLEngine(config)
+        result = engine.run()
+        assert result["status"] == "completed", f"RLSL closed loop failed: {result}"
+        assert result["method"] == "rlsl"
+        assert result["reward_model"]["status"] == "completed"
+        assert result["phase2"]["method"] == "grpo"
+        assert result["phase2"]["backend"] == "grpo"
+        mean_reward = result["phase2"].get("mean_reward")
+        assert mean_reward is not None, "mean_reward missing on phase2"
+        # 真实 RM 打分不为 length fallback(58.0);闭环走的是 RM。
+        assert mean_reward != 58.0, (
+            f"mean_reward is length fallback, not RM: {mean_reward}"
+        )

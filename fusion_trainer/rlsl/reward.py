@@ -17,7 +17,7 @@ from ._errors import RLSLUnsupportedError
 logger = logging.getLogger(__name__)
 
 _UPSTREAM_ISSUE = "https://github.com/dahai80/fusion-mlx/issues/424"
-_UPSTREAM_SCORING_ISSUE = "https://github.com/dahai80/fusion-mlx/issues/424"
+_UPSTREAM_SCORING_ISSUE = "https://github.com/dahai80/fusion-mlx/issues/431"
 
 
 class RewardTrainer:
@@ -97,9 +97,7 @@ class RewardTrainer:
         print(f"       Submitted reward job: {job_id}")
 
         try:
-            final_job = self._client.wait_for_reward_job(
-                job_id, poll_interval=2.0
-            )
+            final_job = self._client.wait_for_reward_job(job_id, poll_interval=2.0)
         except MLXFineTuneError as exc:
             logger.error("Reward job failed: %s", exc)
             return {
@@ -152,15 +150,33 @@ class RewardTrainer:
     ) -> list[float]:
         """Score texts with a trained reward model.
 
-        fusion-mlx #424 only ships a training endpoint; there is no
-        reward-scoring inference endpoint yet. Raises rather than returning
-        fake scores.
+        Delegates to fusion-mlx reward/score (#431), which loads the RM
+        adapter produced by train() and returns scalar rewards. Requires a
+        prior successful train() (sets self._adapter_name). model_path is
+        accepted for API compatibility but the actual model id used is the
+        one this trainer was configured with (self._model).
         """
-        logger.error(
-            "RewardTrainer.predict unsupported: no RM scoring endpoint yet (%s)",
-            _UPSTREAM_SCORING_ISSUE,
+        if not self._adapter_name:
+            logger.error(
+                "RewardTrainer.predict: no trained adapter; call train() first (%s)",
+                _UPSTREAM_SCORING_ISSUE,
+            )
+            raise RLSLUnsupportedError(
+                "RewardTrainer.predict needs a trained reward adapter; run "
+                f"train() first (upstream {_UPSTREAM_SCORING_ISSUE})."
+            )
+        if not self._model:
+            raise ValueError("RewardTrainer.predict needs sft.model set")
+        logger.info(
+            "RewardTrainer.predict via reward/score: model=%s adapter=%s n=%d",
+            self._model,
+            self._adapter_name,
+            len(texts),
         )
-        raise RLSLUnsupportedError(
-            f"Reward-model prediction is not available: fusion-mlx has no "
-            f"reward-scoring endpoint yet (upstream {_UPSTREAM_SCORING_ISSUE})."
+        result = self._client.score_reward(
+            model_id=self._model,
+            adapter_name=self._adapter_name,
+            prompt="",
+            completions=list(texts),
         )
+        return [float(r) for r in result.get("rewards", [])]

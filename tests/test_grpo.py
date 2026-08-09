@@ -387,6 +387,87 @@ class TestRewardServer:
 
 
 # ===========================================================================
+# RMRewardServer — RM-backed reward endpoint for RLSL Phase 2 (#431)
+# ===========================================================================
+
+
+class TestRMRewardServer:
+    def test_forwards_to_score_reward(self):
+        # GRPO 回调 {prompt, completions} -> 转调 client.score_reward(#431)
+        # -> 返回真实 RM 分数。验证闭环转发与参数传递。
+        import httpx
+
+        from fusion_trainer.rlsl.rm_reward_server import RMRewardServer
+
+        captured = {}
+
+        class _FakeClient:
+            def score_reward(self, model_id, adapter_name, prompt, completions):
+                captured["model_id"] = model_id
+                captured["adapter_name"] = adapter_name
+                captured["prompt"] = prompt
+                captured["completions"] = completions
+                return {
+                    "rewards": [0.9, 0.1],
+                    "model_id": model_id,
+                    "adapter_name": adapter_name,
+                }
+
+        srv = RMRewardServer(
+            _FakeClient(), model_id="qwen-0.6b", adapter_name="rm-adapter"
+        )
+        endpoint = srv.start()
+        try:
+            resp = httpx.post(
+                endpoint,
+                json={"prompt": "2+3=?", "completions": ["5", "7"]},
+                timeout=5.0,
+            )
+            assert resp.status_code == 200
+            assert resp.json()["rewards"] == [0.9, 0.1]
+            assert captured["model_id"] == "qwen-0.6b"
+            assert captured["adapter_name"] == "rm-adapter"
+            assert captured["prompt"] == "2+3=?"
+            assert captured["completions"] == ["5", "7"]
+        finally:
+            srv.stop()
+
+    def test_score_error_returns_500(self):
+        import httpx
+
+        from fusion_trainer.rlsl.rm_reward_server import RMRewardServer
+
+        class _FakeClient:
+            def score_reward(self, model_id, adapter_name, prompt, completions):
+                raise RuntimeError("upstream down")
+
+        srv = RMRewardServer(_FakeClient(), model_id="m", adapter_name="a")
+        endpoint = srv.start()
+        try:
+            resp = httpx.post(
+                endpoint,
+                json={"prompt": "p", "completions": ["c"]},
+                timeout=5.0,
+            )
+            assert resp.status_code == 500
+            assert "upstream down" in resp.json()["error"]
+        finally:
+            srv.stop()
+
+    def test_stop_is_idempotent(self):
+        from fusion_trainer.rlsl.rm_reward_server import RMRewardServer
+
+        class _FakeClient:
+            def score_reward(self, *a, **kw):
+                return {"rewards": []}
+
+        srv = RMRewardServer(_FakeClient(), model_id="m", adapter_name="a")
+        srv.start()
+        srv.stop()
+        srv.stop()  # no error
+
+
+# ===========================================================================
 # GRPOTrainer — true GRPO backend (grpo_backend="grpo")
 # ===========================================================================
 
