@@ -19,7 +19,6 @@ from typing import Any
 from ..config import TrainerConfig
 from ..dataset import DatasetLoader
 from ..experiment import ExperimentLogger
-from ._errors import RLSLUnsupportedError
 from .dpo import DPOTrainer
 from .grpo import GRPOTrainer
 from .orpo import ORPOTrainer
@@ -27,8 +26,13 @@ from .reward import RewardTrainer
 
 logger = logging.getLogger(__name__)
 
-# RLSL Phase 2 (PPO-light 策略梯度更新) 上游追踪 issue。
-_UPSTREAM_RLSL_PHASE2 = "https://github.com/dahai80/fusion-mlx/issues/399"
+# RLSL Phase 2 真实闭环上游能力(均已落地):
+#   #363 PR#366 — 真实 policy-gradient GRPO 端点 /api/fine-tune/grpo/jobs
+#   #430 PR#432 — GRPO worker 线程 stream 修复
+#   #431 PR#433 — reward/score 推理打分端点(加载 RM adapter 打分)
+# Phase 1 reward model 训练用 #424(本仓 PR #41 已对接)。
+_UPSTREAM_GRPO = "https://github.com/dahai80/fusion-mlx/issues/363"
+_UPSTREAM_REWARD_SCORE = "https://github.com/dahai80/fusion-mlx/issues/431"
 
 
 class RLSLEngine:
@@ -126,18 +130,23 @@ class RLSLEngine:
         return trainer.train(dataset)
 
     def _run_rlsl(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
-        """Run full RLSL pipeline (Reward Model + PPO-light).
+        """Run full RLSL pipeline (Reward Model + real GRPO policy update).
 
-        Phase 1 trains a reward model via fusion-mlx #424 (now landed).
-        Phase 2 runs a PPO-light policy-update loop, which needs an in-model
-        policy-gradient endpoint in fusion-mlx that does not exist yet
-        (tracked upstream). Phase 1 runs for real; Phase 2 fails visibly
-        rather than returning a fake "completed".
+        Phase 1 trains a reward model via fusion-mlx #424 (PR #429 landed),
+        producing an RM adapter. Phase 2 runs a real policy-gradient GRPO
+        loop via fusion-mlx #363, with the reward signal coming from that RM
+        through the reward/score endpoint (#431). The closed loop:
+            RM train (#424) -> RM reward server -> reward/score (#431)
+            -> GRPO (#363, PPO-clipped policy gradient)
         """
+        from ..mlx_client import MLXFineTuneClient, MLXFineTuneError
+        from .rm_reward_server import RMRewardServer
+
         print("\n  [Phase 1/2] Training Reward Model...")
         rm_trainer = RewardTrainer(self.config)
         rm_result = rm_trainer.train(dataset)
         if rm_result.get("status") != "completed":
+            logger.error("RLSL Phase 1 reward model failed: %s", rm_result)
             return {
                 "status": "failed",
                 "method": "rlsl",
@@ -146,18 +155,137 @@ class RLSLEngine:
                 "num_pairs": len(dataset),
             }
 
-        print("\n  [Phase 2/2] Running RLSL alignment (PPO-light)...")
-        print(f"       KL coefficient: {self.rlsl_cfg.kl_coef}")
-        print(f"       Clip epsilon: {self.rlsl_cfg.clip_epsilon}")
-        print(f"       PPO epochs: {self.rlsl_cfg.ppo_epochs}")
-        logger.error(
-            "RLSL Phase 2 (PPO-light) unsupported: fusion-mlx has no "
-            "policy-gradient endpoint yet (upstream %s)",
-            _UPSTREAM_RLSL_PHASE2,
+        model_id = self.config.sft.model
+        rm_adapter = rm_result.get("adapter_name", "")
+        if not model_id or not rm_adapter:
+            logger.error(
+                "RLSL Phase 1 produced no usable adapter: model=%s adapter=%s",
+                model_id,
+                rm_adapter,
+            )
+            return {
+                "status": "failed",
+                "method": "rlsl",
+                "phase": 1,
+                "reward_model": rm_result,
+                "num_pairs": len(dataset),
+                "error": "Phase 1 reward model produced no adapter name",
+            }
+
+        print("\n  [Phase 2/2] Running RLSL alignment (real GRPO, RM-rewarded)...")
+        print(f"       RM adapter: {rm_adapter}")
+        print(f"       Group G:    {self.rlsl_cfg.group_size}")
+        print(f"       Clip eps:   {self.rlsl_cfg.clip_epsilon}")
+        print(f"       Iters:      {self.rlsl_cfg.grpo_iterations}")
+
+        prompts = [
+            str(item.get("prompt", "")) for item in dataset if item.get("prompt")
+        ]
+        if not prompts:
+            logger.error("RLSL Phase 2: no prompts derivable from dataset")
+            return {
+                "status": "failed",
+                "method": "rlsl",
+                "phase": 2,
+                "reward_model": rm_result,
+                "error": "no prompts for GRPO",
+                "num_pairs": len(dataset),
+            }
+
+        client = MLXFineTuneClient(port=self.config.mlx_port)
+        reward_server = RMRewardServer(
+            client, model_id=model_id, adapter_name=rm_adapter
         )
-        raise RLSLUnsupportedError(
-            f"RLSL Phase 2 (PPO-light policy update) is not available: "
-            f"fusion-mlx has no policy-gradient training endpoint yet "
-            f"(upstream {_UPSTREAM_RLSL_PHASE2}). Phase 1 reward model trained "
-            f"successfully; use DPO/ORPO/GRPO for end-to-end alignment."
+        endpoint = reward_server.start()
+        logger.info(
+            "RLSL Phase 2: RM reward server on %s (model=%s adapter=%s)",
+            endpoint,
+            model_id,
+            rm_adapter,
         )
+        print(f"       RM reward endpoint: {endpoint}")
+
+        g = max(2, int(self.rlsl_cfg.group_size))
+        iters = max(1, int(self.rlsl_cfg.grpo_iterations))
+        grpo_adapter = f"{self.rlsl_cfg.run_name or 'rlsl'}_grpo"
+        job_id = ""
+        phase2_status = "completed"
+        last_adapter = ""
+        last_adapter_name = grpo_adapter
+        try:
+            cfg = {
+                "group_size": g,
+                "iters": iters,
+                "batch_size": max(1, int(self.rlsl_cfg.batch_size)),
+                "learning_rate": float(self.rlsl_cfg.learning_rate),
+                "lora_layers": 16,
+                "lora_rank": int(self.config.sft.lora_rank),
+                "lora_alpha": float(self.config.sft.lora_alpha),
+                "lora_dropout": float(self.config.sft.lora_dropout),
+                "max_completion_len": int(self.rlsl_cfg.response_length),
+                "clip_ratio": float(self.rlsl_cfg.clip_epsilon),
+                "reward_endpoint": endpoint,
+                "temperature": float(self.rlsl_cfg.temperature),
+                "seed": int(self.config.seed),
+            }
+            logger.info(
+                "RLSL Phase 2: submitting GRPO job model=%s prompts=%d",
+                model_id,
+                len(prompts),
+            )
+            job = client.create_grpo_job(
+                model_id=model_id,
+                prompts=prompts,
+                config=cfg,
+                adapter_name=grpo_adapter,
+            )
+            job_id = job.get("job_id", "")
+            print(f"       Submitted GRPO job: {job_id}")
+
+            try:
+                final_job = client.wait_for_grpo_job(job_id, poll_interval=2.0)
+            except MLXFineTuneError as exc:
+                logger.error("RLSL Phase 2 GRPO job failed: %s", exc)
+                return {
+                    "status": "failed",
+                    "method": "rlsl",
+                    "phase": 2,
+                    "reward_model": rm_result,
+                    "grpo_job_id": job_id,
+                    "error": str(exc),
+                    "num_pairs": len(dataset),
+                }
+
+            phase2_status = final_job.get("status", "")
+            last_adapter = final_job.get("adapter_path", "")
+            last_adapter_name = final_job.get("adapter_name", grpo_adapter)
+            progress = final_job.get("progress", {}) or {}
+            logger.info(
+                "RLSL Phase 2 GRPO job %s ended: %s mean_reward=%s",
+                job_id,
+                phase2_status,
+                progress.get("mean_reward"),
+            )
+            print(f"       GRPO status: {phase2_status}")
+            print(f"       Final adapter: {last_adapter}")
+        finally:
+            reward_server.stop()
+
+        overall = "completed" if phase2_status == "completed" else phase2_status
+        return {
+            "status": overall,
+            "method": "rlsl",
+            "num_pairs": len(dataset),
+            "reward_model": rm_result,
+            "phase2": {
+                "method": "grpo",
+                "backend": "grpo",
+                "group_size": g,
+                "iterations": iters,
+                "job_id": job_id,
+                "adapter_path": last_adapter,
+                "adapter_name": last_adapter_name,
+                "mean_reward": (final_job.get("progress", {}) or {}).get("mean_reward"),
+            },
+            "note": "RLSL closed loop: RM train (#424) -> reward/score (#431) -> GRPO (#363)",
+        }

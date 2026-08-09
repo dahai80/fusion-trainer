@@ -112,9 +112,68 @@ def _patch_reward_client(monkeypatch, final_status="completed", progress=None):
                 or {"iter": 4, "loss": 0.01, "reward_margin": 5.0, "acc_chosen": 1.0},
             }
 
+        def score_reward(self, model_id, adapter_name, prompt, completions):
+            # 默认真实 RM 打分(非 length fallback),供 predict 走 #431。
+            return {
+                "rewards": [0.9, 0.1],
+                "model_id": model_id,
+                "adapter_name": adapter_name,
+            }
+
     import fusion_trainer.rlsl.reward as reward_mod
 
     monkeypatch.setattr(reward_mod, "MLXFineTuneClient", _FakeClient)
+    return calls
+
+
+def _patch_grpo_and_score_client(monkeypatch):
+    # patch fusion_trainer.mlx_client.MLXFineTuneClient(Phase2 在 _run_rlsl 内
+    # 本地 import),提供 create_grpo_job/wait_for_grpo_job/score_reward。
+    # score_reward 会被 RMRewardServer 回调调用(返回真实 reward,非 length fallback)。
+    calls: dict = {"create": [], "score": []}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def create_grpo_job(self, model_id, prompts, config=None, adapter_name=""):
+            calls["create"].append(
+                {
+                    "model_id": model_id,
+                    "prompts": prompts,
+                    "config": config or {},
+                    "adapter_name": adapter_name,
+                }
+            )
+            return {"job_id": "fake-grpo-job", "status": "queued"}
+
+        def wait_for_grpo_job(self, job_id, on_progress=None, **kw):
+            return {
+                "status": "completed",
+                "adapter_path": "/fake/adapters/rlsl_grpo",
+                "adapter_name": "test_rlsl_grpo",
+                "progress": {"mean_reward": 0.83, "loss": 1.2, "mean_ratio": 1.0},
+            }
+
+        def score_reward(self, model_id, adapter_name, prompt, completions):
+            calls["score"].append(
+                {
+                    "model_id": model_id,
+                    "adapter_name": adapter_name,
+                    "prompt": prompt,
+                    "completions": completions,
+                }
+            )
+            # 真实 RM 分数(非 length fallback 58.0),验证闭环打分走的是 RM。
+            return {
+                "rewards": [0.9, 0.1],
+                "model_id": model_id,
+                "adapter_name": adapter_name,
+            }
+
+    import fusion_trainer.mlx_client as client_mod
+
+    monkeypatch.setattr(client_mod, "MLXFineTuneClient", _FakeClient)
     return calls
 
 
@@ -165,11 +224,20 @@ class TestRewardTrainer:
         assert result["status"] == "failed"
         assert result["method"] == "reward_model"
 
-    def test_predict_raises_upstream_unsupported(self):
-        # fusion-mlx #424 只落地训练端点;打分推理端点尚未提供 -> fail visibly。
+    def test_predict_without_trained_adapter_raises(self):
+        # 未先 train() -> 没有 adapter -> fail visibly(指向 #431)。
         trainer = RewardTrainer(_make_config("rlsl"))
-        with pytest.raises(RLSLUnsupportedError, match="fusion-mlx/issues/424"):
+        with pytest.raises(RLSLUnsupportedError, match="train\\(\\) first"):
             trainer.predict("/fake/model", ["hello", "world"])
+
+    def test_predict_real_via_score_reward(self, monkeypatch):
+        # train() 后 predict 经上游 reward/score(#431)真实打分。
+        _patch_reward_client(monkeypatch)
+        trainer = RewardTrainer(_make_config("rlsl"))
+        trainer.train(_make_preference_data(2))
+        rewards = trainer.predict("/fake/model", ["good ans", "bad ans"])
+        assert rewards == [0.9, 0.1]
+        assert trainer._adapter_name == "fake-reward-adapter"
 
 
 # ===========================================================================
@@ -326,12 +394,21 @@ class TestRLSLEngine:
                 ),
                 cache_path=tmpdir,
             )
-            # Phase 1 (RM training) now real via #424; Phase 2 (PPO-light)
-            # still upstream-blocked -> fail visibly.
+            # RLSL 闭环: Phase1 RM 训练(#424) -> Phase2 真实 GRPO(#363),
+            # reward 信号走本机 RM reward server -> 上游 reward/score(#431)。
             _patch_reward_client(monkeypatch)
+            grpo_calls = _patch_grpo_and_score_client(monkeypatch)
             engine = RLSLEngine(config)
-            with pytest.raises(RLSLUnsupportedError, match="PPO-light policy update"):
-                engine.run()
+            result = engine.run()
+            assert result["status"] == "completed"
+            assert result["method"] == "rlsl"
+            assert result["reward_model"]["status"] == "completed"
+            assert result["phase2"]["method"] == "grpo"
+            assert result["phase2"]["backend"] == "grpo"
+            assert result["phase2"]["mean_reward"] == 0.83
+            assert grpo_calls["create"][0]["model_id"] == "test-model"
+            assert grpo_calls["create"][0]["adapter_name"] == "test_rlsl_grpo"
+            assert "reward_endpoint" in grpo_calls["create"][0]["config"]
 
     def test_run_empty_dataset_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:

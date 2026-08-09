@@ -49,3 +49,69 @@ class TestBaseURL:
     def test_base_url_includes_port(self):
         client = MLXFineTuneClient(port=11434)
         assert client._base == "http://localhost:11434"
+
+
+class TestScoreReward:
+    # fusion-mlx #431: score_reward POST /admin/api/fine-tune/reward/score
+    def test_score_reward_happy_path(self, monkeypatch):
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "rewards": [6.7, -7.2],
+                    "model_id": "qwen-0.6b",
+                    "adapter_name": "rm-adapter",
+                }
+
+            @property
+            def text(self):
+                return ""
+
+        def _fake_post(url, json=None, headers=None, timeout=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return _Resp()
+
+        import fusion_trainer.mlx_client as client_mod
+
+        monkeypatch.setattr(client_mod.httpx, "post", _fake_post)
+        client = MLXFineTuneClient(port=11434, admin_token="tok")
+        result = client.score_reward(
+            model_id="qwen-0.6b",
+            adapter_name="rm-adapter",
+            prompt="hello",
+            completions=["a", "b"],
+        )
+        assert result["rewards"] == [6.7, -7.2]
+        assert captured["url"].endswith("/admin/api/fine-tune/reward/score")
+        assert captured["json"]["model_id"] == "qwen-0.6b"
+        assert captured["json"]["adapter_name"] == "rm-adapter"
+        assert captured["json"]["prompt"] == "hello"
+        assert captured["json"]["completions"] == ["a", "b"]
+        assert captured["headers"]["Authorization"] == "Bearer tok"
+
+    def test_score_reward_raises_on_error(self, monkeypatch):
+        class _Resp:
+            status_code = 404
+            text = "adapter not found"
+
+            def json(self):
+                return {}
+
+        import fusion_trainer.mlx_client as client_mod
+        from fusion_trainer.mlx_client import MLXFineTuneError
+
+        monkeypatch.setattr(
+            client_mod.httpx,
+            "post",
+            lambda *a, **kw: _Resp(),
+        )
+        client = MLXFineTuneClient(port=11434)
+        import pytest
+
+        with pytest.raises(MLXFineTuneError, match="404"):
+            client.score_reward("m", "a", "p", ["c"])
