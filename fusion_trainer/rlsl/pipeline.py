@@ -55,6 +55,9 @@ class RLSLEngine:
             output_dir=Path(self.rlsl_cfg.output_dir),
         )
 
+        # Optional live-progress sink (RunManager). None = CLI mode.
+        self.on_event = None
+
     def run(self) -> dict[str, Any]:
         """Execute the alignment pipeline.
 
@@ -117,17 +120,29 @@ class RLSLEngine:
     def _run_dpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run DPO alignment."""
         trainer = DPOTrainer(self.config)
+        trainer.on_event = self.on_event
         return trainer.train(dataset)
 
     def _run_orpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run ORPO alignment."""
         trainer = ORPOTrainer(self.config)
+        trainer.on_event = self.on_event
         return trainer.train(dataset)
 
     def _run_grpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run GRPO alignment with sandbox feedback reward."""
         trainer = GRPOTrainer(self.config)
+        trainer.on_event = self.on_event
         return trainer.train(dataset)
+
+    def _forward_grpo_events(
+        self, job: dict[str, Any], new_events: list[dict[str, Any]]
+    ) -> None:
+        """Forward raw Phase-2 GRPO job events to the live-progress sink."""
+        if self.on_event is None:
+            return
+        for ev in new_events:
+            self.on_event(dict(ev))
 
     def _run_rlsl(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run full RLSL pipeline (Reward Model + real GRPO policy update).
@@ -143,7 +158,10 @@ class RLSLEngine:
         from .rm_reward_server import RMRewardServer
 
         print("\n  [Phase 1/2] Training Reward Model...")
+        if self.on_event is not None:
+            self.on_event({"type": "phase", "phase": 1, "name": "reward_model_train"})
         rm_trainer = RewardTrainer(self.config)
+        rm_trainer.on_event = self.on_event
         rm_result = rm_trainer.train(dataset)
         if rm_result.get("status") != "completed":
             logger.error("RLSL Phase 1 reward model failed: %s", rm_result)
@@ -177,6 +195,8 @@ class RLSLEngine:
         print(f"       Group G:    {self.rlsl_cfg.group_size}")
         print(f"       Clip eps:   {self.rlsl_cfg.clip_epsilon}")
         print(f"       Iters:      {self.rlsl_cfg.grpo_iterations}")
+        if self.on_event is not None:
+            self.on_event({"type": "phase", "phase": 2, "name": "grpo_policy_update"})
 
         prompts = [
             str(item.get("prompt", "")) for item in dataset if item.get("prompt")
@@ -241,9 +261,15 @@ class RLSLEngine:
             )
             job_id = job.get("job_id", "")
             print(f"       Submitted GRPO job: {job_id}")
+            if self.on_event is not None:
+                self.on_event({"type": "job", "job_id": job_id, "kind": "grpo"})
 
             try:
-                final_job = client.wait_for_grpo_job(job_id, poll_interval=2.0)
+                final_job = client.wait_for_grpo_job(
+                    job_id,
+                    on_progress=self._forward_grpo_events if self.on_event else None,
+                    poll_interval=2.0,
+                )
             except MLXFineTuneError as exc:
                 logger.error("RLSL Phase 2 GRPO job failed: %s", exc)
                 return {

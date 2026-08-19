@@ -216,6 +216,37 @@ Fusion-Trainer is designed as the **model iteration factory** for the entire Fus
 
 ---
 
+## GUI Integration (fusion-studio)
+
+Fusion-Trainer is drivable from the **fusion-studio** desktop client (SwiftUI) — no CLI needed for day-to-day training. The GUI talks to fusion-trainer **in-process through fusion-agent-studio** over the studio UDS (`/tmp/fusion-studio.sock`, JSON-RPC 2.0), never importing `mlx-lm`/`mlx-vlm` directly.
+
+```
+fusion-studio (SwiftUI TrainerView)
+  └─ TrainerBridge → IPCClient.trainer* (UDS)
+       └─ fusion-agent-studio TrainerDispatcher (trainer.* RPC, PR #167)
+            └─ fusion-trainer RunManager (fusion_trainer/run_manager.py)
+                 └─ MLXFineTuneClient → fusion-mlx HTTP (real gradient loops)
+```
+
+**RPC surface** (`trainer.*`, served by `agent_runtime/dispatchers/trainer.py`):
+
+| Method | Purpose |
+|---|---|
+| `trainer.start_sft` / `trainer.start_rlsl` | Launch an async run from a `TrainerConfig` dict |
+| `trainer.runs.list` / `trainer.runs.status_full` | Run registry + full config/status |
+| `trainer.runs.progress` | Live progress events since a step (polled 2s in GUI) |
+| `trainer.runs.stop` | Cancel a running job |
+| `trainer.presets.list` | SFT/RLSL presets (`SFT_PRESETS`/`RLSL_PRESETS`) |
+| `trainer.datasets.list` / `trainer.datasets.preview` | Hub dataset registry + sample preview |
+| `trainer.adapters.list` / `trainer.adapters.delete` | Trained adapter registry + cleanup |
+| `trainer.info_full` | Version + hardware + endpoint info |
+
+**GUI panels** (fusion-studio `Modules/Trainer/TrainerView.swift`, 6 tabs): 训练运行 (run list + live metrics chart + stop), 启动训练 (SFT/RLSL config form), 预设, 数据集 (+preview), 适配器 (+delete), 环境信息. Reached via the icon rail → **Trainer** section.
+
+**Upstream PRs:** fusion-agent-studio #167 (RPC widening) + fusion-studio #176 (GUI panel). See `architecture/fusion-trainer-gui.md` for the full high-fidelity mockup spec.
+
+---
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).

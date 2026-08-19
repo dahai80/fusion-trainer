@@ -12,6 +12,7 @@ and RLHF-style alignment without cloud dependencies.
 
 from ._version import __version__
 from .config import DatasetConfig, RLSLConfig, SFTConfig, TrainerConfig
+from .run_manager import RunManager
 
 __all__ = [
     "__version__",
@@ -19,4 +20,5 @@ __all__ = [
     "DatasetConfig",
     "SFTConfig",
     "RLSLConfig",
+    "RunManager",
 ]

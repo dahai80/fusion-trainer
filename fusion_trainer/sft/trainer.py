@@ -63,6 +63,11 @@ class SFTTrainer:
         self._train_samples: list[dict[str, Any]] = []
         self._adapter_path: str = ""
 
+        # Optional live-progress sink (RunManager). If set, raw fusion-mlx job
+        # events are forwarded here in addition to ExperimentLogger, so the GUI
+        # can stream loss curves. None = CLI mode (no sink).
+        self.on_event = None
+
     def train(self) -> dict[str, Any]:
         """Run the full SFT training pipeline.
 
@@ -274,6 +279,16 @@ class SFTTrainer:
         )
         print(f"      {'=' * 50}")
 
+        if self.on_event is not None:
+            self.on_event(
+                {
+                    "type": "job",
+                    "job_id": job_id,
+                    "kind": "sft",
+                    "iters": mlx_cfg["iters"],
+                }
+            )
+
         self._global_step = 0
         try:
             final_job = client.wait_for_job(
@@ -330,6 +345,8 @@ class SFTTrainer:
         """Convert fusion-mlx job events into ExperimentLogger metrics."""
         for ev in new_events:
             etype = ev.get("type", "")
+            if self.on_event is not None:
+                self.on_event(dict(ev))
             if etype == "train_loss":
                 step = ev.get("step", 0)
                 self._global_step = step

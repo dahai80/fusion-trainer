@@ -35,6 +35,9 @@ class DPOTrainer:
         self._adapter_name = ""
         self._pairs: list[dict[str, Any]] = []
 
+        # Optional live-progress sink (RunManager). None = CLI mode.
+        self.on_event = None
+
     def _build_dpo_config(self) -> dict[str, Any]:
         # 映射 RLSLConfig → fusion-mlx DPOConfig 字段(dpo.py:32)。
         # method 由端点强制,这里不设(避免与端点冲突)。
@@ -97,8 +100,15 @@ class DPOTrainer:
         logger.info("DPO job submitted: %s", job_id)
         print(f"       Submitted DPO job: {job_id}")
 
+        if self.on_event is not None:
+            self.on_event({"type": "job", "job_id": job_id, "kind": "dpo"})
+
         try:
-            final_job = self._client.wait_for_dpo_job(job_id, poll_interval=2.0)
+            final_job = self._client.wait_for_dpo_job(
+                job_id,
+                on_progress=self._on_progress if self.on_event else None,
+                poll_interval=2.0,
+            )
         except MLXFineTuneError as exc:
             logger.error("DPO job failed: %s", exc)
             return {
@@ -122,6 +132,15 @@ class DPOTrainer:
             "adapter_name": self._adapter_name,
             "output_dir": str(self._output_dir),
         }
+
+    def _on_progress(
+        self, job: dict[str, Any], new_events: list[dict[str, Any]]
+    ) -> None:
+        """Forward raw DPO job events to the live-progress sink."""
+        if self.on_event is None:
+            return
+        for ev in new_events:
+            self.on_event(dict(ev))
 
     @staticmethod
     def _normalize_pairs(dataset: list[dict[str, Any]]) -> list[dict[str, Any]]:

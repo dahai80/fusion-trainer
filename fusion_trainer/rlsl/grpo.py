@@ -69,6 +69,9 @@ class GRPOTrainer:
         self._adapter_name = ""
         self._mean_reward = 0.0
 
+        # Optional live-progress sink (RunManager). None = CLI mode.
+        self.on_event = None
+
     def train(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run GRPO outer loop.
 
@@ -248,6 +251,8 @@ class GRPOTrainer:
             )
             job_id = job.get("job_id", "")
             print(f"      Submitted GRPO job: {job_id}  reward_endpoint={endpoint}")
+            if self.on_event is not None:
+                self.on_event({"type": "job", "job_id": job_id, "kind": "grpo"})
 
             try:
                 final_job = self._client.wait_for_grpo_job(
@@ -302,6 +307,8 @@ class GRPOTrainer:
         """Stream fusion-mlx GRPO grpo_step events into ExperimentLogger."""
         for ev in new_events:
             etype = ev.get("type", "")
+            if self.on_event is not None:
+                self.on_event(dict(ev))
             if etype == "grpo_step":
                 step = ev.get("iter", 0)
                 exp_logger.log_metrics(
@@ -320,6 +327,15 @@ class GRPOTrainer:
                 )
             elif etype == "done":
                 logger.info("GRPO job done: adapter=%s", ev.get("adapter_path", ""))
+
+    def _on_progress(
+        self, job: dict[str, Any], new_events: list[dict[str, Any]]
+    ) -> None:
+        """Forward raw SFT (rft backend) job events to the live-progress sink."""
+        if self.on_event is None:
+            return
+        for ev in new_events:
+            self.on_event(dict(ev))
 
     # ------------------------------------------------------------------
     # Step 1-2: on-policy sampling + sandbox scoring
@@ -477,8 +493,14 @@ class GRPOTrainer:
 
         job_id = job.get("job_id", "")
         print(f"      Submitted SFT job {job_id} on {kept_count} filtered samples")
+        if self.on_event is not None:
+            self.on_event({"type": "job", "job_id": job_id, "kind": "sft"})
         try:
-            final = self._client.wait_for_job(job_id, poll_interval=2.0)
+            final = self._client.wait_for_job(
+                job_id,
+                on_progress=self._on_progress if self.on_event else None,
+                poll_interval=2.0,
+            )
         except MLXFineTuneError as exc:
             return {"status": "failed", "error": str(exc), "adapter_name": adapter_name}
 
