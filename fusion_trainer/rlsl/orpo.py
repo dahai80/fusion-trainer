@@ -36,6 +36,9 @@ class ORPOTrainer:
         self._adapter_name = ""
         self._pairs: list[dict[str, Any]] = []
 
+        # Optional live-progress sink (RunManager). None = CLI mode.
+        self.on_event = None
+
     def _build_orpo_config(self) -> dict[str, Any]:
         # 映射 RLSLConfig → DPOConfig(method=orpo)。ORPO 用 lambda_odds,beta 被忽略。
         total_pairs = max(1, len(self._pairs))
@@ -97,8 +100,15 @@ class ORPOTrainer:
         logger.info("ORPO job submitted: %s", job_id)
         print(f"       Submitted ORPO job: {job_id}")
 
+        if self.on_event is not None:
+            self.on_event({"type": "job", "job_id": job_id, "kind": "orpo"})
+
         try:
-            final_job = self._client.wait_for_dpo_job(job_id, poll_interval=2.0)
+            final_job = self._client.wait_for_dpo_job(
+                job_id,
+                on_progress=self._on_progress if self.on_event else None,
+                poll_interval=2.0,
+            )
         except MLXFineTuneError as exc:
             logger.error("ORPO job failed: %s", exc)
             return {
@@ -122,6 +132,15 @@ class ORPOTrainer:
             "adapter_name": self._adapter_name,
             "output_dir": str(self._output_dir),
         }
+
+    def _on_progress(
+        self, job: dict[str, Any], new_events: list[dict[str, Any]]
+    ) -> None:
+        """Forward raw ORPO job events to the live-progress sink."""
+        if self.on_event is None:
+            return
+        for ev in new_events:
+            self.on_event(dict(ev))
 
 
 def _normalize_pairs(dataset: list[dict[str, Any]]) -> list[dict[str, Any]]:
