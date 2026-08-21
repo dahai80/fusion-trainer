@@ -373,6 +373,28 @@ class RunManager:
         final_status = "cancelled" if canceled else result.get("status", "failed")
         if final_status not in _TERMINAL:
             final_status = "failed"
+
+        # Issue #49: publish trained LoRA adapter to fusion-model-hub after a
+        # completed run, if config.publish_adapter is set. Non-blocking: a hub
+        # outage warns loudly but never flips the run status (fail-visible).
+        publish_result = None
+        if final_status == "completed" and getattr(config, "publish_adapter", False):
+            from .hub_client import publish_adapter_if_enabled
+
+            publish_result = publish_adapter_if_enabled(config, result)
+            if publish_result.get("published"):
+                logger.info(
+                    "run %s adapter published to hub: %s",
+                    run_id,
+                    publish_result.get("model", {}).get("id", ""),
+                )
+            elif publish_result.get("error"):
+                logger.warning(
+                    "run %s adapter publish failed (non-blocking): %s",
+                    run_id,
+                    publish_result["error"],
+                )
+
         sink.emit(
             {
                 "type": "status",
@@ -381,6 +403,7 @@ class RunManager:
                 or result.get("adapter_path", ""),
                 "adapter_name": result.get("adapter_name", ""),
                 "error": result.get("error", ""),
+                "published": bool(publish_result and publish_result.get("published")),
             }
         )
         with self._lock:
@@ -393,6 +416,8 @@ class RunManager:
                 )
                 rec["adapter_name"] = result.get("adapter_name", "")
                 rec["finished"] = time.time()
+                if publish_result is not None:
+                    rec["publish_result"] = publish_result
                 self._persist_meta(run_id)
         _ACTIVE_SINKS.pop(run_id, None)
         logger.info("run %s ended: %s", run_id, final_status)
@@ -477,6 +502,64 @@ class RunManager:
             sink.request_cancel()
         logger.info("stop_run requested for %s", run_id)
         return {"run_id": run_id, "status": "cancelling"}
+
+    def publish_run(
+        self,
+        run_id: str,
+        hub_url: str = "",
+        api_key: str = "",
+    ) -> dict[str, Any]:
+        """Publish a completed run's adapter to fusion-model-hub (issue #49).
+
+        Reads the run's registry record (adapter_name + model). Used by the
+        CLI `publish <run_id>` subcommand to retroactively publish a run that
+        was trained without --publish. Fail-visible: returns {published:False,
+        error:...} never raises.
+        """
+        with self._lock:
+            r = self._runs.get(run_id)
+            if r is None:
+                return {"run_id": run_id, "published": False, "error": "no such run"}
+            adapter_name = r.get("adapter_name", "")
+            base_model = r.get("model", "")
+            status = r.get("status", "")
+        if status != "completed":
+            return {
+                "run_id": run_id,
+                "published": False,
+                "error": f"run status is {status!r}, not completed",
+            }
+        if not adapter_name:
+            return {
+                "run_id": run_id,
+                "published": False,
+                "error": "run has no adapter_name recorded",
+            }
+        if not base_model:
+            return {
+                "run_id": run_id,
+                "published": False,
+                "error": "run has no base model recorded",
+            }
+        from .hub_client import HubPublishError, ModelHubClient
+
+        url = hub_url or os.environ.get("FUSION_MODEL_HUB_URL", "http://localhost:11432")
+        key = api_key or os.environ.get("FUSION_MODEL_HUB_API_KEY", "")
+        client = ModelHubClient(base_url=url, api_key=key)
+        desc = f"LoRA adapter from fusion-trainer run {run_id}"
+        try:
+            pub = client.publish_adapter(
+                name=adapter_name, base_model=base_model, description=desc
+            )
+        except HubPublishError as exc:
+            logger.warning("publish_run %s failed (non-blocking): %s", run_id, exc)
+            return {"run_id": run_id, "published": False, "error": str(exc)}
+        with self._lock:
+            r = self._runs.get(run_id)
+            if r is not None:
+                r["publish_result"] = pub
+                self._persist_meta(run_id)
+        return {"run_id": run_id, **pub}
 
     # ------------------------------------------------------------------
     # internals

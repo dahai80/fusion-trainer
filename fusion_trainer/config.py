@@ -36,6 +36,15 @@ def _default_mlx_port() -> int:
     return int(os.environ.get("FUSION_MLX_PORT", "11432"))
 
 
+def _default_hub_url() -> str:
+    # fusion-gateway (:11432) proxies /api/v1/* to fusion-model-hub.
+    return os.environ.get("FUSION_MODEL_HUB_URL", "http://localhost:11432")
+
+
+def _default_hub_api_key() -> str:
+    return os.environ.get("FUSION_MODEL_HUB_API_KEY", "")
+
+
 # ---------------------------------------------------------------------------
 # Dataset config
 # ---------------------------------------------------------------------------
@@ -281,6 +290,22 @@ class TrainerConfig:
     mlx_port: int = field(default_factory=_default_mlx_port)
     """Port for MLX calls. Default 11432 (fusion-gateway, routes to fusion-mlx).
     Overridable via FUSION_MLX_PORT env var (e.g. 11434 to bypass gateway)."""
+
+    # Model-hub publish (issue #49). After a successful LoRA run, the produced
+    # adapter is registered to fusion-model-hub via POST /api/v1/models
+    # (model_type=lora). Off by default — opt-in via publish_adapter=True.
+    hub_url: str = field(default_factory=_default_hub_url)
+    """fusion-model-hub API base URL. Default gateway :11432 (proxies /api/v1/*).
+    Overridable via FUSION_MODEL_HUB_URL env var."""
+
+    hub_api_key: str = field(default_factory=_default_hub_api_key)
+    """API key for model-hub (Authorization: Bearer ...). Empty = no auth.
+    Overridable via FUSION_MODEL_HUB_API_KEY env var."""
+
+    publish_adapter: bool = False
+    """Publish the trained LoRA adapter to fusion-model-hub on completion.
+    Off by default — set True (or via YAML) to enable. Failures warn loudly
+    but do NOT block the training result (fail-visible, never silent)."""
 
     def __post_init__(self):
         if not self.sft.output_dir:
