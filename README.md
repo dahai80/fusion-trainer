@@ -173,6 +173,38 @@ GRPO prompt dataset (one JSON object per line):
 
 `--sandbox auto` picks **code** mode when a `tests` field is present, **math** mode when an `answer`/`solution` field is present. See `fusion_trainer/rlsl/sandbox.py` for the reward functions.
 
+### 6. Publish a Trained Adapter to fusion-model-hub (issue #49)
+
+After a successful LoRA run, the produced adapter can be registered in [fusion-model-hub](https://github.com/dahai80/fusion-models-hub) so the gateway can index it (`GET /api/v1/models?model_type=lora`). This is **off by default** — opt in with `--publish` (or `publish_adapter: true` in YAML):
+
+```bash
+# Publish immediately after SFT completes
+fusion-trainer sft --preset sft_7b_lora \
+    --model qwen2.5-7b-4bit \
+    --dataset /path/to/data.jsonl \
+    --run-name my_adapter \
+    --publish
+
+# Same for RLSL / DPO / ORPO / GRPO
+fusion-trainer rlsl --model qwen2.5-7b-4bit \
+    --dataset /path/to/pref.jsonl \
+    --method dpo \
+    --publish
+
+# Retroactively publish a completed run that was trained without --publish
+fusion-trainer publish <run_id>
+```
+
+Under the hood this calls `POST /api/v1/models` with `model_type="lora"` + `base_model_id` pointing at the run's base model (the `ModelHubClient` in `fusion_trainer/hub_client.py`). Publish **failures warn loudly but never block the training result** — a hub outage flips the published flag to false, logs the error, and exits 0 (fail-visible, never silent).
+
+**Configuration** (`TrainerConfig`, env-var overridable):
+
+| Field | Env var | Default |
+|---|---|---|
+| `hub_url` | `FUSION_MODEL_HUB_URL` | `http://localhost:11432` (gateway → model-hub) |
+| `hub_api_key` | `FUSION_MODEL_HUB_API_KEY` | `""` (no auth) |
+| `publish_adapter` | — | `False` |
+
 #### GRPO backend (`grpo_backend`)
 
 `RLSLConfig.grpo_backend` selects the GRPO execution path:
@@ -190,13 +222,14 @@ GRPO prompt dataset (one JSON object per line):
 
 | Command | Description |
 |---|---|
-| `fusion-trainer sft` | Run supervised fine-tuning |
-| `fusion-trainer rlsl` | Run DPO/ORPO/RLSL/GRPO alignment |
-| `fusion-trainer dataset import` | Import a dataset into the hub |
-| `fusion-trainer dataset list` | List datasets in the hub |
-| `fusion-trainer dataset info` | Show dataset details |
+| `fusion-trainer sft` | Run supervised fine-tuning (add `--publish` to publish the adapter to model-hub on completion) |
+| `fusion-trainer rlsl` | Run DPO/ORPO/RLSL/GRPO alignment (add `--publish` to publish) |
+| `fusion-trainer publish <run_id>` | Publish a completed run's LoRA adapter to fusion-model-hub (issue #49) |
 | `fusion-trainer info` | System info & hardware check |
+| `fusion-trainer --version` / `-V` | Print version (`ft <version>`) |
 | `fusion-trainer --help` | Show full help |
+
+> Dataset import/list/info is handled by the companion project **fusion-model-hub**, not by Fusion-Trainer — there is no `dataset` subcommand here.
 
 ---
 

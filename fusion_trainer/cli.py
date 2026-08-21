@@ -140,6 +140,11 @@ def sft(
         "-H",
         help="fusion-model-hub path (read-only, default: $FUSION_MODEL_HUB or ~/fusion-model-hub)",
     ),
+    publish: bool = typer.Option(
+        False,
+        "--publish",
+        help="Publish the trained LoRA adapter to fusion-model-hub on completion (issue #49). Failures warn but do not block the run.",
+    ),
 ):
     """Run supervised fine-tuning (SFT) on a base model.
 
@@ -208,10 +213,21 @@ def sft(
             max_seq_length=max_seq_length,
         ),
         sft=sft_cfg,
+        publish_adapter=publish,
     )
 
     trainer = SFTTrainer(cfg)
-    trainer.train()
+    result = trainer.train()
+    if publish:
+        from fusion_trainer.hub_client import publish_adapter_if_enabled
+
+        pub = publish_adapter_if_enabled(cfg, result)
+        if pub.get("published"):
+            typer.echo(f"✓ Adapter published to hub: {pub.get('model', {}).get('id', '')}")
+        elif pub.get("error"):
+            typer.echo(f"⚠ Adapter publish failed (non-blocking): {pub['error']}")
+        elif pub.get("reason"):
+            typer.echo(f"○ Adapter publish skipped: {pub['reason']}")
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +300,11 @@ def rlsl(
         "-H",
         help="fusion-model-hub path (read-only, default: $FUSION_MODEL_HUB or ~/fusion-model-hub)",
     ),
+    publish: bool = typer.Option(
+        False,
+        "--publish",
+        help="Publish the trained LoRA adapter to fusion-model-hub on completion (issue #49). Failures warn but do not block the run.",
+    ),
 ):
     """Run RLSL / DPO / ORPO alignment.
 
@@ -318,10 +339,58 @@ def rlsl(
             group_size=group_size,
             grpo_iterations=grpo_iterations,
         ),
+        publish_adapter=publish,
     )
 
     engine = RLSLEngine(cfg)
-    engine.run()
+    result = engine.run()
+    if publish:
+        from fusion_trainer.hub_client import publish_adapter_if_enabled
+
+        pub = publish_adapter_if_enabled(cfg, result)
+        if pub.get("published"):
+            typer.echo(f"✓ Adapter published to hub: {pub.get('model', {}).get('id', '')}")
+        elif pub.get("error"):
+            typer.echo(f"⚠ Adapter publish failed (non-blocking): {pub['error']}")
+        elif pub.get("reason"):
+            typer.echo(f"○ Adapter publish skipped: {pub['reason']}")
+
+
+# ---------------------------------------------------------------------------
+# Publish command (issue #49)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def publish(
+    run_id: str = typer.Argument(..., help="Run ID of a completed run whose adapter to publish."),
+    hub_url: str = typer.Option(
+        "",
+        "--hub-url",
+        help="fusion-model-hub API base URL (default: $FUSION_MODEL_HUB_URL or http://localhost:11432).",
+    ),
+    hub_api_key: str = typer.Option(
+        "",
+        "--hub-api-key",
+        help="API key for model-hub (default: $FUSION_MODEL_HUB_API_KEY).",
+    ),
+):
+    """Publish a completed run's LoRA adapter to fusion-model-hub (issue #49).
+
+    Retroactively publishes a run that was trained without --publish. Reads the
+    run's recorded adapter_name + base model from the run registry. Failures
+    warn loudly but exit 0 (fail-visible, non-blocking).
+    """
+    from fusion_trainer.run_manager import RunManager
+
+    mgr = RunManager()
+    result = mgr.publish_run(run_id, hub_url=hub_url, api_key=hub_api_key)
+    if result.get("published"):
+        typer.echo(f"✓ Adapter published to hub: {result.get('model', {}).get('id', '')}")
+        raise typer.Exit(0)
+    err = result.get("error", "unknown")
+    typer.echo(f"⚠ Publish failed: {err}")
+    raise typer.Exit(0)
 
 
 # ---------------------------------------------------------------------------
