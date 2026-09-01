@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import TrainerConfig
 from ..dataset import DatasetLoader
+from ..mlx_client import MLXFineTuneError
 from .lora import LoRAConfig
 
 if TYPE_CHECKING:
@@ -182,14 +183,15 @@ class SFTTrainer:
         if self.sft_cfg.use_mxfp8:
             # 上游 FineTuneConfig.mxfp8 字段已存在,但 service.py 仍 raise
             # "mxfp8 mixed-precision training is not yet supported"。
-            # 不向上游发送 mxfp8=True(否则 HTTP 报错);按默认精度训练并告警。
-            # 仍是 fail-visible:告警写明上游未落地,不静默吞掉用户意图(Rule 12)。
-            logger.warning(
+            # fail-not-downgrade (audit L2): explicit --mxfp8 expresses the
+            # user's intent to save memory; silently training at default
+            # precision swallows that intent and the preset's memory estimate
+            # becomes a lie. Refuse to start instead of silent downgrade.
+            raise MLXFineTuneError(
                 "MXFP8 mixed-precision training is not yet supported by fusion-mlx "
-                "(service.py still raises). Training will run at default precision "
-                "— peak memory may exceed the preset estimate. Set use_mxfp8=False "
-                "to silence. Tracked in %s.",
-                upstream_issue,
+                "(service.py still raises). Refusing to start rather than silently "
+                "downgrade precision. Set use_mxfp8=False to train at default "
+                f"precision. Tracked in {upstream_issue}."
             )
 
         if method == "qlora":
@@ -244,7 +246,7 @@ class SFTTrainer:
           4. Records the adapter path returned by fusion-mlx
         """
         from ..experiment import ExperimentLogger
-        from ..mlx_client import MLXFineTuneClient, MLXFineTuneError
+        from ..mlx_client import MLXFineTuneClient
 
         self._train_samples = train_loader
         exp_logger = ExperimentLogger(

@@ -94,7 +94,7 @@ class TestSFTConfig:
         assert cfg.max_steps == 0
         assert cfg.weight_decay == 0.01
         assert cfg.max_grad_norm == 1.0
-        assert cfg.use_mxfp8 is True
+        assert cfg.use_mxfp8 is False  # L2: default off (upstream #402 unresolved)
         assert cfg.save_every == 500
         assert cfg.save_total_limit == 3
         assert cfg.output_dir == ""

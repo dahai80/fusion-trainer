@@ -49,7 +49,63 @@ class ModelHubClient:
         if api_key:
             self._headers["Authorization"] = f"Bearer {api_key}"
         self._timeout = timeout
-        logger.info("ModelHubClient initialized: base=%s auth=%s", self._base, bool(api_key))
+        logger.info(
+            "ModelHubClient initialized: base=%s auth=%s", self._base, bool(api_key)
+        )
+
+    def list_models(
+        self,
+        model_type: str = "",
+        keyword: str = "",
+    ) -> list[dict[str, Any]]:
+        """List hub models, optionally filtered by model_type / keyword.
+
+        The hub supports keyword (fuzzy) + model_type filters but NOT an exact
+        name= filter (fusion-models-hub#51). Callers needing an exact match
+        must filter client-side over the returned list.
+        """
+        params: dict[str, str] = {}
+        if model_type:
+            params["model_type"] = model_type
+        if keyword:
+            params["keyword"] = keyword
+        url = f"{self._base}{MODELS_PATH}"
+        try:
+            resp = httpx.get(
+                url, params=params or None, headers=self._headers, timeout=self._timeout
+            )
+        except httpx.HTTPError as exc:
+            raise HubPublishError(f"hub GET transport error: {exc}") from exc
+        if resp.status_code >= 400:
+            raise HubPublishError(
+                f"hub GET {url} failed: {resp.status_code} {resp.text}"
+            )
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            return data["items"]
+        return []
+
+    def _find_existing_lora(self, name: str, base_model: str) -> dict[str, Any] | None:
+        """Best-effort exact-name + base_model_id match among hub loras (L4).
+
+        Returns the matching model dict or None. Used to make a 409 (name
+        exists) idempotent: if the existing lora with this name points at the
+        same base model, the publish already succeeded previously.
+        """
+        try:
+            candidates = self.list_models(model_type="lora", keyword=name)
+        except HubPublishError as exc:
+            logger.warning("publish idempotency check failed (non-fatal): %s", exc)
+            return None
+        for m in candidates:
+            if (
+                str(m.get("name", "")) == name
+                and str(m.get("base_model_id", "")) == base_model
+            ):
+                return m
+        return None
 
     def publish_adapter(
         self,
@@ -60,8 +116,12 @@ class ModelHubClient:
     ) -> dict[str, Any]:
         """Register a LoRA adapter as a model_type=lora entry in the hub.
 
-        Raises HubPublishError on non-2xx or transport failure so callers can
-        decide whether to warn (default) or fail hard.
+        Idempotent on 409 (audit L4): if a lora with the same name AND
+        base_model_id already exists, the publish is treated as already-done
+        and returns that model — retries of the same run no longer fail
+        forever. A 409 whose existing entry has a DIFFERENT base model is a
+        real name collision and still raises HubPublishError. Other non-2xx /
+        transport failures raise so callers can warn (non-blocking) or fail.
         """
         if not name or len(name) < 3:
             raise HubPublishError(f"adapter name too short (min 3): {name!r}")
@@ -78,21 +138,44 @@ class ModelHubClient:
         url = f"{self._base}{MODELS_PATH}"
         logger.info("publish_adapter: POST %s name=%s base=%s", url, name, base_model)
         try:
-            resp = httpx.post(url, json=payload, headers=self._headers, timeout=self._timeout)
+            resp = httpx.post(
+                url, json=payload, headers=self._headers, timeout=self._timeout
+            )
         except httpx.HTTPError as exc:
             raise HubPublishError(f"hub POST transport error: {exc}") from exc
         if resp.status_code == 201:
             body = resp.json() if resp.content else {}
-            logger.info("publish_adapter: created model_id=%s name=%s", body.get("id"), name)
+            logger.info(
+                "publish_adapter: created model_id=%s name=%s", body.get("id"), name
+            )
             return {"published": True, "model": body, "status_code": 201}
+        if resp.status_code == 409:
+            # L4 idempotency: is the collision our own prior publish?
+            existing = self._find_existing_lora(name, base_model)
+            if existing is not None:
+                logger.info(
+                    "publish_adapter: name=%s already published (idempotent) "
+                    "model_id=%s",
+                    name,
+                    existing.get("id"),
+                )
+                return {
+                    "published": True,
+                    "model": existing,
+                    "status_code": 409,
+                    "idempotent": True,
+                }
+            logger.warning(
+                "publish_adapter: 409 name=%s exists with a different base_model "
+                "(got collision, not idempotent)",
+                name,
+            )
         detail = ""
         try:
             detail = resp.json().get("detail", resp.text)
         except Exception:
             detail = resp.text
-        raise HubPublishError(
-            f"hub POST {url} failed: {resp.status_code} {detail}"
-        )
+        raise HubPublishError(f"hub POST {url} failed: {resp.status_code} {detail}")
 
 
 def _extract_adapter_name(result: dict[str, Any]) -> str:
@@ -135,7 +218,9 @@ def publish_adapter_if_enabled(
     desc = f"LoRA adapter from fusion-trainer run ({result.get('method', '')})"
     client = ModelHubClient(base_url=hub_url, api_key=api_key)
     try:
-        return client.publish_adapter(name=name, base_model=base_model, description=desc)
+        return client.publish_adapter(
+            name=name, base_model=base_model, description=desc
+        )
     except HubPublishError as exc:
         logger.warning(
             "publish_adapter FAILED (non-blocking): name=%s base=%s err=%s",

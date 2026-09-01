@@ -47,7 +47,7 @@ fusion-* products (consumption layer)
 - QLoRA ✅ — 4-bit quantized-base LoRA via fusion-mlx `FineTuneConfig` (`fine_tune_type=qlora`, `quantize_base=True`, `quant_bits=4`), landed in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402). `_build_mlx_config` maps `method=qlora` to these fields.
 - Domain-specific presets (code, finance, science)
 - **fusion-router-light presets** — 1.5B LoRA + 3B full, for the gateway intent classifier / spec-decoding draft model
-- MXFP8 mixed precision ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` accepts `mxfp8` but the training loop still rejects it (service.py raises `ValueError`, tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). Training runs at default precision today; `use_mxfp8=True` emits a warning and trains at default precision (fail-visible) rather than silently dropping the flag.
+- MXFP8 mixed precision ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` accepts `mxfp8` but the training loop still rejects it (service.py raises `ValueError`, tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). `use_mxfp8` defaults to `False`; an explicit `True` **fail-stops** (raises `MLXFineTuneError` at job-build) rather than silently downgrading. Training runs at default precision today.
 
 ### Reinforcement Learning from Supervised Learning (RLSL)
 - **GRPO** ✅ — Group Relative Policy Optimization with sandbox reward (math + code). Two backends: `rft` (reward-filtered SFT approximation, default) and `grpo` (true policy-gradient via fusion-mlx `/api/fine-tune/grpo/jobs`, #363 Phase 2). See [GRPO backend](#5-run-grpo-with-sandbox-reward).
@@ -79,7 +79,7 @@ fusion-* products (consumption layer)
 | RM Training ✅ | 14B | ~22 GB | M5 96GB ✓ |
 | RLSL (GRPO, closed loop) ✅ | 14B | ~62 GB | M5 96GB ✓ |
 
-Memory estimates assume MXFP8 mixed precision on Apple Silicon. QLoRA is now real ([#402](https://github.com/dahai80/fusion-mlx/issues/402)); RM Training is now real ([#424](https://github.com/dahai80/fusion-mlx/issues/424)); RLSL closed loop (Phase 2 GRPO) is now real ([#363](https://github.com/dahai80/fusion-mlx/issues/363), scored via [#431](https://github.com/dahai80/fusion-mlx/issues/431)). MXFP8 is still upstream-blocked (⏳, see [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)), so today training runs at default precision and actual peak memory may be higher.
+Memory estimates assume MXFP8 mixed precision on Apple Silicon. QLoRA is now real ([#402](https://github.com/dahai80/fusion-mlx/issues/402)); RM Training is now real ([#424](https://github.com/dahai80/fusion-mlx/issues/424)); RLSL closed loop (Phase 2 GRPO) is now real ([#363](https://github.com/dahai80/fusion-mlx/issues/363), scored via [#431](https://github.com/dahai80/fusion-mlx/issues/431)). MXFP8 is still upstream-blocked (⏳, see [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)); `use_mxfp8` defaults `False` and explicit `True` fail-stops, so training runs at default precision today and actual peak memory may be higher than the table.
 
 ---
 
@@ -158,7 +158,7 @@ fusion-trainer rlsl --config configs/rlsl_14b.yaml \
     --model qwen2.5-7b-4bit \
     --dataset /path/to/grpo_prompts.jsonl \
     --method grpo \
-    --sandbox auto \
+    --sandbox code \
     --group-size 8 \
     --grpo-iters 1 \
     --run-name my_grpo_run
@@ -171,7 +171,7 @@ GRPO prompt dataset (one JSON object per line):
 {"prompt": "Write a function that returns the factorial of n", "tests": "assert f(5) == 120"}
 ```
 
-`--sandbox auto` picks **code** mode when a `tests` field is present, **math** mode when an `answer`/`solution` field is present. See `fusion_trainer/rlsl/sandbox.py` for the reward functions.
+`--sandbox` defaults to `off` (no code exec). Set `code` for code-mode reward (execs the model's completion + dataset `tests` in a subprocess) or `math` for answer-normalization reward. **Code mode execs untrusted output** — it requires `FUSION_CODE_SANDBOX_TRUSTED=1` and is not a true OS sandbox; see `fusion_trainer/rlsl/sandbox.py`. `auto` still picks `code` when a `tests` field is present / `math` when an `answer` field is present, but is opt-in only. See [GRPO backend](#5-run-grpo-with-sandbox-reward).
 
 ### 6. Publish a Trained Adapter to fusion-model-hub (issue #49)
 

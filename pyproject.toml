@@ -118,3 +118,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+markers = [
+    "integration: end-to-end tests that require a live fusion-mlx server (skipped unless reachable)",
+]

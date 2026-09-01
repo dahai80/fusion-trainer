@@ -97,19 +97,26 @@ class RLSLEngine:
                 raise ValueError("No valid preference data found")
 
         # Step 2: Run alignment
-        if method == "dpo":
-            result = self._run_dpo(dataset)
-        elif method == "orpo":
-            result = self._run_orpo(dataset)
-        elif method == "rlsl":
-            result = self._run_rlsl(dataset)
-        elif method == "grpo":
-            result = self._run_grpo(dataset)
-        else:
-            raise ValueError(f"Unknown alignment method: {method}")
+        try:
+            if method == "dpo":
+                result = self._run_dpo(dataset)
+            elif method == "orpo":
+                result = self._run_orpo(dataset)
+            elif method == "rlsl":
+                result = self._run_rlsl(dataset)
+            elif method == "grpo":
+                result = self._run_grpo(dataset)
+            else:
+                raise ValueError(f"Unknown alignment method: {method}")
 
-        # Step 3: Save experiment log
-        self._logger.save()
+            # Step 3: Save experiment log (success path)
+            self._logger.save()
+        finally:
+            # A3: every exit path must release the logger's file handles —
+            # the empty-dataset ValueErrors above and any trainer exception
+            # used to skip save()/close(), leaking the metrics fd and the TB
+            # async writer. close() is idempotent and safe after save().
+            self._logger.close()
 
         print("\n      ✓ Alignment complete!")
         print(f"      Method: {method}")
