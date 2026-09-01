@@ -52,17 +52,18 @@ def _root(
 
 @app.command()
 def sft(
+    ctx: typer.Context,
     config: str = typer.Option(
         "configs/sft_7b.yaml",
         "--config",
         "-c",
-        help="Path to SFT training config YAML",
+        help="Path to SFT training config YAML (loaded first; --preset and CLI flags override).",
     ),
     model: str = typer.Option(
         "",
         "--model",
         "-m",
-        help="Base model name or path (overrides config)",
+        help="Base model name or path (overrides config/preset)",
     ),
     dataset: str = typer.Option(
         "",
@@ -165,11 +166,18 @@ def sft(
 
     log = logging.getLogger(__name__)
 
-    # --preset seeds SFTConfig from a named bundle. Preset values fill the
-    # exposed CLI options only when the user did NOT pass that flag (detected
-    # by comparing to the option default), and always fill the fields the CLI
-    # does not expose (lora_alpha, dropout, target_modules, lr_scheduler,
-    # warmup_steps, weight_decay, max_grad_norm, gradient_accumulation_steps).
+    # A2 (round-2 audit): --config is honored. Hierarchy is real now:
+    #   YAML file → preset → CLI flags (highest wins).
+    # Source detection via ctx.get_parameter_source tells whether the user
+    # actually passed a flag (COMMANDLINE) vs got the option default (DEFAULT),
+    # so a YAML/preset value is only overridden when the flag is explicit.
+    src = _flag_sources(ctx)
+
+    # Step 1: YAML file → dict of overrides (only keys present in the file).
+    yaml_vals = _load_yaml_config(config, section="sft")
+    yaml_dataset = _load_yaml_config(config, section="dataset")
+
+    # Step 2: preset → dict (fills CLI-exposed + non-exposed fields).
     preset_vals: dict = {}
     if preset:
         if preset not in SFT_PRESETS:
@@ -178,18 +186,37 @@ def sft(
             )
         preset_vals = SFT_PRESETS[preset]
         log.info("Loaded preset '%s' (%s)", preset, preset_vals.get("description", ""))
-        method = _preset_or_flag(method, preset_vals, "method", "lora")
-        lora_rank = _preset_or_flag(lora_rank, preset_vals, "lora_rank", 16)
-        batch_size = _preset_or_flag(batch_size, preset_vals, "batch_size", 1)
-        learning_rate = _preset_or_flag(
-            learning_rate, preset_vals, "learning_rate", 2e-5
+
+    # Step 3: resolve each CLI-exposed field by precedence:
+    #   flag (COMMANDLINE) > preset > YAML > option default.
+    method = _resolve(src, "method", method, preset_vals, yaml_vals, default="lora")
+    lora_rank = int(
+        _resolve(src, "lora_rank", lora_rank, preset_vals, yaml_vals, default=16)
+    )
+    batch_size = int(
+        _resolve(src, "batch_size", batch_size, preset_vals, yaml_vals, default=1)
+    )
+    learning_rate = float(
+        _resolve(
+            src, "learning_rate", learning_rate, preset_vals, yaml_vals, default=2e-5
         )
-        num_epochs = _preset_or_flag(num_epochs, preset_vals, "num_epochs", 3)
-        max_seq_length = _preset_or_flag(
-            max_seq_length, preset_vals, "max_seq_length", 4096
+    )
+    num_epochs = int(
+        _resolve(src, "num_epochs", num_epochs, preset_vals, yaml_vals, default=3)
+    )
+    max_seq_length = int(
+        _resolve(
+            src, "max_seq_length", max_seq_length, yaml_dataset, default=4096
         )
+    )
+    model = _resolve(src, "model", model, preset_vals, yaml_vals, default="")
+    run_name = _resolve(src, "run_name", run_name, preset_vals, yaml_vals, default="")
+    output_dir = _resolve(src, "output_dir", output_dir, preset_vals, yaml_vals, default="")
 
     _path, _hub_dataset = _parse_dataset_arg(dataset)
+    # YAML dataset.hub_dataset fills in only when --dataset not passed.
+    if not _path and not _hub_dataset and yaml_dataset.get("hub_dataset"):
+        _hub_dataset = str(yaml_dataset["hub_dataset"])
 
     sft_cfg = SFTConfig(
         model=model,
@@ -202,8 +229,8 @@ def sft(
         run_name=run_name,
         output_dir=output_dir,
     )
-    if preset_vals:
-        _apply_preset_extras(sft_cfg, preset_vals)
+    # Non-CLI-exposed fields: preset > YAML > dataclass default.
+    _apply_extras(sft_cfg, preset_vals, yaml_vals)
 
     cfg = TrainerConfig(
         seed=seed,
@@ -240,11 +267,12 @@ def sft(
 
 @app.command()
 def rlsl(
+    ctx: typer.Context,
     config: str = typer.Option(
         "configs/rlsl_14b.yaml",
         "--config",
         "-c",
-        help="Path to RLSL config YAML",
+        help="Path to RLSL config YAML (loaded first; CLI flags override).",
     ),
     model: str = typer.Option(
         "",
@@ -327,7 +355,36 @@ def rlsl(
     )
     from fusion_trainer.rlsl.pipeline import RLSLEngine
 
+    # A2 (round-2 audit): --config honored. YAML → CLI flags (flag wins on
+    # explicit pass, YAML fills otherwise).
+    src = _flag_sources(ctx)
+    yaml_vals = _load_yaml_config(config, section="rlsl")
+    yaml_dataset = _load_yaml_config(config, section="dataset")
+
+    method = _resolve(src, "method", method, yaml_vals, default="dpo")
+    reward_model = _resolve(
+        src, "reward_model", reward_model, yaml_vals, default=""
+    )
+    sandbox = _resolve(src, "sandbox", sandbox, yaml_vals, default="off")
+    group_size = int(
+        _resolve(src, "group_size", group_size, yaml_vals, default=8)
+    )
+    grpo_iterations = int(
+        _resolve(
+            src, "grpo_iterations", grpo_iterations, yaml_vals, default=1
+        )
+    )
+    run_name = _resolve(src, "run_name", run_name, yaml_vals, default="")
+    model = _resolve(src, "model", model, yaml_vals, default="")
+
     _path, _hub_dataset = _parse_dataset_arg(dataset)
+    if not _path and not _hub_dataset and yaml_dataset.get("hub_dataset"):
+        _hub_dataset = str(yaml_dataset["hub_dataset"])
+    ds_max_seq = int(
+        _resolve(
+            src, "max_seq_length", 4096, yaml_dataset, default=4096
+        )
+    ) if yaml_dataset.get("max_seq_length") else 4096
 
     cfg = TrainerConfig(
         seed=seed,
@@ -335,6 +392,7 @@ def rlsl(
         dataset=DatasetConfig(
             path=_path,
             hub_dataset=_hub_dataset,
+            max_seq_length=ds_max_seq,
         ),
         sft=SFTConfig(model=model),
         rlsl=RLSLConfig(
@@ -464,28 +522,65 @@ def info():
 # ---------------------------------------------------------------------------
 
 
-def _preset_or_flag(
-    flag_val: Any,
-    preset_vals: dict,
-    key: str,
-    option_default: Any,
-) -> Any:
-    """Return the preset value when the user did NOT pass the CLI flag.
+def _flag_sources(ctx: typer.Context) -> dict[str, Any]:
+    """Map each CLI option name → whether the user passed it explicitly.
 
-    Typer fills in the option default when a flag is absent, so "not passed"
-    is detected by equality with option_default. If the user passed the flag
-    (flag_val != option_default), their value wins.
+    A2 (round-2 audit): replaces the old equality-with-default guess in
+    _preset_or_flag, which could not distinguish "user passed the default
+    value" from "user passed nothing". Click's ParameterSource is exact.
     """
-    if flag_val == option_default:
-        return preset_vals.get(key, flag_val)
+    from click.core import ParameterSource
+
+    out: dict[str, Any] = {}
+    try:
+        params = ctx.command.params
+    except Exception:
+        return out
+    for p in params:
+        try:
+            out[p.name] = ctx.get_parameter_source(p.name)
+        except Exception:
+            out[p.name] = ParameterSource.DEFAULT
+    return out
+
+
+def _resolve(
+    src: dict[str, Any],
+    flag_name: str,
+    flag_val: Any,
+    *higher: dict,
+    default: Any = None,
+) -> Any:
+    """Resolve a config field by precedence: flag > higher[0] > ... > default.
+
+    A2 (round-2 audit): flag wins ONLY when the user passed it explicitly
+    (ParameterSource.COMMANDLINE). Otherwise the first dict that has the key
+    wins; finally the option default. `higher` dicts are ordered
+    highest-precedence-first (e.g. preset, then YAML).
+    """
+    got = src.get(flag_name)
+    # Typer vendors click (typer._click.core) whose ParameterSource enum is a
+    # DIFFERENT class than click.core's (and uses different int values:
+    # COMMANDLINE is 1 vendored, 2 upstream). `==`/`is`/`.value` all fail
+    # across the two classes. Compare by enum member NAME (string
+    # "COMMANDLINE"), which is stable regardless of which copy produced the
+    # value.
+    is_cmd = getattr(got, "name", None) == "COMMANDLINE"
+    if is_cmd:
+        return flag_val
+    for d in higher:
+        if d and flag_name in d and d[flag_name] is not None:
+            return d[flag_name]
+    if default is not None:
+        return default
     return flag_val
 
 
-def _apply_preset_extras(sft_cfg: Any, preset_vals: dict) -> None:
-    """Fill SFTConfig fields the CLI does not expose, from the preset.
+def _apply_extras(sft_cfg: Any, preset_vals: dict, yaml_vals: dict) -> None:
+    """Fill SFTConfig fields the CLI does not expose: preset > YAML > default.
 
-    Only sets fields present in the preset; leaves SFTConfig defaults intact
-    otherwise. Mutates sft_cfg in place.
+    A2 (round-2 audit): unifies the old preset-only path with YAML. Mutates
+    sft_cfg in place; only sets fields present in preset or YAML.
     """
     import logging
 
@@ -502,15 +597,58 @@ def _apply_preset_extras(sft_cfg: Any, preset_vals: dict) -> None:
         "model_type",
     ]
     for key in extras:
+        # preset wins over YAML (preset is a higher-precedence named bundle).
         if key in preset_vals:
             setattr(sft_cfg, key, preset_vals[key])
+        elif key in yaml_vals:
+            setattr(sft_cfg, key, yaml_vals[key])
     log.info(
-        "Preset extras applied: method=%s rank=%s alpha=%s grad_accum=%s",
+        "Config extras applied: method=%s rank=%s alpha=%s grad_accum=%s",
         sft_cfg.method,
         sft_cfg.lora_rank,
         sft_cfg.lora_alpha,
         sft_cfg.gradient_accumulation_steps,
     )
+
+
+def _load_yaml_config(path: str, section: str) -> dict:
+    """Load one top-level section (sft/rlsl/dataset) from a YAML config file.
+
+    A2 (round-2 audit): --config was previously declared but never read, so
+    operator-authored YAML hyperparameters were silently dropped — a silent
+    mis-configuration failure. Returns {} when the file is missing or the
+    section is absent (graceful: the documented default configs live in
+    configs/, but the file is optional). Logs loudly on a parse error so a
+    malformed YAML is never silently ignored.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        log.warning("--config %s not found; using preset/flag defaults", path)
+        return {}
+    try:
+        import yaml
+
+        with p.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except yaml.YAMLError as exc:
+        log.error("--config %s failed to parse: %s", path, exc)
+        raise typer.BadParameter(f"Config YAML parse error in {path}: {exc}")
+    except OSError as exc:
+        log.error("--config %s unreadable: %s", path, exc)
+        raise typer.BadParameter(f"Config YAML unreadable: {path}: {exc}")
+    section_data = data.get(section, {})
+    if not isinstance(section_data, dict):
+        log.warning(
+            "--config %s: section '%s' is not a mapping; ignored", path, section
+        )
+        return {}
+    log.info("--config %s: loaded section '%s' (%d keys)", path, section, len(section_data))
+    return section_data
 
 
 def _parse_dataset_arg(arg: str) -> tuple[str, str]:

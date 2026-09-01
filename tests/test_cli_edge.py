@@ -251,6 +251,114 @@ class TestCLIPreset:
 
 
 # ===========================================================================
+# CLI --config YAML loading (A2 round-2 audit)
+# ===========================================================================
+
+
+class TestCLIConfig:
+    """--config loads YAML; CLI flags override; missing file is graceful."""
+
+    def test_config_seeds_yaml_fields(self, monkeypatch, tmp_path):
+        # A2 (round-2 audit): --config was previously dead; YAML hyperparams
+        # were silently dropped. Now the YAML section populates SFTConfig.
+        called: dict = {}
+
+        class FakeTrainer:
+            def __init__(self, cfg):
+                called["cfg"] = cfg
+
+            def train(self):
+                pass
+
+        monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
+        cfg_yaml = tmp_path / "my.yaml"
+        cfg_yaml.write_text(
+            "sft:\n"
+            "  method: lora\n"
+            "  lora_rank: 64\n"
+            "  learning_rate: 0.0003\n"
+            "  num_epochs: 7\n"
+            "  lora_alpha: 128.0\n"
+            "  weight_decay: 0.02\n"
+            "dataset:\n"
+            "  hub_dataset: sft/my_data\n"
+            "  max_seq_length: 2048\n"
+        )
+        result = runner.invoke(
+            app,
+            [
+                "sft",
+                "--config",
+                str(cfg_yaml),
+                "--model",
+                "qwen2.5-7b",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        cfg = called["cfg"]
+        assert cfg.sft.lora_rank == 64
+        assert cfg.sft.learning_rate == 0.0003
+        assert cfg.sft.num_epochs == 7
+        # non-CLI-exposed extras flow from YAML
+        assert cfg.sft.lora_alpha == 128.0
+        assert cfg.sft.weight_decay == 0.02
+        # dataset section fills hub_dataset when --dataset not passed
+        assert cfg.dataset.hub_dataset == "sft/my_data"
+        assert cfg.dataset.max_seq_length == 2048
+
+    def test_cli_flag_overrides_yaml(self, monkeypatch, tmp_path):
+        called: dict = {}
+
+        class FakeTrainer:
+            def __init__(self, cfg):
+                called["cfg"] = cfg
+
+            def train(self):
+                pass
+
+        monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
+        cfg_yaml = tmp_path / "my.yaml"
+        cfg_yaml.write_text("sft:\n  lora_rank: 64\n  learning_rate: 0.0003\n")
+        result = runner.invoke(
+            app,
+            [
+                "sft",
+                "--config",
+                str(cfg_yaml),
+                "--model",
+                "m",
+                "--dataset",
+                "/d.jsonl",
+                "--lora-rank",
+                "8",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        cfg = called["cfg"]
+        assert cfg.sft.lora_rank == 8  # CLI flag wins over YAML
+        assert cfg.sft.learning_rate == 0.0003  # YAML fills (no flag)
+
+    def test_missing_config_is_graceful(self, monkeypatch):
+        # A missing --config file must not crash — it warns and uses defaults.
+        called: dict = {}
+
+        class FakeTrainer:
+            def __init__(self, cfg):
+                called["cfg"] = cfg
+
+            def train(self):
+                pass
+
+        monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
+        result = runner.invoke(
+            app,
+            ["sft", "--config", "/nonexistent/path.yaml", "--model", "m",
+             "--dataset", "/d.jsonl"],
+        )
+        assert result.exit_code == 0, result.output
+
+
+# ===========================================================================
 # CLI edge cases
 # ===========================================================================
 
