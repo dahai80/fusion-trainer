@@ -22,11 +22,17 @@ Response: 201 created (model dict), 409 name exists, 404 base_model_id missing.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
 
-from .config import URLGuardError, _default_hub_url, validate_service_url
+from .config import (
+    URLGuardError,
+    _default_hub_api_key,
+    _default_hub_url,
+    validate_service_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +241,20 @@ def publish_adapter_if_enabled(
     {"published": False, "error": ...} — NEVER raises, so the training
     result is never blocked by a hub outage (fail-visible, non-blocking).
     """
-    if not getattr(config, "publish_adapter", False):
+    # S3 (soft #3): the GUI path (fusion-agent-studio
+    # TrainingService._build_trainer_config) currently drops publish_adapter /
+    # hub_url / hub_api_key from the config it builds, so a GUI-triggered run
+    # never publishes even when the operator wanted it to. That bug is upstream
+    # (fusion-agent-studio#268) and fusion-trainer cannot fix the other repo.
+    # Env-var fallback lets the daemon/operator opt into publish WITHOUT the
+    # config field: FUSION_TRAINER_PUBLISH=1 forces publish_adapter on, and
+    # FUSION_MODEL_HUB_URL / FUSION_MODEL_HUB_API_KEY supply the endpoint.
+    # This keeps the GUI path working until #268 lands upstream.
+    _PUBLISH_ENV = "FUSION_TRAINER_PUBLISH"
+    publish_on = getattr(config, "publish_adapter", False) or (
+        os.environ.get(_PUBLISH_ENV, "") == "1"
+    )
+    if not publish_on:
         return {"published": False, "reason": "disabled"}
     if result.get("status") != "completed":
         return {"published": False, "reason": f"status={result.get('status', '')}"}
@@ -247,7 +266,7 @@ def publish_adapter_if_enabled(
         logger.warning("publish_adapter_if_enabled: empty base_model, skipping publish")
         return {"published": False, "reason": "empty base_model"}
     hub_url = getattr(config, "hub_url", "") or _default_hub_url()
-    api_key = getattr(config, "hub_api_key", "") or ""
+    api_key = getattr(config, "hub_api_key", "") or _default_hub_api_key()
     desc = f"LoRA adapter from fusion-trainer run ({result.get('method', '')})"
     try:
         client = ModelHubClient(base_url=hub_url, api_key=api_key)

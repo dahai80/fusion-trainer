@@ -83,6 +83,47 @@ class TestRewardCode:
         r = sandbox.reward_code({"tests": tests}, f"```python\n{code}\n```")
         assert r == 1.0
 
+    def test_cpu_limit_kills_infinite_loop(self):
+        # defense-in-depth: RLIMIT_CPU raises SIGXCPU on CPU-time exhaustion so
+        # a runaway loop dies (exit!=0 -> reward 0.0) instead of hanging the
+        # trainer. RLIMIT_CPU is enforced reliably on POSIX (unlike RLIMIT_AS,
+        # which macOS often refuses to lower). 1 CPU-second budget.
+        os.environ[sandbox._CPU_LIMIT_SECONDS_ENV] = "1"
+        try:
+            code = "while True:\n    pass"
+            r = sandbox.reward_code({}, f"```python\n{code}\n```")
+            assert r == 0.0
+        finally:
+            os.environ.pop(sandbox._CPU_LIMIT_SECONDS_ENV, None)
+
+    def test_isolation_prelude_logged(self):
+        # the fail-visible banner must reach stderr so operators know the
+        # subprocess is rlimit-bounded, not a real sandbox.
+        code = "assert 1 == 1"
+        import subprocess as _sp
+        import sys as _sys
+        import tempfile as _tf
+        from pathlib import Path as _Path
+        with _tf.TemporaryDirectory(prefix="grpo_sandbox_") as td:
+            script = _Path(td) / "sol.py"
+            prelude = sandbox._build_prelude(
+                sandbox._MEM_LIMIT_BYTES_ENV, sandbox._CPU_LIMIT_SECONDS_ENV
+            )
+            script.write_text(prelude + "\nassert 1 == 1")
+            env = {
+                "PATH": "/usr/bin:/bin:/usr/local/bin",
+                "TMPDIR": td,
+                "PYTHONPATH": "",
+                sandbox._MEM_LIMIT_BYTES_ENV: str(sandbox._DEFAULT_MEM_BYTES),
+                sandbox._CPU_LIMIT_SECONDS_ENV: str(sandbox._DEFAULT_CPU_SECONDS),
+            }
+            proc = _sp.run(
+                [_sys.executable, str(script)],
+                capture_output=True, text=True, timeout=10, cwd=td, env=env,
+            )
+            assert proc.returncode == 0
+            assert "rlimits applied" in proc.stderr
+
 
 class TestRewardCompletion:
     def setup_method(self):

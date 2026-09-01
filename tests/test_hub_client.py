@@ -256,3 +256,29 @@ class TestPublishAdapterIfEnabled:
         assert result["published"] is False
         assert "error" in result
         assert result["adapter_name"] == "my-ad"
+
+    def test_env_fallback_publish_when_config_field_false(self, monkeypatch):
+        # S3 (soft #3): the GUI path drops publish_adapter from the config it
+        # builds (upstream fusion-agent-studio#268). FUSION_TRAINER_PUBLISH=1
+        # must force publish on even when config.publish_adapter is False, so
+        # GUI-triggered runs can still publish via env until #268 lands.
+        monkeypatch.setenv("FUSION_TRAINER_PUBLISH", "1")
+        monkeypatch.setattr(
+            hub_mod.httpx,
+            "post",
+            lambda *a, **kw: _Resp(201, payload={"id": "m"}),
+        )
+        cfg = self._cfg(publish=False)  # GUI dropped the flag -> False
+        result = publish_adapter_if_enabled(
+            cfg, {"status": "completed", "adapter_name": "gui-ad", "method": "lora"}
+        )
+        assert result["published"] is True
+
+    def test_env_fallback_off_when_unset(self, monkeypatch):
+        monkeypatch.delenv("FUSION_TRAINER_PUBLISH", raising=False)
+        cfg = self._cfg(publish=False)
+        result = publish_adapter_if_enabled(
+            cfg, {"status": "completed", "adapter_name": "a"}
+        )
+        assert result["published"] is False
+        assert result["reason"] == "disabled"
