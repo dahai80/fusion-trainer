@@ -256,7 +256,9 @@ class RunManager:
                     ):
                         data["step"] = int(step)
         except Exception as exc:
-            logger.warning("reconstruct meta: read events %s failed: %s", events_path, exc)
+            logger.warning(
+                "reconstruct meta: read events %s failed: %s", events_path, exc
+            )
             return None
         if not saw_event:
             return None

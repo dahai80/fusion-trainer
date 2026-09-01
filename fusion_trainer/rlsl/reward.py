@@ -7,6 +7,7 @@ Delegates the Bradley-Terry value-head gradient loop to fusion-mlx's
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +45,13 @@ class RewardTrainer:
     def _build_reward_config(self) -> dict[str, Any]:
         # 映射 RLSLConfig → fusion-mlx RewardConfig 字段(reward.py:RewardConfig)。
         total_pairs = max(1, len(self._pairs))
-        iters = self.rlsl_cfg.reward_num_epochs * total_pairs
+        batch_size = max(1, int(self.rlsl_cfg.reward_batch_size))
+        # A5: iters = epoch * (total // batch_size),梯度步非样本步(见 dpo.py)。
+        steps_per_epoch = max(1, total_pairs // batch_size)
+        iters = self.rlsl_cfg.reward_num_epochs * steps_per_epoch
         return {
             "iters": max(1, iters),
-            "batch_size": max(1, int(self.rlsl_cfg.reward_batch_size)),
+            "batch_size": batch_size,
             "learning_rate": float(self.rlsl_cfg.reward_learning_rate),
             "lora_layers": 16,
             "lora_rank": int(self.config.sft.lora_rank),
@@ -81,7 +85,9 @@ class RewardTrainer:
 
         self._pairs = dataset
         pairs = self._normalize_pairs(dataset)
-        adapter_name = self.rlsl_cfg.run_name or "reward_run"
+        adapter_name = (
+            f"{self.rlsl_cfg.run_name or 'reward_run'}_{uuid.uuid4().hex[:8]}"
+        )
 
         print("  [RM] Reward-model training via fusion-mlx #424")
         print(f"       Dataset: {total_pairs} preference pairs")

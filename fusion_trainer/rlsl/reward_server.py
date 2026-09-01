@@ -130,9 +130,7 @@ class RewardServer:
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     if length <= 0 or length > _MAX_BODY_BYTES:
-                        logger.warning(
-                            "reward-server: rejected body length=%s", length
-                        )
+                        logger.warning("reward-server: rejected body length=%s", length)
                         self._forbid(400, "invalid content length")
                         return
                     raw = self.rfile.read(length)

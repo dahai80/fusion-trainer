@@ -205,13 +205,13 @@ def sft(
         _resolve(src, "num_epochs", num_epochs, preset_vals, yaml_vals, default=3)
     )
     max_seq_length = int(
-        _resolve(
-            src, "max_seq_length", max_seq_length, yaml_dataset, default=4096
-        )
+        _resolve(src, "max_seq_length", max_seq_length, yaml_dataset, default=4096)
     )
     model = _resolve(src, "model", model, preset_vals, yaml_vals, default="")
     run_name = _resolve(src, "run_name", run_name, preset_vals, yaml_vals, default="")
-    output_dir = _resolve(src, "output_dir", output_dir, preset_vals, yaml_vals, default="")
+    output_dir = _resolve(
+        src, "output_dir", output_dir, preset_vals, yaml_vals, default=""
+    )
 
     _path, _hub_dataset = _parse_dataset_arg(dataset)
     # YAML dataset.hub_dataset fills in only when --dataset not passed.
@@ -362,17 +362,11 @@ def rlsl(
     yaml_dataset = _load_yaml_config(config, section="dataset")
 
     method = _resolve(src, "method", method, yaml_vals, default="dpo")
-    reward_model = _resolve(
-        src, "reward_model", reward_model, yaml_vals, default=""
-    )
+    reward_model = _resolve(src, "reward_model", reward_model, yaml_vals, default="")
     sandbox = _resolve(src, "sandbox", sandbox, yaml_vals, default="off")
-    group_size = int(
-        _resolve(src, "group_size", group_size, yaml_vals, default=8)
-    )
+    group_size = int(_resolve(src, "group_size", group_size, yaml_vals, default=8))
     grpo_iterations = int(
-        _resolve(
-            src, "grpo_iterations", grpo_iterations, yaml_vals, default=1
-        )
+        _resolve(src, "grpo_iterations", grpo_iterations, yaml_vals, default=1)
     )
     run_name = _resolve(src, "run_name", run_name, yaml_vals, default="")
     model = _resolve(src, "model", model, yaml_vals, default="")
@@ -380,11 +374,11 @@ def rlsl(
     _path, _hub_dataset = _parse_dataset_arg(dataset)
     if not _path and not _hub_dataset and yaml_dataset.get("hub_dataset"):
         _hub_dataset = str(yaml_dataset["hub_dataset"])
-    ds_max_seq = int(
-        _resolve(
-            src, "max_seq_length", 4096, yaml_dataset, default=4096
-        )
-    ) if yaml_dataset.get("max_seq_length") else 4096
+    ds_max_seq = (
+        int(_resolve(src, "max_seq_length", 4096, yaml_dataset, default=4096))
+        if yaml_dataset.get("max_seq_length")
+        else 4096
+    )
 
     cfg = TrainerConfig(
         seed=seed,
@@ -647,7 +641,9 @@ def _load_yaml_config(path: str, section: str) -> dict:
             "--config %s: section '%s' is not a mapping; ignored", path, section
         )
         return {}
-    log.info("--config %s: loaded section '%s' (%d keys)", path, section, len(section_data))
+    log.info(
+        "--config %s: loaded section '%s' (%d keys)", path, section, len(section_data)
+    )
     return section_data
 
 

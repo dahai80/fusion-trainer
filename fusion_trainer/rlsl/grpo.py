@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +69,12 @@ class GRPOTrainer:
         self._model = self.config.sft.model
         self._adapter_name = ""
         self._mean_reward = 0.0
+        # A6: per-run unique suffix so concurrent GRPO runs on the same base
+        # model never collide on adapter_name (fusion-mlx addresses adapters
+        # by name under ~/.fusion-mlx/adapters/<model>/<name>/ — same name =
+        # silent overwrite). run_name alone collides when empty/default; the
+        # uuid8 makes every trainer instance unique.
+        self._run_suffix = uuid.uuid4().hex[:8]
 
         # Optional live-progress sink (RunManager). None = CLI mode.
         self.on_event = None
@@ -206,7 +213,7 @@ class GRPOTrainer:
         iters = max(1, int(self.rlsl_cfg.grpo_iterations))
         mode = self.rlsl_cfg.sandbox_mode
         scale = float(self.rlsl_cfg.reward_scale)
-        adapter_name = self.rlsl_cfg.run_name or "grpo_run"
+        adapter_name = f"{self.rlsl_cfg.run_name or 'grpo_run'}_{self._run_suffix}"
 
         print("╔══ Fusion-Trainer GRPO (true, policy-gradient) ══════")
         print(f"║  Model:      {self._model}")
@@ -495,7 +502,7 @@ class GRPOTrainer:
         kept_count: int,
     ) -> dict[str, Any]:
         """Submit a LoRA fine-tune job on the reward-filtered data and poll to completion."""
-        adapter_name = f"grpo_iter_{iteration}"
+        adapter_name = f"grpo_iter_{iteration}_{self._run_suffix}"
         cfg = {
             "fine_tune_type": "lora",
             "lora_rank": 16,

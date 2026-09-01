@@ -352,8 +352,15 @@ class TestCLIConfig:
         monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
         result = runner.invoke(
             app,
-            ["sft", "--config", "/nonexistent/path.yaml", "--model", "m",
-             "--dataset", "/d.jsonl"],
+            [
+                "sft",
+                "--config",
+                "/nonexistent/path.yaml",
+                "--model",
+                "m",
+                "--dataset",
+                "/d.jsonl",
+            ],
         )
         assert result.exit_code == 0, result.output
 

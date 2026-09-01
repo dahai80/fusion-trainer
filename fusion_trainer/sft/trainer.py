@@ -205,6 +205,45 @@ class SFTTrainer:
         steps_per_epoch = max(1, total_samples // max(1, self.sft_cfg.batch_size))
         iters = self.sft_cfg.max_steps or (steps_per_epoch * self.sft_cfg.num_epochs)
 
+        # A7: fusion-mlx FineTuneConfig accepts ONLY its declared fields
+        # (FineTuneConfig(**body) raises TypeError on unknown keys → 400).
+        # Confirmed supported: lr_schedule (dict), quant_bits. NOT supported
+        # (upstream has no field): lora_target_modules (only lora_layers count),
+        # weight_decay, max_grad_norm. The old code silently dropped ALL of
+        # these. Now: lr_schedule + quant_bits are wired through; the
+        # unsupported three warn LOUDLY when the user set a non-default value
+        # (fail-visible, never silent drop) — upstream issues filed.
+        unsupported_warned: list[str] = []
+        if (
+            self.sft_cfg.lora_target_modules
+            and self.sft_cfg.lora_target_modules
+            not in (["q_proj", "v_proj", "k_proj", "o_proj"],)
+        ):
+            unsupported_warned.append(
+                f"lora_target_modules={self.sft_cfg.lora_target_modules} "
+                "(fusion-mlx only supports a layer COUNT via lora_layers, "
+                "not per-module targeting — ignored)"
+            )
+        if self.sft_cfg.weight_decay != 0.01:
+            unsupported_warned.append(
+                f"weight_decay={self.sft_cfg.weight_decay} "
+                "(fusion-mlx optimizer_config is empty — ignored)"
+            )
+        if self.sft_cfg.max_grad_norm != 1.0:
+            unsupported_warned.append(
+                f"max_grad_norm={self.sft_cfg.max_grad_norm} "
+                "(fusion-mlx has no gradient-clip field — ignored)"
+            )
+        for msg in unsupported_warned:
+            logger.warning(
+                "SFT config field not consumed by fusion-mlx: %s. "
+                "Training proceeds with fusion-mlx defaults for this field. "
+                "Upstream support tracked in fusion-mlx issues.",
+                msg,
+            )
+
+        lr_schedule = self._build_lr_schedule(iters)
+
         cfg: dict[str, Any] = {
             "fine_tune_type": fine_tune_type,
             "lora_rank": self._lora_cfg.rank,
@@ -224,12 +263,74 @@ class SFTTrainer:
             "mask_prompt": True,
             "seed": self.config.seed,
         }
+        # A7: pass the lr_schedule dict (warmup + cosine/linear) through to
+        # fusion-mlx's build_schedule. Was previously dropped → no warmup, no
+        # decay despite the preset specifying warmup_steps/lr_scheduler.
+        if lr_schedule is not None:
+            cfg["lr_schedule"] = lr_schedule
         if fine_tune_type == "qlora":
-            # QLoRA:量化基座 + LoRA。quant_bits 默认 4(上游 FineTuneConfig.quant_bits)。
+            # A7: send quant_bits from config (was hardcoded 4 → 8-bit QLoRA
+            # impossible). fusion-mlx validates quant_bits in (4, 8).
+            qb = int(self.sft_cfg.quant_bits)
+            if qb not in (4, 8):
+                logger.warning(
+                    "quant_bits=%d not in (4,8); clamping to 4 for QLoRA", qb
+                )
+                qb = 4
             cfg["quantize_base"] = True
-            cfg["quant_bits"] = 4
-            logger.info("QLoRA: fine_tune_type=qlora quantize_base=True quant_bits=4")
+            cfg["quant_bits"] = qb
+            logger.info(
+                "QLoRA: fine_tune_type=qlora quantize_base=True quant_bits=%d", qb
+            )
         return cfg
+
+    def _build_lr_schedule(self, iters: int) -> dict[str, Any] | None:
+        """A7: build the mlx-lm lr_schedule dict from lr_scheduler + warmup_steps.
+
+        mlx-lm build_schedule expects {"name": <fn>, "arguments": [...],
+        "warmup": <steps>, "warmup_init": 0.0}. Supported schedulers:
+        cosine_decay(init, decay_steps, end=0.0), linear_schedule(init, end,
+        steps), exponential_decay(init, decay_rate), step_decay(init,
+        decay_rate, step_size). Returns None for "constant"/unknown → fusion-mlx
+        uses the flat learning_rate.
+        """
+        name = (self.sft_cfg.lr_scheduler or "").lower().strip()
+        lr = float(self.sft_cfg.learning_rate)
+        warmup = max(0, int(self.sft_cfg.warmup_steps))
+        if name in ("", "constant", "none"):
+            if warmup > 0:
+                # Warmup only, then hold at lr: linear_schedule(lr, lr, warmup)
+                # would decay to lr over warmup steps then stay — but we want
+                # warmup THEN constant. Use a linear warmup to lr via the
+                # warmup key with a constant base. mlx-lm joins warmup_fn with
+                # bound_schedule_fn at warmup+1; for constant, bound = cosine
+                # decay over a huge horizon so it stays ~lr.
+                return {
+                    "name": "cosine_decay",
+                    "arguments": [lr, max(iters * 100, 1), lr],
+                    "warmup": warmup,
+                    "warmup_init": 0.0,
+                }
+            return None
+        if name in ("cosine", "cosine_decay"):
+            return {
+                "name": "cosine_decay",
+                "arguments": [lr, max(iters, 1), 0.0],
+                "warmup": warmup,
+                "warmup_init": 0.0,
+            }
+        if name in ("linear", "linear_decay"):
+            return {
+                "name": "linear_schedule",
+                "arguments": [lr, 0.0, max(iters, 1)],
+                "warmup": warmup,
+                "warmup_init": 0.0,
+            }
+        logger.warning(
+            "lr_scheduler=%r not mapped to an mlx-lm schedule; using flat lr",
+            self.sft_cfg.lr_scheduler,
+        )
+        return None
 
     def _run_training(
         self,

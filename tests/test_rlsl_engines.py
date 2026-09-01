@@ -407,7 +407,7 @@ class TestRLSLEngine:
             assert result["phase2"]["backend"] == "grpo"
             assert result["phase2"]["mean_reward"] == 0.83
             assert grpo_calls["create"][0]["model_id"] == "test-model"
-            assert grpo_calls["create"][0]["adapter_name"] == "test_rlsl_grpo"
+            assert grpo_calls["create"][0]["adapter_name"].startswith("test_rlsl_grpo_")
             assert "reward_endpoint" in grpo_calls["create"][0]["config"]
 
     def test_run_empty_dataset_raises(self):

@@ -8,6 +8,7 @@ fusion-mlx's /admin/api/fine-tune/dpo/jobs endpoint (upstream #399).
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +43,16 @@ class DPOTrainer:
         # 映射 RLSLConfig → fusion-mlx DPOConfig 字段(dpo.py:32)。
         # method 由端点强制,这里不设(避免与端点冲突)。
         total_pairs = max(1, len(self._pairs))
-        iters = self.rlsl_cfg.num_epochs * total_pairs
+        batch_size = max(1, int(self.rlsl_cfg.batch_size))
+        # A5: iters = 梯度更新步数 = epoch * (total // batch_size)。旧公式
+        # num_epochs * total_pairs 把每个样本当一步,忽略 batch 聚合,按
+        # batch_size 倍数过训练(4x 算力浪费 + 过拟合风险)。与 SFT trainer
+        # steps_per_epoch = total // batch_size 对齐。
+        steps_per_epoch = max(1, total_pairs // batch_size)
+        iters = self.rlsl_cfg.num_epochs * steps_per_epoch
         return {
             "iters": max(1, iters),
-            "batch_size": max(1, int(self.rlsl_cfg.batch_size)),
+            "batch_size": batch_size,
             "learning_rate": float(self.rlsl_cfg.learning_rate),
             "beta": float(self.rlsl_cfg.beta),
             "lora_layers": 16,
@@ -82,7 +89,7 @@ class DPOTrainer:
 
         self._pairs = dataset
         pairs = self._normalize_pairs(dataset)
-        adapter_name = self.rlsl_cfg.run_name or "dpo_run"
+        adapter_name = f"{self.rlsl_cfg.run_name or 'dpo_run'}_{uuid.uuid4().hex[:8]}"
 
         print("  [DPO] DPO alignment via fusion-mlx #399")
         print(f"       Dataset: {total_pairs} preference pairs")

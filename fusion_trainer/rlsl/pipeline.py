@@ -13,6 +13,7 @@ from external paths and writes outputs to its own cache directory.
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -238,7 +239,9 @@ class RLSLEngine:
 
         g = max(2, int(self.rlsl_cfg.group_size))
         iters = max(1, int(self.rlsl_cfg.grpo_iterations))
-        grpo_adapter = f"{self.rlsl_cfg.run_name or 'rlsl'}_grpo"
+        # A6: uuid8 suffix — concurrent RLSL runs with empty run_name used to
+        # collide on "rlsl_grpo", overwriting each other's adapter weights.
+        grpo_adapter = f"{self.rlsl_cfg.run_name or 'rlsl'}_grpo_{uuid.uuid4().hex[:8]}"
         job_id = ""
         phase2_status = "completed"
         last_adapter = ""

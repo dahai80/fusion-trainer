@@ -9,6 +9,7 @@ fusion-mlx's /admin/api/fine-tune/orpo/jobs endpoint (upstream #399).
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +43,13 @@ class ORPOTrainer:
     def _build_orpo_config(self) -> dict[str, Any]:
         # 映射 RLSLConfig → DPOConfig(method=orpo)。ORPO 用 lambda_odds,beta 被忽略。
         total_pairs = max(1, len(self._pairs))
-        iters = self.rlsl_cfg.num_epochs * total_pairs
+        batch_size = max(1, int(self.rlsl_cfg.batch_size))
+        # A5: iters = epoch * (total // batch_size),梯度步非样本步(见 dpo.py)。
+        steps_per_epoch = max(1, total_pairs // batch_size)
+        iters = self.rlsl_cfg.num_epochs * steps_per_epoch
         return {
             "iters": max(1, iters),
-            "batch_size": max(1, int(self.rlsl_cfg.batch_size)),
+            "batch_size": batch_size,
             "learning_rate": float(self.rlsl_cfg.learning_rate),
             "lambda_odds": float(self.rlsl_cfg.beta),
             "lora_layers": 16,
@@ -82,7 +86,7 @@ class ORPOTrainer:
 
         self._pairs = dataset
         pairs = _normalize_pairs(dataset)
-        adapter_name = self.rlsl_cfg.run_name or "orpo_run"
+        adapter_name = f"{self.rlsl_cfg.run_name or 'orpo_run'}_{uuid.uuid4().hex[:8]}"
 
         print("  [ORPO] ORPO alignment via fusion-mlx #399")
         print(f"       Dataset: {total_pairs} preference pairs")
