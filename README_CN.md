@@ -97,13 +97,19 @@ chmod +x scripts/setup_env.sh
 source .venv/bin/activate
 ```
 
-### 2. 导入数据集
+### 2. 准备数据集
+
+数据集的导入/列出/查看由配套项目 **fusion-model-hub** 负责 —— Fusion-Trainer 没有 `dataset` 子命令。将 JSONL 文件（每行一个 JSON 对象）放在磁盘上并通过 `--dataset` 传入路径，或使用 hub 数据集路径（`hub:sft/code_alpaca` → `{FUSION_MODEL_HUB}/datasets/sft/code_alpaca.jsonl`）。
 
 ```bash
-fusion-trainer dataset import /path/to/data.jsonl \
-    --name my_dataset \
-    --category sft \
-    --format jsonl
+# 本地文件（messages schema）
+{"input": "Translate: hello", "output": "你好"}
+{"input": "Summarize: ...", "output": "..."}
+
+# 或使用 hub 数据集（由 fusion-model-hub 管理）
+fusion-trainer sft --preset sft_7b_lora \
+    --model qwen2.5-7b-4bit \
+    --dataset hub:sft/code_alpaca
 ```
 
 ### 3. 运行 SFT 微调
@@ -145,12 +151,12 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 | 命令 | 说明 |
 |---|---|
 | `fusion-trainer sft` | 运行监督微调 |
-| `fusion-trainer rlsl` | 运行 DPO/ORPO/RLSL 对齐 |
-| `fusion-trainer dataset import` | 导入数据集到 Hub |
-| `fusion-trainer dataset list` | 列出 Hub 中的数据集 |
-| `fusion-trainer dataset info` | 查看数据集详情 |
+| `fusion-trainer rlsl` | 运行 DPO/ORPO/RLSL/GRPO 对齐 |
+| `fusion-trainer publish <run_id>` | 发布已完成 run 的 LoRA 适配器到 Hub |
 | `fusion-trainer info` | 查看系统信息与硬件检查 |
 | `fusion-trainer --help` | 查看完整帮助 |
+
+> 数据集的导入/列出/查看请使用配套项目 **fusion-model-hub**（Fusion-Trainer 无 `dataset` 子命令）。
 
 ---
 
