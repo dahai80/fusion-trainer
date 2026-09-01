@@ -130,9 +130,10 @@ def sft(
         help="Random seed",
     ),
     use_mxfp8: bool = typer.Option(
-        True,
+        False,
         "--mxfp8/--no-mxfp8",
-        help="Use MXFP8 mixed precision",
+        help="Use MXFP8 mixed precision (upstream-blocked, fusion-mlx#402; "
+        "explicit --mxfp8 fail-stops until upstream lands)",
     ),
     model_hub_path: str = typer.Option(
         "",
@@ -223,7 +224,9 @@ def sft(
 
         pub = publish_adapter_if_enabled(cfg, result)
         if pub.get("published"):
-            typer.echo(f"✓ Adapter published to hub: {pub.get('model', {}).get('id', '')}")
+            typer.echo(
+                f"✓ Adapter published to hub: {pub.get('model', {}).get('id', '')}"
+            )
         elif pub.get("error"):
             typer.echo(f"⚠ Adapter publish failed (non-blocking): {pub['error']}")
         elif pub.get("reason"):
@@ -268,9 +271,12 @@ def rlsl(
         help="Reward model (required for rlsl method)",
     ),
     sandbox: str = typer.Option(
-        "auto",
+        "off",
         "--sandbox",
-        help="GRPO sandbox reward: off, code, math, auto",
+        help="GRPO sandbox reward: off, code, math, auto. Default off: code "
+        "mode execs model/data-generated Python with no real isolation "
+        "(C2); enable only on fully trusted data with "
+        "FUSION_CODE_SANDBOX_TRUSTED=1.",
     ),
     group_size: int = typer.Option(
         8,
@@ -349,7 +355,9 @@ def rlsl(
 
         pub = publish_adapter_if_enabled(cfg, result)
         if pub.get("published"):
-            typer.echo(f"✓ Adapter published to hub: {pub.get('model', {}).get('id', '')}")
+            typer.echo(
+                f"✓ Adapter published to hub: {pub.get('model', {}).get('id', '')}"
+            )
         elif pub.get("error"):
             typer.echo(f"⚠ Adapter publish failed (non-blocking): {pub['error']}")
         elif pub.get("reason"):
@@ -363,7 +371,9 @@ def rlsl(
 
 @app.command()
 def publish(
-    run_id: str = typer.Argument(..., help="Run ID of a completed run whose adapter to publish."),
+    run_id: str = typer.Argument(
+        ..., help="Run ID of a completed run whose adapter to publish."
+    ),
     hub_url: str = typer.Option(
         "",
         "--hub-url",
@@ -381,12 +391,14 @@ def publish(
     run's recorded adapter_name + base model from the run registry. Failures
     warn loudly but exit 0 (fail-visible, non-blocking).
     """
-    from fusion_trainer.run_manager import RunManager
+    from fusion_trainer.run_manager import get_run_manager
 
-    mgr = RunManager()
+    mgr = get_run_manager()
     result = mgr.publish_run(run_id, hub_url=hub_url, api_key=hub_api_key)
     if result.get("published"):
-        typer.echo(f"✓ Adapter published to hub: {result.get('model', {}).get('id', '')}")
+        typer.echo(
+            f"✓ Adapter published to hub: {result.get('model', {}).get('id', '')}"
+        )
         raise typer.Exit(0)
     err = result.get("error", "unknown")
     typer.echo(f"⚠ Publish failed: {err}")

@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
+
+_REWARD_PATH = "/reward"
 
 
 class RMRewardServer:
@@ -34,6 +38,11 @@ class RMRewardServer:
     fusion-mlx reward/score (#431), returning the RM's scalar rewards. Unlike
     the sandbox RewardServer, no reference answer/tests are needed — the RM
     itself is the reward signal.
+
+    Security (audit C1): one-time bearer token generated at start(), embedded
+    in the endpoint URL as ?token=... (fusion-mlx POSTs the URL verbatim). do_POST
+    rejects any path != /reward (404) and any request missing/mismatching the
+    token (403) — no unauthenticated process can drive score_reward.
     """
 
     def __init__(
@@ -52,6 +61,7 @@ class RMRewardServer:
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._endpoint = ""
+        self._token = ""
 
     @property
     def endpoint(self) -> str:
@@ -61,12 +71,35 @@ class RMRewardServer:
         client = self._client
         model_id = self._model_id
         adapter_name = self._adapter_name
+        token = secrets.token_urlsafe(32)
+        self._token = token
 
         class _Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):  # silence default stderr log
                 logger.debug("rm-reward-server: " + fmt, *args)
 
+            def _forbid(self, code: int, msg: str) -> None:
+                body = json.dumps({"error": msg}).encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_POST(self):  # noqa: N802 - stdlib HTTP API
+                parsed = urlparse(self.path)
+                # C1: only the reward path is accepted; everything else 404.
+                if parsed.path != _REWARD_PATH:
+                    logger.warning("rm-reward-server: rejected path %r", parsed.path)
+                    self._forbid(404, "not found")
+                    return
+                # C1: validate the bearer token from the query string.
+                qs = parse_qs(parsed.query)
+                got = (qs.get("token", [""])[0] or "").strip()
+                if not got or not secrets.compare_digest(got, token):
+                    logger.warning("rm-reward-server: rejected unauthenticated request")
+                    self._forbid(403, "forbidden")
+                    return
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     raw = self.rfile.read(length) if length else b"{}"
@@ -108,7 +141,10 @@ class RMRewardServer:
 
         self._server = ThreadingHTTPServer((self._host, self._port), _Handler)
         actual_port = self._server.server_address[1]
-        self._endpoint = f"http://{self._host}:{actual_port}/reward"
+        # Token travels in the URL so fusion-mlx's verbatim POST carries it.
+        self._endpoint = (
+            f"http://{self._host}:{actual_port}{_REWARD_PATH}?token={token}"
+        )
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             daemon=True,
@@ -116,8 +152,8 @@ class RMRewardServer:
         )
         self._thread.start()
         logger.info(
-            "rm-reward server started on %s (model=%s adapter=%s)",
-            self._endpoint,
+            "rm-reward server started on %s (model=%s adapter=%s auth=token)",
+            f"http://{self._host}:{actual_port}{_REWARD_PATH}",
             model_id,
             adapter_name,
         )
@@ -131,4 +167,5 @@ class RMRewardServer:
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)
         self._thread = None
+        self._token = ""
         logger.info("rm-reward server stopped")

@@ -6,6 +6,7 @@ Targets: rlsl/sandbox.py, rlsl/grpo.py, rlsl/pipeline.py (grpo branch)
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,14 @@ class TestRewardMath:
 
 
 class TestRewardCode:
+    def setup_method(self):
+        # C2: reward_code refuses to exec without FUSION_CODE_SANDBOX_TRUSTED=1.
+        # These unit tests use trusted inline fixtures, so opt in per-test.
+        os.environ["FUSION_CODE_SANDBOX_TRUSTED"] = "1"
+
+    def teardown_method(self):
+        os.environ.pop("FUSION_CODE_SANDBOX_TRUSTED", None)
+
     def test_passing_code(self):
         code = "x = 2 + 3\nassert x == 5"
         r = sandbox.reward_code({}, f"```python\n{code}\n```")
@@ -76,6 +85,13 @@ class TestRewardCode:
 
 
 class TestRewardCompletion:
+    def setup_method(self):
+        # C2: the auto->code path (tests field present) execs code; opt in.
+        os.environ["FUSION_CODE_SANDBOX_TRUSTED"] = "1"
+
+    def teardown_method(self):
+        os.environ.pop("FUSION_CODE_SANDBOX_TRUSTED", None)
+
     def test_auto_picks_code_when_tests(self):
         sample = {"tests": "assert True"}
         r = sandbox.reward_completion(
@@ -232,6 +248,9 @@ class TestGRPOTrainerRun:
         assert result["adapter_path"] == "/fake/adapter_iter_1"
 
     def test_code_run(self, monkeypatch, tmp_path):
+        # C2: code-mode sandbox only runs when FUSION_CODE_SANDBOX_TRUSTED=1
+        # (refuse-to-exec on untrusted data). This test uses trusted fixtures.
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_TRUSTED", "1")
         good = "```python\nassert True\n```"
         bad = "```python\nassert 1==2\n```"
         self._patch_http(monkeypatch, [good, bad])

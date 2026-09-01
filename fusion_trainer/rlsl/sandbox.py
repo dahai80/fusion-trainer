@@ -21,6 +21,7 @@ untrusted code, fuse with a container/seccomp sandbox upstream.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -29,6 +30,13 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# C2: code mode execs model/data-generated Python in a subprocess with no real
+# isolation (no seccomp/namespace/privilege drop). It is only safe to run on
+# fully trusted data. Require an explicit opt-in env var before exec; absent
+# it, refuse visibly (0.0 + loud warning) instead of silently running untrusted
+# code. Real isolation is upstream (fusion-mlx#743).
+_TRUSTED_ENV = "FUSION_CODE_SANDBOX_TRUSTED"
 
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.DOTALL | re.IGNORECASE)
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]*)\}", re.DOTALL)
@@ -100,7 +108,24 @@ def reward_code(sample: dict[str, Any], completion: str) -> float:
     sample["tests"] is appended as assertions. Reward is 1.0 on clean exit,
     0.0 on exception/timeout, 0.5 if no code extracted but a natural-language
     answer matches a reference (degrades gracefully).
+
+    C2: the subprocess has NO real isolation (runs as the current user with
+    filesystem/network access). It must only run on fully trusted data. Before
+    exec we require FUSION_CODE_SANDBOX_TRUSTED=1; absent it we refuse visibly
+    (0.0 + warning) rather than silently running model-generated code.
     """
+    # C2: refuse untrusted exec unless explicitly opted in.
+    if os.environ.get(_TRUSTED_ENV, "") != "1":
+        logger.error(
+            "code reward refused: %s!=1. code mode execs model/data-generated "
+            "Python with no real isolation (seccomp/container upstream, "
+            "fusion-mlx#743). Set %s=1 ONLY for fully trusted data. "
+            "Returning fail-visible 0.0.",
+            _TRUSTED_ENV,
+            _TRUSTED_ENV,
+        )
+        return 0.0
+
     code = _extract_code(completion)
     if not code:
         ref = sample.get("answer") or ""
