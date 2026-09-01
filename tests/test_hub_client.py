@@ -105,21 +105,54 @@ class TestPublishAdapterErrors:
         monkeypatch.setattr(
             hub_mod.httpx,
             "post",
-            lambda *a, **kw: _Resp(404, payload={"detail": "base not found"}, text="nf"),
+            lambda *a, **kw: _Resp(
+                404, payload={"detail": "base not found"}, text="nf"
+            ),
         )
         client = ModelHubClient(base_url="http://h")
         with pytest.raises(HubPublishError, match="404"):
             client.publish_adapter(name="adapter", base_model="missing")
 
     def test_409_name_exists_raises(self, monkeypatch):
+        # L4: a 409 whose existing entry has a DIFFERENT base_model (or no
+        # matching entry is found) is a real name collision and still raises.
+        # GET list_models returns an empty list here -> no own match -> raise.
         monkeypatch.setattr(
             hub_mod.httpx,
             "post",
             lambda *a, **kw: _Resp(409, payload={"detail": "exists"}),
         )
+        monkeypatch.setattr(
+            hub_mod.httpx, "get", lambda *a, **kw: _Resp(200, payload=[])
+        )
         client = ModelHubClient(base_url="http://h")
         with pytest.raises(HubPublishError, match="409"):
             client.publish_adapter(name="adapter", base_model="b")
+
+    def test_409_idempotent_when_own_model_exists(self, monkeypatch):
+        # L4: a 409 is idempotent if a lora with the same name AND base_model_id
+        # already exists -> treat as already-published, return that model.
+        existing = {
+            "id": "hub-1",
+            "name": "adapter",
+            "base_model_id": "b",
+            "model_type": "lora",
+        }
+        monkeypatch.setattr(
+            hub_mod.httpx,
+            "post",
+            lambda *a, **kw: _Resp(409, payload={"detail": "exists"}),
+        )
+        monkeypatch.setattr(
+            hub_mod.httpx,
+            "get",
+            lambda *a, **kw: _Resp(200, payload=[existing]),
+        )
+        client = ModelHubClient(base_url="http://h")
+        result = client.publish_adapter(name="adapter", base_model="b")
+        assert result["published"] is True
+        assert result["idempotent"] is True
+        assert result["model"]["id"] == "hub-1"
 
     def test_transport_error_raises(self, monkeypatch):
         import httpx as _httpx
@@ -142,13 +175,17 @@ class TestPublishAdapterIfEnabled:
 
     def test_disabled_noop(self):
         cfg = self._cfg(publish=False)
-        result = publish_adapter_if_enabled(cfg, {"status": "completed", "adapter_name": "a"})
+        result = publish_adapter_if_enabled(
+            cfg, {"status": "completed", "adapter_name": "a"}
+        )
         assert result["published"] is False
         assert result["reason"] == "disabled"
 
     def test_non_completed_skips(self):
         cfg = self._cfg()
-        result = publish_adapter_if_enabled(cfg, {"status": "failed", "adapter_name": "a"})
+        result = publish_adapter_if_enabled(
+            cfg, {"status": "failed", "adapter_name": "a"}
+        )
         assert result["published"] is False
         assert "status=" in result["reason"]
 
@@ -167,7 +204,11 @@ class TestPublishAdapterIfEnabled:
         cfg = self._cfg()
         result = publish_adapter_if_enabled(
             cfg,
-            {"status": "completed", "method": "rlsl", "phase2": {"adapter_name": "rlsl-ad"}},
+            {
+                "status": "completed",
+                "method": "rlsl",
+                "phase2": {"adapter_name": "rlsl-ad"},
+            },
         )
         assert result["published"] is True
 
