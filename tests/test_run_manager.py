@@ -254,6 +254,54 @@ class TestRehydrate:
             st = rm2.run_status("sft_zombie")
             assert st["status"] == "failed"
 
+    def test_meta_persisted_at_start(self, monkeypatch):
+        # A4: run_meta.json must exist with status:running BEFORE the worker
+        # thread completes, so a mid-run crash leaves a recoverable record.
+        with tempfile.TemporaryDirectory() as tmp:
+            _patch_sft_client(monkeypatch)
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg = _make_sft_config(tmp)
+            run_id = rm.start_sft(cfg)["run_id"]
+            meta_path = Path(tmp) / "runs" / run_id / "run_meta.json"
+            # Written at start, before the (mocked) trainer completes.
+            assert meta_path.exists()
+            meta = json.loads(meta_path.read_text())
+            assert meta["status"] == "running"
+            _wait_terminal(rm, run_id)
+
+    def test_reconstruct_meta_from_events_no_meta(self, monkeypatch):
+        # A4: a run that crashed before terminal persist (no run_meta.json)
+        # but with events.jsonl present must be reconstructed + marked failed
+        # (was silently skipped → zombie-cancel dead code).
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "sft_crashed"
+            run_dir.mkdir(parents=True)
+            (run_dir / "events.jsonl").write_text(
+                json.dumps({"type": "job", "job_id": "upstream-999", "kind": "sft"})
+                + "\n"
+                + json.dumps({"type": "train_loss", "step": 3, "train_loss": 1.5})
+                + "\n"
+            )
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            st = rm.run_status("sft_crashed")
+            assert st["status"] == "failed"
+            # job_id scavenged from events so zombie-cancel can target it.
+            assert st["job_id"] == "upstream-999"
+
+    def test_run_id_collision_proof(self, monkeypatch):
+        # R5: two runs started in rapid succession must not collide on run_id.
+        with tempfile.TemporaryDirectory() as tmp:
+            _patch_sft_client(monkeypatch)
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg = _make_sft_config(tmp)
+            id1 = rm.start_sft(cfg)["run_id"]
+            id2 = rm.start_sft(cfg)["run_id"]
+            assert id1 != id2
+            # Non-daemon workers must reach terminal before the tmp dir is
+            # torn down, else rmtree races the still-writing thread.
+            _wait_terminal(rm, id1)
+            _wait_terminal(rm, id2)
+
 
 # ===========================================================================
 # Datasets / adapters

@@ -24,6 +24,7 @@ silently downgraded. Run crashes/unknown statuses never fake "completed".
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -42,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL = ("completed", "failed", "cancelled")
 _MXF8_ISSUE = "https://github.com/dahai80/fusion-mlx/issues/402"
+# A3: module slot + lock declared early so RunManager.__init__ can register
+# itself / warn on a bypassing direct construction. Filled in at module bottom
+# for readability, but available at __init__ call time (module fully loaded).
+_RUN_MANAGER_SINGLETON: RunManager | None = None
+_SINGLETON_LOCK = threading.Lock()
 
 
 class RunManager:
@@ -78,6 +84,34 @@ class RunManager:
         # should go through get_run_manager() so there is one shared instance.
         self._active_sinks: dict[str, Any] = {}
         self._lock = threading.Lock()
+        # A3: defense-in-depth against the singleton being bypassed. The
+        # production GUI path (fusion-agent-studio TrainingService) used to
+        # construct RunManager() directly, creating a second registry that the
+        # CLI singleton could not see — stop_run/list_runs crossed instances
+        # and silently no-op'd while upstream jobs burned GPU. The singleton
+        # entry get_run_manager() is the supported path; a direct construct is
+        # allowed for tests/isolated instances, but if a singleton already
+        # exists and this is a *different* instance, warn loudly so the bypass
+        # is visible (not silent). Register self as singleton when none set.
+        global _RUN_MANAGER_SINGLETON
+        with _SINGLETON_LOCK:
+            if _RUN_MANAGER_SINGLETON is None:
+                _RUN_MANAGER_SINGLETON = self
+            elif _RUN_MANAGER_SINGLETON is not self:
+                logger.warning(
+                    "RunManager constructed directly while a process singleton "
+                    "already exists (existing=%r new=%r). Two registries are "
+                    "now live and stop_run/list_runs will NOT cross instances — "
+                    "use get_run_manager() instead. Upstream: "
+                    "fusion-agent-studio#268.",
+                    id(_RUN_MANAGER_SINGLETON),
+                    id(self),
+                )
+        # A4: persist in-memory running runs at interpreter exit. The worker
+        # thread is non-daemon (see _start), but a hard SIGKILL / OOM still
+        # skips the terminal _persist_meta. atexit covers graceful exit; the
+        # meta-at-start write (in _start) covers the crash-then-restart path.
+        atexit.register(self._atexit_persist_all)
         self._load_existing_runs()
 
     # ------------------------------------------------------------------
@@ -92,13 +126,32 @@ class RunManager:
             if not run_dir.is_dir():
                 continue
             meta = run_dir / "run_meta.json"
+            events_path = run_dir / "events.jsonl"
             if not meta.exists():
-                continue
-            try:
-                data = json.loads(meta.read_text())
-            except Exception as exc:
-                logger.warning("skip unreadable run meta %s: %s", meta, exc)
-                continue
+                # A4: meta absent. The old code `continue`d here, which made
+                # the L3 zombie-cancel path dead code for the most common
+                # crash scenario: a run killed mid-flight before its terminal
+                # _persist_meta wrote run_meta.json. If events.jsonl exists,
+                # a run was in progress — reconstruct a minimal record (run_id
+                # from dir name, job_id/kind/phase scavenged from the event
+                # stream) so zombie-cancel can fire. If no events either, the
+                # dir is a stray/empty — skip silently.
+                if not events_path.exists():
+                    continue
+                data = self._reconstruct_meta_from_events(run_dir, events_path)
+                if data is None:
+                    continue
+                logger.warning(
+                    "run %s has events.jsonl but no run_meta.json — "
+                    "reconstructing from events (crash before terminal meta)",
+                    data.get("run_id", run_dir.name),
+                )
+            else:
+                try:
+                    data = json.loads(meta.read_text())
+                except Exception as exc:
+                    logger.warning("skip unreadable run meta %s: %s", meta, exc)
+                    continue
             rid = data.get("run_id", run_dir.name)
             # Only rehydrate terminal runs; running runs from a dead process
             # are marked failed (fail-visible: never claim a zombie is alive).
@@ -151,6 +204,63 @@ class RunManager:
             data.setdefault("job_id", "")
             data.setdefault("job_kind", "sft")
             self._runs[rid] = data
+
+    @staticmethod
+    def _reconstruct_meta_from_events(
+        run_dir: Path, events_path: Path
+    ) -> dict[str, Any] | None:
+        """A4: build a minimal run record from events.jsonl when run_meta.json
+        is missing (run crashed before terminal persist). Scavenges the latest
+        job id/kind + phase + step from the event stream so zombie-cancel has
+        a job_id to target. Returns None if the event stream is empty/invalid.
+        """
+        rid = run_dir.name
+        data: dict[str, Any] = {
+            "run_id": rid,
+            "name": rid,
+            "method": rid.split("_", 1)[0] if "_" in rid else "sft",
+            "status": "running",
+            "created": 0.0,
+            "step": 0,
+            "job_id": "",
+            "job_kind": "sft",
+            "phase": "",
+            "model": "",
+            "mlx_port": int(os.environ.get("FUSION_MLX_PORT", "11432")),
+            "metrics": {},
+            "final_adapter": "",
+            "adapter_name": "",
+        }
+        saw_event = False
+        try:
+            with open(events_path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    saw_event = True
+                    if ev.get("type") == "job":
+                        if ev.get("job_id"):
+                            data["job_id"] = ev["job_id"]
+                        if ev.get("kind"):
+                            data["job_kind"] = ev["kind"]
+                    if ev.get("type") == "phase":
+                        data["phase"] = ev.get("name", ev.get("phase", ""))
+                    step = ev.get("step", ev.get("iter"))
+                    if isinstance(step, (int, float)) and int(step) > int(
+                        data.get("step", 0)
+                    ):
+                        data["step"] = int(step)
+        except Exception as exc:
+            logger.warning("reconstruct meta: read events %s failed: %s", events_path, exc)
+            return None
+        if not saw_event:
+            return None
+        return data
 
     # ------------------------------------------------------------------
     # info / presets / datasets / adapters
@@ -351,7 +461,13 @@ class RunManager:
         return self._start(config, method="rlsl")
 
     def _start(self, config: TrainerConfig, method: str) -> dict[str, Any]:
-        run_id = f"{method}_{int(time.time() * 1000)}"
+        # R5: run_id was a ms-timestamp ({method}_{ms}); two runs started in
+        # the same millisecond collided on run_dir. Use a uuid4 suffix for
+        # collision-proof uniqueness while keeping the method prefix for
+        # human-readability.
+        import uuid
+
+        run_id = f"{method}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
         run_name = (
             config.sft.run_name if method == "sft" else config.rlsl.run_name
         ) or run_id
@@ -386,6 +502,13 @@ class RunManager:
         }
         with self._lock:
             self._runs[run_id] = record
+            # A4: persist meta AT START (status:running) atomically, BEFORE the
+            # worker thread spawns. The old code only wrote run_meta.json at the
+            # terminal _run_thread path — a crash/SIGKILL/OOM mid-run left no
+            # meta on disk, so _load_existing_runs skipped it (it `continue`s
+            # when meta is absent) and the L3 zombie-cancel path never fired,
+            # leaving the upstream fusion-mlx job burning GPU uncancelled.
+            self._persist_meta(run_id)
 
         sink = _RunSink(record, self._lock)
         self._active_sinks[run_id] = sink
@@ -394,7 +517,13 @@ class RunManager:
             target=self._run_thread,
             args=(run_id, config, method, sink, log_path),
             name=f"trainer-run-{run_id}",
-            daemon=True,
+            # A4/R6: non-daemon so the interpreter waits for the run on exit
+            # rather than forcibly killing the worker mid-job (daemon threads
+            # are slain without running finally blocks → no terminal meta, no
+            # upstream cancel). The trainer polls fusion-mlx and is the only
+            # thing that can mark the job terminal; killing it orphan-locks the
+            # job. Non-daemon lets atexit + graceful shutdown persist meta.
+            daemon=False,
         )
         record["thread"] = thread
         thread.start()
@@ -707,15 +836,29 @@ class RunManager:
             except Exception:
                 pass
 
+    def _atexit_persist_all(self) -> None:
+        """A4: at interpreter exit, persist meta for any still-running run so a
+        graceful shutdown leaves a recoverable record. Non-daemon workers
+        normally reach the terminal path, but a signal during the brief window
+        between run start and natural completion is covered by this + the
+        meta-at-start write. Idempotent + silent on failure (atexit context)."""
+        try:
+            with self._lock:
+                running = [
+                    rid
+                    for rid, r in self._runs.items()
+                    if r.get("status") not in _TERMINAL
+                ]
+            for rid in running:
+                self._persist_meta(rid)
+        except Exception:
+            pass
 
-# A2: process-wide singleton so the CLI path and the in-process agent-studio
-# path share ONE RunManager (one _runs registry + one _active_sinks map).
-# Callers that want a throwaway isolated instance (tests) still construct
-# RunManager(...) directly; production entry points use get_run_manager().
-_RUN_MANAGER_SINGLETON: RunManager | None = None
-_SINGLETON_LOCK = threading.Lock()
 
-
+# A2/A3: process-wide singleton so the CLI path and the in-process
+# agent-studio path share ONE RunManager (one _runs registry + one
+# _active_sinks map). The slot/lock are declared at module top so
+# RunManager.__init__ can register/warn at construction time.
 def get_run_manager() -> RunManager:
     """Return the process-wide RunManager, constructing it on first call."""
     global _RUN_MANAGER_SINGLETON
