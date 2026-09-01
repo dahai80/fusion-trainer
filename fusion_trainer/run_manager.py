@@ -275,9 +275,14 @@ class RunManager:
         gpu_mem_gb: float | None = None
         try:
             client = MLXFineTuneClient(port=self.mlx_port)
-            data = client.health()
-            mlx_alive = True
-            models = data.get("data", []) or []
+            try:
+                data = client.health()
+                mlx_alive = True
+                models = data.get("data", []) or []
+            finally:
+                # R7: close the pooled client so the daemon doesn't leak a
+                # connection on every info() refresh.
+                client.close()
         except Exception as exc:
             logger.info("info: fusion-mlx unreachable: %s", exc)
 
@@ -433,7 +438,11 @@ class RunManager:
         """Proxy fusion-mlx GET /admin/api/fine-tune/adapters."""
         try:
             client = MLXFineTuneClient(port=self.mlx_port)
-            return client.list_adapters(model_id=model)
+            try:
+                return client.list_adapters(model_id=model)
+            finally:
+                # R7: close the pooled client (daemon leaks on every refresh).
+                client.close()
         except Exception as exc:
             logger.error("list_adapters failed: %s", exc)
             return []
@@ -697,8 +706,14 @@ class RunManager:
         return {"run_id": run_id, "events": filtered, "status": status}
 
     def stop_run(self, run_id: str) -> dict[str, Any]:
-        """Request cancellation; returns {status: cancelling}. The sink
-        cancels the live fusion-mlx job when it next observes the flag."""
+        """Request cancellation; returns {status: cancelling}.
+
+        R1: sets the cancel flag AND dispatches the upstream fusion-mlx cancel
+        IMMEDIATELY (cancel_now) rather than waiting for the next trainer
+        event. A job blocked in a long silent eval or a long poll would
+        otherwise keep burning GPU for minutes until the next event trickles
+        in. If the job_id isn't recorded yet, the sink retries on the next
+        emit (see _do_cancel)."""
         with self._lock:
             r = self._runs.get(run_id)
             if r is None:
@@ -708,8 +723,8 @@ class RunManager:
             r["canceled"] = True
         sink = self._active_sinks.get(run_id)
         if sink is not None:
-            sink.request_cancel()
-        logger.info("stop_run requested for %s", run_id)
+            sink.cancel_now()
+        logger.info("stop_run requested for %s (active cancel dispatched)", run_id)
         return {"run_id": run_id, "status": "cancelling"}
 
     def publish_run(
@@ -879,7 +894,14 @@ class _RunSink:
         self._record = record
         self._lock = lock
         self._events_path = Path(record["events_path"])
-        self._canceled = False
+        # R2: a threading.Event replaces the plain bool. set()/is_set() are
+        # internally synchronized, eliminating the read→act TOCTOU that let a
+        # cancel request race between an emit check and the next event.
+        self._cancel_event = threading.Event()
+        # R1: guard so we only DISPATCH one upstream cancel per run, even if
+        # stop_run + a late emit both try. The Event tracks intent; this flag
+        # tracks the dispatched action.
+        self._cancel_dispatched = False
 
     def emit(self, event: dict[str, Any]) -> None:
         """Receive a raw progress event from a trainer."""
@@ -916,7 +938,7 @@ class _RunSink:
         except Exception as exc:
             logger.warning("write events.jsonl failed: %s", exc)
         # Honor cancel between events.
-        if self._canceled:
+        if self._cancel_event.is_set():
             self._do_cancel()
 
     def record_job(self, job_id: str, kind: str = "sft") -> None:
@@ -927,10 +949,20 @@ class _RunSink:
                 self._record["job_kind"] = kind
 
     def request_cancel(self) -> None:
-        self._canceled = True
+        # R2: Event.set is atomic and visible to all threads; no lock needed.
+        self._cancel_event.set()
 
     def is_canceled(self) -> bool:
-        return self._canceled
+        return self._cancel_event.is_set()
+
+    def cancel_now(self) -> None:
+        """R1: dispatch the upstream cancel IMMEDIATELY rather than waiting
+        for the next trainer event. Called by stop_run so a job blocked in a
+        long silent eval / long poll is cancelled within seconds, not minutes.
+        Idempotent: the _cancel_dispatched guard prevents a double POST.
+        """
+        self._cancel_event.set()
+        self._do_cancel()
 
     def _do_cancel(self) -> None:
         """Call fusion-mlx cancel endpoint on the recorded job id."""
@@ -939,21 +971,37 @@ class _RunSink:
             kind = self._record.get("job_kind", "sft")
             port = self._record.get("mlx_port")
         if not job_id:
-            logger.info("cancel: no job_id recorded for run yet")
+            # No job submitted yet — can't cancel upstream. Leave
+            # _cancel_dispatched False so a later emit (once the job_id lands)
+            # retries the cancel. The Event stays set so is_canceled() is True.
+            logger.info(
+                "cancel: no job_id recorded for run yet; will retry on next event"
+            )
             return
+        with self._lock:
+            if self._cancel_dispatched:
+                # R1: already dispatched an upstream cancel for this run; a
+                # second emit/stop would double-POST. The Event still holds so
+                # the trainer's is_canceled() keeps returning True.
+                return
+            self._cancel_dispatched = True
         try:
             client = MLXFineTuneClient(
                 port=port or int(os.environ.get("FUSION_MLX_PORT", "11432"))
             )
-            if kind in ("dpo", "orpo"):
-                client.cancel_dpo_job(job_id)
-            elif kind == "grpo":
-                client.cancel_grpo_job(job_id)
-            elif kind == "reward":
-                client.cancel_reward_job(job_id)
-            else:
-                client.cancel_job(job_id)
-            logger.info("cancel dispatched for job %s (kind=%s)", job_id, kind)
+            try:
+                if kind in ("dpo", "orpo"):
+                    client.cancel_dpo_job(job_id)
+                elif kind == "grpo":
+                    client.cancel_grpo_job(job_id)
+                elif kind == "reward":
+                    client.cancel_reward_job(job_id)
+                else:
+                    client.cancel_job(job_id)
+                logger.info("cancel dispatched for job %s (kind=%s)", job_id, kind)
+            finally:
+                # R7: close the pooled client after cancel.
+                client.close()
         except Exception as exc:
             logger.warning("cancel_job %s failed: %s", job_id, exc)
 

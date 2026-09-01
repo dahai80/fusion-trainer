@@ -77,9 +77,7 @@ class DatasetLoader:
         resolved = self._resolve_path(path, hub_dataset, model_hub_path)
 
         # Load raw data
-        data = load_dataset_file(resolved)
-        if max_samples > 0 and len(data) > max_samples:
-            data = data[:max_samples]
+        data = load_dataset_file(resolved, max_samples=max_samples)
 
         # Deduplicate before the split so identical samples don't leak across
         # train/val and val counts stay correct.
@@ -123,9 +121,7 @@ class DatasetLoader:
             {"prompt": "...", "chosen": "...", "rejected": "..."}
         """
         resolved = self._resolve_path(path, hub_dataset, model_hub_path)
-        data = load_dataset_file(resolved)
-        if max_samples > 0 and len(data) > max_samples:
-            data = data[:max_samples]
+        data = load_dataset_file(resolved, max_samples=max_samples)
 
         ok, msg = validate_format(data, SCHEMA_DPO_PAIR)
         if not ok:
@@ -171,9 +167,7 @@ class DatasetLoader:
         unchanged so the tokenizer chat template applies.
         """
         resolved = self._resolve_path(path, hub_dataset, model_hub_path)
-        data = load_dataset_file(resolved)
-        if max_samples > 0 and len(data) > max_samples:
-            data = data[:max_samples]
+        data = load_dataset_file(resolved, max_samples=max_samples)
 
         normalized = []
         for item in data:
@@ -227,9 +221,7 @@ class DatasetLoader:
         feedback. Samples missing a prompt are skipped.
         """
         resolved = self._resolve_path(path, hub_dataset, model_hub_path)
-        data = load_dataset_file(resolved)
-        if max_samples > 0 and len(data) > max_samples:
-            data = data[:max_samples]
+        data = load_dataset_file(resolved, max_samples=max_samples)
 
         ok, msg = validate_format(data, SCHEMA_GRPO_PROMPT)
         if not ok:
@@ -273,16 +265,33 @@ class DatasetLoader:
                     "hub_dataset requires model_hub_path to be set. "
                     "Set FUSION_MODEL_HUB env var or pass model_hub_path."
                 )
+            # R3: path-traversal guard. hub_dataset is user-controlled (CLI
+            # --dataset hub:NAME / GUI). Reject absolute paths, drive letters,
+            # and any '..' segment so "hub:../config/secrets" can't escape the
+            # hub datasets dir to read arbitrary .jsonl files (keys/config).
+            # The resolved candidate must end up INSIDE {hub}/datasets/.
+            if os.path.isabs(hub_dataset):
+                raise ValueError(
+                    f"hub_dataset must be a relative name, got absolute: {hub_dataset!r}"
+                )
+            parts = Path(hub_dataset).parts
+            if any(p == ".." for p in parts):
+                raise ValueError(
+                    f"hub_dataset must not contain '..' segments: {hub_dataset!r}"
+                )
+            hub_root = Path(hub).resolve()
+            datasets_dir = (hub_root / "datasets").resolve()
             # Convention: {hub}/datasets/{hub_dataset}.jsonl
-            candidate = Path(hub) / "datasets" / f"{hub_dataset}.jsonl"
+            candidate = (datasets_dir / f"{hub_dataset}.jsonl").resolve()
+            try:
+                candidate.relative_to(datasets_dir)
+            except ValueError:
+                raise ValueError(
+                    f"hub_dataset {hub_dataset!r} resolves outside the hub "
+                    f"datasets directory — path traversal blocked"
+                )
             if candidate.exists():
                 return candidate
-            # Try with category prefix already in hub_dataset name
-            # e.g. "sft/code_alpaca" → {hub}/datasets/sft/code_alpaca.jsonl
-            if "/" in hub_dataset:
-                candidate2 = Path(hub) / "datasets" / f"{hub_dataset}.jsonl"
-                if candidate2.exists():
-                    return candidate2
             raise FileNotFoundError(
                 f"Dataset '{hub_dataset}' not found in hub at {hub}/datasets/"
             )

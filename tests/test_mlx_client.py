@@ -70,16 +70,19 @@ class TestScoreReward:
             def text(self):
                 return ""
 
-        def _fake_post(url, json=None, headers=None, timeout=None):
-            captured["url"] = url
-            captured["json"] = json
-            captured["headers"] = headers
-            return _Resp()
+        # A8: all egress now goes through the pooled self._http.request, so
+        # mock that instead of the module-level httpx.post.
+        class _FakeHttp:
+            def request(self, method, url, json=None, params=None):
+                captured["url"] = url
+                captured["json"] = json
+                return _Resp()
 
-        import fusion_trainer.mlx_client as client_mod
+            def close(self):
+                pass
 
-        monkeypatch.setattr(client_mod.httpx, "post", _fake_post)
         client = MLXFineTuneClient(port=11434, admin_token="tok")
+        client._http = _FakeHttp()
         result = client.score_reward(
             model_id="qwen-0.6b",
             adapter_name="rm-adapter",
@@ -92,7 +95,7 @@ class TestScoreReward:
         assert captured["json"]["adapter_name"] == "rm-adapter"
         assert captured["json"]["prompt"] == "hello"
         assert captured["json"]["completions"] == ["a", "b"]
-        assert captured["headers"]["Authorization"] == "Bearer tok"
+        assert client._headers["Authorization"] == "Bearer tok"
 
     def test_score_reward_raises_on_error(self, monkeypatch):
         class _Resp:
@@ -102,15 +105,17 @@ class TestScoreReward:
             def json(self):
                 return {}
 
-        import fusion_trainer.mlx_client as client_mod
         from fusion_trainer.mlx_client import MLXFineTuneError
 
-        monkeypatch.setattr(
-            client_mod.httpx,
-            "post",
-            lambda *a, **kw: _Resp(),
-        )
+        class _FakeHttp:
+            def request(self, method, url, json=None, params=None):
+                return _Resp()
+
+            def close(self):
+                pass
+
         client = MLXFineTuneClient(port=11434)
+        client._http = _FakeHttp()
         import pytest
 
         with pytest.raises(MLXFineTuneError, match="404"):

@@ -131,36 +131,46 @@ def sharegpt_to_messages(item: dict[str, Any]) -> list[dict[str, str]]:
     return messages
 
 
-def load_dataset_file(path: Path, format: str = "") -> list[dict[str, Any]]:
-    """Load a dataset file into a list of dicts."""
+def load_dataset_file(
+    path: Path, format: str = "", max_samples: int = 0
+) -> list[dict[str, Any]]:
+    """Load a dataset file into a list of dicts.
+
+    R4: max_samples > 0 streams + stops early instead of materializing the
+    whole file then slicing. A 50GB JSONL / 5GB parquet with max_samples=1000
+    now reads only ~1000 rows, not the whole file (was an OOM risk).
+    """
     if not format:
         format = detect_format(path)
     if not format:
         raise ValueError(f"Unsupported file format: {path.suffix}")
 
-    loaders = {
-        "jsonl": _load_jsonl,
-        "json": _load_json,
-        "csv": _load_csv,
-        "tsv": _load_csv,
-        "parquet": _load_parquet,
-        "arrow": _load_parquet,
-    }
+    if format in ("jsonl",):
+        return _load_jsonl(path, max_samples)
+    if format in ("csv", "tsv"):
+        return _load_csv(path, max_samples)
+    if format in ("parquet", "arrow"):
+        return _load_parquet(path, max_samples)
+    # json (single object) can't be streamed row-by-row; load whole then slice.
+    if format == "json":
+        data = _load_json(path)
+        if max_samples > 0 and len(data) > max_samples:
+            data = data[:max_samples]
+        return data
+    raise ValueError(f"Unsupported format: {format}")
 
-    loader = loaders.get(format)
-    if loader is None:
-        raise ValueError(f"Unsupported format: {format}")
 
-    return loader(path)
-
-
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+def _load_jsonl(path: Path, max_samples: int = 0) -> list[dict[str, Any]]:
+    # R4: stream line-by-line; break as soon as max_samples is reached so a
+    # multi-GB JSONL with max_samples set doesn't OOM.
     data = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
                 data.append(json.loads(line))
+                if max_samples > 0 and len(data) >= max_samples:
+                    break
     return data
 
 
@@ -184,24 +194,39 @@ def _load_json(path: Path) -> list[dict[str, Any]]:
     raise ValueError(f"Unexpected JSON structure in {path}")
 
 
-def _load_csv(path: Path) -> list[dict[str, Any]]:
+def _load_csv(path: Path, max_samples: int = 0) -> list[dict[str, Any]]:
     delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
     data = []
     with open(path, encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=delimiter)
         for row in reader:
             data.append(dict(row))
+            if max_samples > 0 and len(data) >= max_samples:
+                break
     return data
 
 
-def _load_parquet(path: Path) -> list[dict[str, Any]]:
+def _load_parquet(path: Path, max_samples: int = 0) -> list[dict[str, Any]]:
     try:
         import pyarrow.parquet as pq
     except ImportError:
         raise ImportError("pyarrow is required to load parquet files")
 
-    table = pq.read_table(path)
-    return table.to_pylist()
+    # R4: stream via iter_batches instead of read_table().to_pylist(), which
+    # materialized every row (10M-row parquet → 10M dicts → OOM) before the
+    # caller's max_samples slice. With max_samples set we read only enough
+    # batches. Without it we still read the whole table, but batch-iteration
+    # is far more memory-friendly than one giant to_pylist().
+    data: list[dict[str, Any]] = []
+    for batch in pq.ParquetFile(path).iter_batches(batch_size=8192):
+        rows = batch.to_pylist()
+        if max_samples > 0 and len(data) + len(rows) > max_samples:
+            data.extend(rows[: max_samples - len(data)])
+            break
+        data.extend(rows)
+        if max_samples > 0 and len(data) >= max_samples:
+            break
+    return data
 
 
 def save_dataset_file(

@@ -73,6 +73,9 @@ def _patch_sft_client(monkeypatch, events=None, final_status="completed"):
         def __init__(self, *a, **kw):
             pass
 
+        def close(self):
+            pass
+
         def create_job(self, model_id, dataset, config=None, adapter_name=""):
             return {"job_id": "fake-job-123", "status": "queued"}
 

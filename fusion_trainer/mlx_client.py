@@ -91,22 +91,35 @@ class MLXFineTuneClient:
     def __del__(self):
         self.close()
 
-    # A1: poll getter with bounded retry on transient failures. A single
-    # connection reset or a fusion-mlx 503 during a memory-tight training step
-    # must NOT abort an hour-long run (audit A1). Network errors and 5xx are
-    # retried with exponential backoff up to max_retries; 4xx is a real error
-    # (bad job id / auth) and raises immediately. Terminal status is judged by
-    # the job dict's status field, never by a single HTTP success/failure.
-    def _poll_get(self, url: str, max_retries: int = 5) -> dict[str, Any]:
+    # A8: unified request wrapper. Every HTTP egress now goes through the
+    # pooled self._http client (not module-level httpx.get/post), retries
+    # transient network errors + 5xx with exponential backoff, raises a single
+    # MLXFineTuneError type (never a raw httpx.HTTPStatusError/TransportError
+    # — the old mix let raw exceptions escape wait_for_*_job's
+    # `except MLXFineTuneError` and kill multi-hour runs), and guards
+    # resp.json() against non-JSON bodies (gateway HTML). tolerate_status lets
+    # cancel_*_job treat a 404 (job already gone) as success so L3 zombie
+    # cleanup isn't aborted by one missing job.
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_body: Any = None,
+        params: Any = None,
+        max_retries: int = 5,
+        tolerate_status: tuple[int, ...] = (),
+    ) -> dict[str, Any] | list[dict[str, Any]]:
         backoff = 1.0
         last_exc: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:
-                resp = self._http.get(url)
+                resp = self._http.request(method, url, json=json_body, params=params)
             except (httpx.TransportError, httpx.RequestError) as exc:
                 last_exc = exc
                 logger.warning(
-                    "poll get %s transient error (attempt %d/%d): %s",
+                    "%s %s transient error (attempt %d/%d): %s",
+                    method,
                     url,
                     attempt,
                     max_retries,
@@ -117,12 +130,16 @@ class MLXFineTuneClient:
                     backoff *= 2
                     continue
                 raise MLXFineTuneError(
-                    f"poll get {url} failed after {max_retries} retries: {exc}"
+                    f"{method} {url} failed after {max_retries} retries: {exc}"
                 ) from exc
+            if resp.status_code in tolerate_status:
+                logger.info("%s %s tolerated status %d", method, url, resp.status_code)
+                return {}
             if resp.status_code >= 500:
                 last_exc = MLXFineTuneError(f"{resp.status_code} {resp.text[:200]}")
                 logger.warning(
-                    "poll get %s server error %d (attempt %d/%d)",
+                    "%s %s server error %d (attempt %d/%d)",
+                    method,
                     url,
                     resp.status_code,
                     attempt,
@@ -133,36 +150,59 @@ class MLXFineTuneClient:
                     backoff *= 2
                     continue
                 raise MLXFineTuneError(
-                    f"poll get {url} returned {resp.status_code} after {max_retries} retries"
+                    f"{method} {url} returned {resp.status_code} after {max_retries} retries"
                 )
             if resp.status_code >= 400:
-                # 4xx: real error (bad id / auth), no point retrying.
                 raise MLXFineTuneError(
-                    f"poll get {url} failed {resp.status_code}: {resp.text}"
+                    f"{method} {url} failed {resp.status_code}: {resp.text}"
                 )
+            return self._parse_json(resp, method, url)
+        raise MLXFineTuneError(f"{method} {url} exhausted retries: {last_exc}")
+
+    @staticmethod
+    def _parse_json(resp: httpx.Response, method: str, url: str) -> Any:
+        # A8: guard JSON decode — fusion-gateway / a proxy can return HTML on
+        # error, which made the old resp.json() raise a raw JSONDecodeError
+        # outside any MLXFineTuneError wrapper.
+        try:
             return resp.json()
-        # Should be unreachable; defensive.
-        raise MLXFineTuneError(f"poll get {url} exhausted retries: {last_exc}")
+        except (ValueError, json.JSONDecodeError) as exc:
+            body_preview = resp.text[:200] if resp.text else "(empty)"
+            raise MLXFineTuneError(
+                f"{method} {url} returned non-JSON body "
+                f"(status {resp.status_code}): {body_preview}"
+            ) from exc
+
+    # A1/A8: poll getter — now a thin wrapper over _request (GET, retried).
+    # Kept as a named method because callers (wait_for_*_job) expect it and
+    # tests patch it; the retry/JSON-guard logic lives once in _request.
+    def _poll_get(self, url: str, max_retries: int = 5) -> dict[str, Any]:
+        result = self._request("GET", url, max_retries=max_retries)
+        if isinstance(result, dict):
+            return result
+        # A8: a poll unexpectedly returned a list — surface as a contract
+        # error rather than letting callers .get() on a list.
+        raise MLXFineTuneError(
+            f"poll get {url} returned a list, expected a job dict: {result!r}"
+        )
 
     # ------------------------------------------------------------------
     # Health
     # ------------------------------------------------------------------
 
     def health(self) -> dict[str, Any]:
-        resp = httpx.get(
-            f"{self._base}/v1/models", headers=self._headers, timeout=self._timeout
-        )
-        resp.raise_for_status()
-        return resp.json()
+        result = self._request("GET", f"{self._base}/v1/models")
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("health returned non-dict")
 
     def list_finetunable_models(self) -> list[dict[str, Any]]:
-        resp = httpx.get(
-            f"{self._base}{JOBS_PATH.replace('/jobs', '/models')}",
-            headers=self._headers,
-            timeout=self._timeout,
+        result = self._request(
+            "GET", f"{self._base}{JOBS_PATH.replace('/jobs', '/models')}"
         )
-        resp.raise_for_status()
-        return resp.json()
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_finetunable_models returned non-list")
 
     # ------------------------------------------------------------------
     # Job lifecycle
@@ -187,36 +227,32 @@ class MLXFineTuneClient:
             dataset,
             adapter_name or "(auto)",
         )
-        resp = httpx.post(
-            f"{self._base}{JOBS_PATH}",
-            json=body,
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        if resp.status_code >= 400:
-            raise MLXFineTuneError(f"create_job failed {resp.status_code}: {resp.text}")
-        return resp.json()
+        result = self._request("POST", f"{self._base}{JOBS_PATH}", json_body=body)
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("create_job returned non-dict")
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         return self._poll_get(f"{self._base}{JOBS_PATH}/{job_id}")
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
-        resp = httpx.post(
+        # A8: tolerate 404 — job already gone (e.g. L3 zombie cleanup after a
+        # restart where fusion-mlx evicted the job). The old raise_for_status
+        # let a 404 abort the whole _load_existing_runs sweep.
+        result = self._request(
+            "POST",
             f"{self._base}{JOBS_PATH}/{job_id}/cancel",
-            headers=self._headers,
-            timeout=self._timeout,
+            tolerate_status=(404,),
         )
-        resp.raise_for_status()
-        return resp.json()
+        if isinstance(result, dict):
+            return result
+        return {}
 
     def list_jobs(self) -> list[dict[str, Any]]:
-        resp = httpx.get(
-            f"{self._base}{JOBS_PATH}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        result = self._request("GET", f"{self._base}{JOBS_PATH}")
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_jobs returned non-list")
 
     def wait_for_job(
         self,
@@ -285,38 +321,29 @@ class MLXFineTuneClient:
             len(prompts),
             adapter_name or "(auto)",
         )
-        resp = httpx.post(
-            f"{self._base}{GRPO_JOBS_PATH}",
-            json=body,
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        if resp.status_code >= 400:
-            raise MLXFineTuneError(
-                f"create_grpo_job failed {resp.status_code}: {resp.text}"
-            )
-        return resp.json()
+        result = self._request("POST", f"{self._base}{GRPO_JOBS_PATH}", json_body=body)
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("create_grpo_job returned non-dict")
 
     def get_grpo_job(self, job_id: str) -> dict[str, Any]:
         return self._poll_get(f"{self._base}{GRPO_JOBS_PATH}/{job_id}")
 
     def cancel_grpo_job(self, job_id: str) -> dict[str, Any]:
-        resp = httpx.post(
+        result = self._request(
+            "POST",
             f"{self._base}{GRPO_JOBS_PATH}/{job_id}/cancel",
-            headers=self._headers,
-            timeout=self._timeout,
+            tolerate_status=(404,),
         )
-        resp.raise_for_status()
-        return resp.json()
+        if isinstance(result, dict):
+            return result
+        return {}
 
     def list_grpo_jobs(self) -> list[dict[str, Any]]:
-        resp = httpx.get(
-            f"{self._base}{GRPO_JOBS_PATH}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        result = self._request("GET", f"{self._base}{GRPO_JOBS_PATH}")
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_grpo_jobs returned non-list")
 
     def wait_for_grpo_job(
         self,
@@ -375,17 +402,10 @@ class MLXFineTuneClient:
             len(preference_pairs),
             adapter_name or "(auto)",
         )
-        resp = httpx.post(
-            f"{self._base}{path}",
-            json=body,
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        if resp.status_code >= 400:
-            raise MLXFineTuneError(
-                f"create_{method}_job failed {resp.status_code}: {resp.text}"
-            )
-        return resp.json()
+        result = self._request("POST", f"{self._base}{path}", json_body=body)
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError(f"create_{method}_job returned non-dict")
 
     def create_orpo_job(
         self,
@@ -407,22 +427,20 @@ class MLXFineTuneClient:
         return self._poll_get(f"{self._base}{DPO_JOBS_PATH}/{job_id}")
 
     def cancel_dpo_job(self, job_id: str) -> dict[str, Any]:
-        resp = httpx.post(
+        result = self._request(
+            "POST",
             f"{self._base}{DPO_JOBS_PATH}/{job_id}/cancel",
-            headers=self._headers,
-            timeout=self._timeout,
+            tolerate_status=(404,),
         )
-        resp.raise_for_status()
-        return resp.json()
+        if isinstance(result, dict):
+            return result
+        return {}
 
     def list_dpo_jobs(self) -> list[dict[str, Any]]:
-        resp = httpx.get(
-            f"{self._base}{DPO_JOBS_PATH}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        result = self._request("GET", f"{self._base}{DPO_JOBS_PATH}")
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_dpo_jobs returned non-list")
 
     def wait_for_dpo_job(
         self,
@@ -480,38 +498,31 @@ class MLXFineTuneClient:
             len(preference_pairs),
             adapter_name or "(auto)",
         )
-        resp = httpx.post(
-            f"{self._base}{REWARD_JOBS_PATH}",
-            json=body,
-            headers=self._headers,
-            timeout=self._timeout,
+        result = self._request(
+            "POST", f"{self._base}{REWARD_JOBS_PATH}", json_body=body
         )
-        if resp.status_code >= 400:
-            raise MLXFineTuneError(
-                f"create_reward_job failed {resp.status_code}: {resp.text}"
-            )
-        return resp.json()
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("create_reward_job returned non-dict")
 
     def get_reward_job(self, job_id: str) -> dict[str, Any]:
         return self._poll_get(f"{self._base}{REWARD_JOBS_PATH}/{job_id}")
 
     def cancel_reward_job(self, job_id: str) -> dict[str, Any]:
-        resp = httpx.post(
+        result = self._request(
+            "POST",
             f"{self._base}{REWARD_JOBS_PATH}/{job_id}/cancel",
-            headers=self._headers,
-            timeout=self._timeout,
+            tolerate_status=(404,),
         )
-        resp.raise_for_status()
-        return resp.json()
+        if isinstance(result, dict):
+            return result
+        return {}
 
     def list_reward_jobs(self) -> list[dict[str, Any]]:
-        resp = httpx.get(
-            f"{self._base}{REWARD_JOBS_PATH}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        result = self._request("GET", f"{self._base}{REWARD_JOBS_PATH}")
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_reward_jobs returned non-list")
 
     def wait_for_reward_job(
         self,
@@ -566,43 +577,32 @@ class MLXFineTuneClient:
             adapter_name,
             len(completions),
         )
-        resp = httpx.post(
-            f"{self._base}{REWARD_SCORE_PATH}",
-            json=body,
-            headers=self._headers,
-            timeout=self._timeout,
+        result = self._request(
+            "POST", f"{self._base}{REWARD_SCORE_PATH}", json_body=body
         )
-        if resp.status_code >= 400:
-            raise MLXFineTuneError(
-                f"score_reward failed {resp.status_code}: {resp.text}"
-            )
-        return resp.json()
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("score_reward returned non-dict")
 
     # ------------------------------------------------------------------
     # Adapter management
     # ------------------------------------------------------------------
 
     def list_adapters(self, model_id: str = "") -> list[dict[str, Any]]:
-        resp = httpx.get(
-            f"{self._base}{ADAPTERS_PATH}",
-            params={"model_id": model_id} if model_id else None,
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        params = {"model_id": model_id} if model_id else None
+        result = self._request("GET", f"{self._base}{ADAPTERS_PATH}", params=params)
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_adapters returned non-list")
 
     def serve_adapter(self, model_id: str, adapter_name: str) -> dict[str, Any]:
-        resp = httpx.post(
+        result = self._request(
+            "POST",
             f"{self._base}{ADAPTERS_PATH}/{model_id}/{adapter_name}/serve",
-            headers=self._headers,
-            timeout=self._timeout,
         )
-        if resp.status_code >= 400:
-            raise MLXFineTuneError(
-                f"serve_adapter failed {resp.status_code}: {resp.text}"
-            )
-        return resp.json()
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("serve_adapter returned non-dict")
 
     # ------------------------------------------------------------------
     # Dataset staging
