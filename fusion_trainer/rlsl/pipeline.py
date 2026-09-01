@@ -149,7 +149,9 @@ class RLSLEngine:
 
     def _run_grpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run GRPO alignment with sandbox feedback reward."""
-        trainer = GRPOTrainer(self.config)
+        # P3-2: share the engine's single ExperimentLogger so one run produces
+        # one events.jsonl + TB log, not a throwaway per train() call.
+        trainer = GRPOTrainer(self.config, experiment_logger=self._logger)
         trainer.on_event = self.on_event
         trainer.is_canceled = getattr(self, "is_canceled", None)
         try:

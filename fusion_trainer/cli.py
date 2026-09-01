@@ -347,6 +347,21 @@ def rlsl(
         "-r",
         help="Reward model (required for rlsl method)",
     ),
+    reward_learning_rate: float = typer.Option(
+        -1.0,
+        "--reward-lr",
+        help="Reward-model training learning rate (negative = use default 1e-5).",
+    ),
+    reward_batch_size: int = typer.Option(
+        0,
+        "--reward-batch-size",
+        help="Reward-model training batch size (0 = use default 1).",
+    ),
+    reward_num_epochs: int = typer.Option(
+        0,
+        "--reward-epochs",
+        help="Reward-model training epochs (0 = use default 2).",
+    ),
     sandbox: str = typer.Option(
         "off",
         "--sandbox",
@@ -426,6 +441,38 @@ def rlsl(
     reward_model = _resolve(
         src, "reward_model", reward_model, preset_vals, yaml_vals, default=""
     )
+    # P3-4 (round-3 audit): reward-model hyperparams tunable from CLI (were
+    # locked to RLSLConfig defaults). Sentinel values = not passed -> default.
+    reward_learning_rate = float(
+        _resolve(
+            src,
+            "reward_learning_rate",
+            reward_learning_rate,
+            preset_vals,
+            yaml_vals,
+            default=-1.0,
+        )
+    )
+    reward_batch_size = int(
+        _resolve(
+            src,
+            "reward_batch_size",
+            reward_batch_size,
+            preset_vals,
+            yaml_vals,
+            default=0,
+        )
+    )
+    reward_num_epochs = int(
+        _resolve(
+            src,
+            "reward_num_epochs",
+            reward_num_epochs,
+            preset_vals,
+            yaml_vals,
+            default=0,
+        )
+    )
     sandbox = _resolve(src, "sandbox", sandbox, preset_vals, yaml_vals, default="off")
     group_size = int(
         _resolve(src, "group_size", group_size, preset_vals, yaml_vals, default=8)
@@ -462,6 +509,15 @@ def rlsl(
     if lora_dropout >= 0:
         sft_kwargs["lora_dropout"] = lora_dropout
 
+    # P3-4: reward-model hyperparams (sentinel -> omit -> dataclass default).
+    rlsl_kwargs: dict[str, Any] = {}
+    if reward_learning_rate >= 0:
+        rlsl_kwargs["reward_learning_rate"] = reward_learning_rate
+    if reward_batch_size > 0:
+        rlsl_kwargs["reward_batch_size"] = reward_batch_size
+    if reward_num_epochs > 0:
+        rlsl_kwargs["reward_num_epochs"] = reward_num_epochs
+
     cfg = TrainerConfig(
         seed=seed,
         model_hub_path=model_hub_path or os.environ.get("FUSION_MODEL_HUB", ""),
@@ -479,6 +535,7 @@ def rlsl(
             group_size=group_size,
             grpo_iterations=grpo_iterations,
             grpo_backend=grpo_backend,  # type: ignore[arg-type]
+            **rlsl_kwargs,
         ),
         publish_adapter=publish,
     )

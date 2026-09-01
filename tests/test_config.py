@@ -12,8 +12,10 @@ from fusion_trainer.config import (
     RLSLConfig,
     SFTConfig,
     TrainerConfig,
+    URLGuardError,
     _default_cache_path,
     _default_hub_path,
+    validate_service_url,
 )
 
 # ===========================================================================
@@ -282,3 +284,40 @@ class TestPathHelpers:
             mp.delenv("FUSION_TRAINER_CACHE", raising=False)
             path = _default_cache_path()
             assert path.endswith("runtime_cache")
+
+
+# ===========================================================================
+# URL guard (S6 / P3-6 round-3 audit)
+# ===========================================================================
+
+
+class TestValidateServiceUrl:
+    def test_allows_http_localhost(self):
+        assert (
+            validate_service_url("http://localhost:11432") == "http://localhost:11432"
+        )
+
+    def test_allows_https_remote(self):
+        assert (
+            validate_service_url("https://hub.example.com") == "https://hub.example.com"
+        )
+
+    def test_rejects_non_http_scheme(self):
+        with pytest.raises(URLGuardError):
+            validate_service_url("ftp://localhost")
+        with pytest.raises(URLGuardError):
+            validate_service_url("file:///etc/passwd")
+
+    def test_rejects_loopback_ip_not_localhost(self):
+        with pytest.raises(URLGuardError):
+            validate_service_url("http://127.0.0.1:11432")
+        with pytest.raises(URLGuardError):
+            validate_service_url("http://[::1]:11432")
+        with pytest.raises(URLGuardError):
+            validate_service_url("http://0.0.0.0:11432")
+
+    def test_rejects_empty_and_no_host(self):
+        with pytest.raises(URLGuardError):
+            validate_service_url("")
+        with pytest.raises(URLGuardError):
+            validate_service_url("http://")

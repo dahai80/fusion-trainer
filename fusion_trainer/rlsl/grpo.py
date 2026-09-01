@@ -59,7 +59,7 @@ _EPS = 1e-8
 class GRPOTrainer:
     """Group Relative Policy Optimization trainer (reward-filtered SFT approx)."""
 
-    def __init__(self, config: TrainerConfig):
+    def __init__(self, config: TrainerConfig, experiment_logger: Any = None):
         self.config = config
         self.rlsl_cfg = config.rlsl
         self._output_dir = Path(self.rlsl_cfg.output_dir)
@@ -77,6 +77,11 @@ class GRPOTrainer:
 
         # Optional live-progress sink (RunManager). None = CLI mode.
         self.on_event = None
+        # P3-2 (round-3 audit): when an owning engine passes its logger in,
+        # stream into it instead of building a throwaway one per train() call
+        # (each throwaway opened its own events.jsonl + TB writer). Owned by
+        # the engine, so the engine's save()/close() in run() covers it.
+        self._injected_logger = experiment_logger
 
     def close(self) -> None:
         # P1-1 (round-3 audit): trainers built a pooled client but never
@@ -126,7 +131,8 @@ class GRPOTrainer:
         from ..experiment import ExperimentLogger
         from ..mlx_client import MLXFineTuneError
 
-        exp = ExperimentLogger(
+        # P3-2: reuse the owning engine's logger when provided.
+        exp = self._injected_logger or ExperimentLogger(
             run_name=self.rlsl_cfg.run_name or "grpo_default",
             output_dir=self._output_dir,
         )
@@ -214,6 +220,12 @@ class GRPOTrainer:
         from ..mlx_client import MLXFineTuneError
         from .reward_server import RewardServer
 
+        # P3-2: reuse the owning engine's logger when provided.
+        exp = self._injected_logger or ExperimentLogger(
+            run_name=self.rlsl_cfg.run_name or "grpo_default",
+            output_dir=self._output_dir,
+        )
+
         prompts = [s.get("prompt", "") for s in dataset if s.get("prompt")]
         if not prompts:
             logger.warning("GRPO(grpo): no prompts with non-empty text, no-op")
@@ -240,12 +252,16 @@ class GRPOTrainer:
         print("║  Engine:     fusion-mlx /api/fine-tune/grpo/jobs")
         print("╚══════════════════════════════════════════════════════")
 
-        exp = ExperimentLogger(
-            run_name=self.rlsl_cfg.run_name or "grpo_default",
-            output_dir=self._output_dir,
-        )
+        # P2-13: prompt-miss action — default "warn" (legacy uniform-0.5 +
+        # loud log). Set FUSION_REWARD_PROMPT_MISS=fail to fail the GRPO job
+        # visibly when a prompt isn't in the dataset index, or =zero to
+        # degrade to a 0.0 baseline. Fail-visible beats a constant reward.
+        import os as _os
 
-        reward_server = RewardServer(dataset, mode=mode, scale=scale)
+        miss_action = _os.environ.get("FUSION_REWARD_PROMPT_MISS", "warn")
+        reward_server = RewardServer(
+            dataset, mode=mode, scale=scale, prompt_miss_action=miss_action
+        )
         endpoint = reward_server.start()
         final_status = "completed"
         last_adapter = ""

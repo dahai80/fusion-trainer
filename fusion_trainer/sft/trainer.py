@@ -266,10 +266,6 @@ class SFTTrainer:
 
         cfg: dict[str, Any] = {
             "fine_tune_type": fine_tune_type,
-            "lora_rank": self._lora_cfg.rank,
-            "lora_alpha": self._lora_cfg.alpha,
-            "lora_dropout": self._lora_cfg.dropout,
-            "lora_layers": 16,
             "optimizer": "adamw",
             "learning_rate": self.sft_cfg.learning_rate,
             "batch_size": self.sft_cfg.batch_size,
@@ -283,6 +279,14 @@ class SFTTrainer:
             "mask_prompt": True,
             "seed": self.config.seed,
         }
+        # P3-4 (round-3 audit): only send LoRA fields for lora/dora/qlora. A
+        # full fine-tune sending lora_rank/lora_layers is meaningless and could
+        # confuse upstream validation. Strip them on the full path.
+        if fine_tune_type != "full":
+            cfg["lora_rank"] = self._lora_cfg.rank
+            cfg["lora_alpha"] = self._lora_cfg.alpha
+            cfg["lora_dropout"] = self._lora_cfg.dropout
+            cfg["lora_layers"] = 16
         # A7: pass the lr_schedule dict (warmup + cosine/linear) through to
         # fusion-mlx's build_schedule. Was previously dropped → no warmup, no
         # decay despite the preset specifying warmup_steps/lr_scheduler.

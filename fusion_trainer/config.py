@@ -7,10 +7,64 @@ string that tells the Trainer where to look for input data files.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
+
+
+class URLGuardError(ValueError):
+    """Raised when a configured service URL fails the scheme/host allow-list."""
+
+
+# S6 (round-3 audit): a tainted --config YAML could point hub_url / base_url
+# at an attacker server and exfiltrate the Bearer key on publish. Defense in
+# depth: reject any scheme other than http/https, and reject loopback
+# addresses written as anything but the literal host "localhost" (so a
+# rebinding alias like 127.0.0.1 / [::1] / 0.0.0.0 can't masquerade). Public
+# hosts (a legitimately remote hub) are allowed — the threat is the *scheme*
+# and the *loopback disguise*, not remote hubs themselves.
+_LOOPBACK_HOSTS = {"localhost"}
+_LOOPBACK_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
+
+
+def validate_service_url(url: str, *, field_name: str = "url") -> str:
+    """Allow-list a configured service URL. Returns the normalized URL.
+
+    Rules (S6):
+      - scheme must be http or https
+      - host must be present
+      - loopback IPs (127.0.0.0/8, ::1, 0.0.0.0) are rejected UNLESS the host
+        is the literal string "localhost"
+    """
+    if not url or not url.strip():
+        raise URLGuardError(f"{field_name} is empty")
+    parsed = urlparse(url.strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise URLGuardError(
+            f"{field_name} scheme must be http or https, got {scheme!r}"
+        )
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise URLGuardError(f"{field_name} has no host: {url!r}")
+    # Literal localhost (and its common aliases) is always allowed.
+    if host in _LOOPBACK_HOSTNAMES:
+        return url.strip()
+    # Reject numeric loopback / wildcard written as anything but "localhost".
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None and (ip.is_loopback or ip.is_unspecified):
+        raise URLGuardError(
+            f"{field_name} loopback/wildcard host {host!r} must be written as "
+            f"'localhost'"
+        )
+    return url.strip()
+
 
 # ---------------------------------------------------------------------------
 # Path helpers

@@ -18,8 +18,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -55,6 +57,7 @@ class RewardServer:
         scale: float = 1.0,
         host: str = "127.0.0.1",
         port: int = 0,
+        prompt_miss_action: str = "warn",
     ):
         self._mode = mode
         self._scale = scale
@@ -69,10 +72,29 @@ class RewardServer:
                 self._sample_index[_prompt_key(prompt)] = sample
         self._host = host
         self._port = port
+        # P2-13 (round-3 audit): prompt-miss handling. "warn" (default) keeps
+        # the legacy degrade-to-uniform-0.5 behavior with a loud log. "fail"
+        # returns a fail-visible 503 so a prompt/dataset mismatch can't hide
+        # behind a constant reward signal — GRPO fails the job rather than
+        # train on garbage. "zero" degrades to 0.0 (not 0.5) with a warning.
+        self._prompt_miss_action = prompt_miss_action
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._endpoint = ""
         self._token = ""
+        # P2-4 (round-3 audit): latency circuit breaker. If N consecutive
+        # scoring calls exceed the latency budget, the sandbox reward path is
+        # almost certainly wedged (e.g. a code-mode subprocess hung) and the
+        # GRPO loop is just burning wall-clock waiting on callbacks. Trip to
+        # fail-visible 503 so fusion-mlx fails the job fast instead of hanging
+        # a multi-hour run on a wedged reward. Override via env.
+        self._latency_budget = float(
+            os.environ.get("FUSION_REWARD_LATENCY_BUDGET_S", "30")
+        )
+        self._latency_trip_after = int(
+            os.environ.get("FUSION_REWARD_LATENCY_TRIP_AFTER", "3")
+        )
+        self._breaker = _LatencyBreaker(self._latency_budget, self._latency_trip_after)
 
     @property
     def endpoint(self) -> str:
@@ -93,6 +115,8 @@ class RewardServer:
         mode = self._mode
         scale = self._scale
         index = self._sample_index
+        breaker = self._breaker
+        miss_action = self._prompt_miss_action
         # Generate a fresh unguessable token per server instance; embed it in
         # the URL the caller (fusion-mlx) POSTs back to verbatim.
         token = secrets.token_urlsafe(32)
@@ -127,7 +151,15 @@ class RewardServer:
                     logger.warning("reward-server: rejected unauthenticated request")
                     self._forbid(403, "forbidden")
                     return
+                # P2-4: breaker tripped — fail fast (503) instead of queuing
+                # behind a wedged scoring path. A GRPO loop waiting on this
+                # callback will then surface the failure visibly.
+                if breaker.is_open:
+                    logger.error("reward-server: latency breaker OPEN — 503")
+                    self._forbid(503, "reward latency breaker open")
+                    return
                 try:
+                    _t0 = time.monotonic()
                     length = int(self.headers.get("Content-Length", 0))
                     if length <= 0 or length > _MAX_BODY_BYTES:
                         logger.warning("reward-server: rejected body length=%s", length)
@@ -150,21 +182,34 @@ class RewardServer:
                         completions = completions[:_MAX_COMPLETIONS]
                     key = _prompt_key(str(prompt))
                     sample = index.get(key)
+                    call_scale = scale
                     if sample is None:
-                        # P2: loud warning on prompt miss — a silent fallback
-                        # to uniform 0.5 makes GRPO look like it's learning
-                        # when the reward signal is actually constant.
+                        # P2-13 (round-3 audit): prompt miss is fail-visible.
+                        # The default "warn" degrades to uniform 0.5 (legacy,
+                        # logged loudly) so a constant reward signal never
+                        # looks like learning. "zero" degrades to 0.0. "fail"
+                        # refuses — a prompt/dataset mismatch means GRPO would
+                        # train on a meaningless constant reward, so fail the
+                        # job visibly instead.
                         logger.warning(
                             "reward-server: prompt not in index (key=%s) — "
-                            "degrading to uniform 0.5 reward. Check that the "
-                            "GRPO prompts match the dataset prompts exactly.",
+                            "miss_action=%s",
                             key,
+                            miss_action,
                         )
+                        if miss_action == "fail":
+                            self._forbid(503, "prompt not in dataset index")
+                            return
                         sample = {}
+                        if miss_action == "zero":
+                            # Local copy only — do NOT mutate the captured
+                            # `scale` (it would persist across calls).
+                            call_scale = 0.0
                     rewards = [
-                        reward_completion(sample, c, mode=mode, scale=scale)
+                        reward_completion(sample, c, mode=mode, scale=call_scale)
                         for c in completions
                     ]
+                    breaker.record(time.monotonic() - _t0)
                     payload = json.dumps({"rewards": rewards}).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -223,6 +268,42 @@ def _prompt_key(prompt: str) -> str:
 # A2 (round-2 audit): bounds to prevent unbounded reads / huge payloads.
 _MAX_BODY_BYTES = 16 * 1024 * 1024
 _MAX_COMPLETIONS = 64
+
+
+class _LatencyBreaker:
+    """Consecutive-slow circuit breaker (P2-4).
+
+    Counts scoring calls that exceeded the latency budget in a row; once that
+    reaches trip_after, the breaker opens and stays open until reset (a new
+    job). A single fast call resets the streak. Thread-safe — the reward
+    server is ThreadingHTTPServer so multiple do_POST run concurrently.
+    """
+
+    def __init__(self, budget_s: float, trip_after: int):
+        self._budget = budget_s
+        self._trip_after = max(1, trip_after)
+        self._streak = 0
+        self._open = False
+        self._lock = threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    def record(self, elapsed_s: float) -> None:
+        with self._lock:
+            if elapsed_s > self._budget:
+                self._streak += 1
+                if self._streak >= self._trip_after and not self._open:
+                    self._open = True
+                    logger.error(
+                        "reward-server: latency breaker TRIPPED — %d consecutive "
+                        "calls > %.1fs budget; failing 503 until reset",
+                        self._streak,
+                        self._budget,
+                    )
+            else:
+                self._streak = 0
 
 
 def _redact_token(url_or_str: str) -> str:

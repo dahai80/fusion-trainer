@@ -397,8 +397,17 @@ class TestDatasetsAdapters:
         with tempfile.TemporaryDirectory() as tmp:
             _patch_sft_client(monkeypatch)
             rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
-            adapters = rm.list_adapters(model="test-model")
-            assert adapters and adapters[0]["name"] == "a1"
+            res = rm.list_adapters(model="test-model")
+            assert res["error"] is None
+            assert res["items"] and res["items"][0]["name"] == "a1"
+
+    def test_list_adapters_down_returns_error(self):
+        # P2-6: fusion-mlx unreachable -> explicit error carrier, not empty list.
+        with tempfile.TemporaryDirectory() as tmp:
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            res = rm.list_adapters()
+            assert res["items"] == []
+            assert res["error"] is not None
 
     def test_delete_adapter_unsupported(self):
         with tempfile.TemporaryDirectory() as tmp:

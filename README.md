@@ -104,7 +104,7 @@ source .venv/bin/activate
 Verify the install:
 
 ```bash
-ft --version     # ft 0.1.11
+ft --version     # ft 0.1.12
 ```
 
 ### 2. Prepare a Dataset

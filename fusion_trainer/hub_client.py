@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from .config import _default_hub_url
+from .config import URLGuardError, _default_hub_url, validate_service_url
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,9 @@ class ModelHubClient:
         api_key: str = "",
         timeout: float = 15.0,
     ):
-        self._base = base_url.rstrip("/")
+        # S6: validate before storing so a tainted config URL can't exfil the
+        # Bearer key to an attacker server. Raises URLGuardError on reject.
+        self._base = validate_service_url(base_url, field_name="hub_url").rstrip("/")
         self._headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
             self._headers["Authorization"] = f"Bearer {api_key}"
@@ -247,7 +249,15 @@ def publish_adapter_if_enabled(
     hub_url = getattr(config, "hub_url", "") or _default_hub_url()
     api_key = getattr(config, "hub_api_key", "") or ""
     desc = f"LoRA adapter from fusion-trainer run ({result.get('method', '')})"
-    client = ModelHubClient(base_url=hub_url, api_key=api_key)
+    try:
+        client = ModelHubClient(base_url=hub_url, api_key=api_key)
+    except URLGuardError as exc:
+        logger.warning(
+            "publish_adapter REJECTED hub_url (non-blocking): name=%s err=%s",
+            name,
+            exc,
+        )
+        return {"published": False, "error": str(exc), "adapter_name": name}
     try:
         return client.publish_adapter(
             name=name, base_model=base_model, description=desc

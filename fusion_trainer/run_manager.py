@@ -268,7 +268,16 @@ class RunManager:
     # ------------------------------------------------------------------
 
     def info(self) -> dict[str, Any]:
-        """System info for the Settings/Dashboard panels."""
+        """System info for the Settings/Dashboard panels.
+
+        P3-3 (round-3 audit): builds a short-lived MLXFineTuneClient per call
+        rather than sharing a daemon-wide one. info()/list_adapters() are read
+        paths hit on GUI refresh; a shared pooled client would be contended by
+        the worker threads driving active runs (create_job/wait_for_job) and
+        risk serializing a multi-hour run behind a refresh. The per-call client
+        is closed in finally (R7) so no pool leaks. Revisit only if profiling
+        shows the connect cost on refresh is material.
+        """
         mlx_alive = False
         models: list[dict[str, Any]] = []
         gpu_mem_gb: float | None = None
@@ -426,7 +435,13 @@ class RunManager:
         return n
 
     def preview_dataset(self, name: str, limit: int = 5) -> dict[str, Any]:
-        """Read first `limit` rows of a hub dataset by {category}/{name}."""
+        """Read first `limit` rows of a hub dataset by {category}/{name}.
+
+        P2-3 (round-3 audit): n_total comes from _count_samples_cached (mtime-
+        keyed) instead of a full-file line scan on every preview call — a GUI
+        refresh over a 10M-row dataset no longer re-reads the whole file. Also
+        now supports .parquet/.csv/.json preview, not just .jsonl.
+        """
         limit = max(1, min(int(limit), 100))
         # P2 (round-3 audit): path-traversal guard. `name` is caller-supplied
         # (GUI/CLI) and was joined straight into the datasets path — a crafted
@@ -442,13 +457,18 @@ class RunManager:
             }
 
         def _safe_join(base: Path, leaf: str) -> Path | None:
-            cand = (base / f"{leaf}.jsonl").resolve()
-            try:
-                cand.relative_to(base)
-            except ValueError:
-                logger.warning("preview_dataset: rejecting traversal name=%r", leaf)
-                return None
-            return cand
+            # P2-3: try the known dataset suffixes, not just .jsonl, so a
+            # parquet/csv dataset is previewable too.
+            for suffix in (".jsonl", ".json", ".csv", ".parquet"):
+                cand = (base / f"{leaf}{suffix}").resolve()
+                try:
+                    cand.relative_to(base)
+                except ValueError:
+                    logger.warning("preview_dataset: rejecting traversal name=%r", leaf)
+                    return None
+                if cand.exists():
+                    return cand
+            return None
 
         path = _safe_join(datasets_dir, name)
         if path is None or not path.exists():
@@ -460,33 +480,31 @@ class RunManager:
                 "n_total": 0,
                 "error": f"dataset {name} not found",
             }
-        rows: list[dict[str, Any]] = []
-        fields: set[str] = set()
-        total = 0
-        with open(path) as fh:
-            for line in fh:
-                total += 1
-                if len(rows) < limit:
-                    try:
-                        obj = json.loads(line)
-                    except Exception:
-                        continue
-                    rows.append(obj)
-                    fields.update(obj.keys())
-        return {"rows": rows, "fields": sorted(fields), "n_total": total}
 
-    def list_adapters(self, model: str = "") -> list[dict[str, Any]]:
-        """Proxy fusion-mlx GET /admin/api/fine-tune/adapters."""
+        n_total = self._count_samples_cached(path)
+        rows, fields = _preview_rows(path, limit)
+        return {"rows": rows, "fields": sorted(fields), "n_total": n_total}
+
+    def list_adapters(self, model: str = "") -> dict[str, Any]:
+        """Proxy fusion-mlx GET /admin/api/fine-tune/adapters.
+
+        P2-6 (round-3 audit): on fusion-mlx down, the GUI saw an empty list
+        and rendered "no adapters trained yet" — indistinguishable from a
+        genuinely empty server. Return an explicit error carrier so the GUI
+        can surface "fusion-mlx unreachable" instead of a misleading empty
+        state. Callers that only want the list can read the ``items`` key.
+        """
         try:
             client = MLXFineTuneClient(port=self.mlx_port)
             try:
-                return client.list_adapters(model_id=model)
+                items = client.list_adapters(model_id=model)
+                return {"items": items, "error": None}
             finally:
                 # R7: close the pooled client (daemon leaks on every refresh).
                 client.close()
         except Exception as exc:
             logger.error("list_adapters failed: %s", exc)
-            return []
+            return {"items": [], "error": f"fusion-mlx unreachable: {exc}"}
 
     def delete_adapter(self, name: str) -> dict[str, Any]:
         """Adapter deletion — upstream endpoint pending; fail-visible stub.
@@ -761,13 +779,30 @@ class RunManager:
             r = self._runs.get(run_id)
             if r is None:
                 return {"run_id": run_id, "status": "unknown", "error": "no such run"}
+            metrics = dict(r.get("metrics", {}))
+            # O18 (round-3 audit): derive it_sec / progress_pct locally so a
+            # status poll answers "how fast / how far" without re-parsing
+            # events.jsonl. Deterministic from record state (Rule 5): no model
+            # routing. it_sec = step / elapsed since created; progress_pct =
+            # step / total_steps (guard zero divides).
+            elapsed_s = time.time() - float(r.get("created", 0.0))
+            step = int(r.get("step", 0))
+            total_steps = int(r.get("total_steps", 0))
+            if "it_sec" not in metrics and elapsed_s > 0 and step > 0:
+                metrics["it_sec"] = round(step / elapsed_s, 4)
+            if "elapsed_s" not in metrics and elapsed_s > 0:
+                metrics["elapsed_s"] = round(elapsed_s, 2)
+            if total_steps > 0:
+                metrics["progress_pct"] = round(
+                    min(step, total_steps) / total_steps * 100, 2
+                )
             return {
                 "run_id": run_id,
                 "status": r.get("status", ""),
-                "step": r.get("step", 0),
-                "total_steps": r.get("total_steps", 0),
+                "step": step,
+                "total_steps": total_steps,
                 "phase": r.get("phase", ""),
-                "metrics": dict(r.get("metrics", {})),
+                "metrics": metrics,
                 "adapter_name": r.get("adapter_name", ""),
                 "final_adapter": r.get("final_adapter", ""),
                 "error": r.get("error", ""),
@@ -800,7 +835,9 @@ class RunManager:
                 filtered.append(ev)
         return {"run_id": run_id, "events": filtered, "status": status}
 
-    def stop_run(self, run_id: str) -> dict[str, Any]:
+    def stop_run(
+        self, run_id: str, wait: bool = False, timeout: float = 30.0
+    ) -> dict[str, Any]:
         """Request cancellation; returns {status: cancelling}.
 
         R1: sets the cancel flag AND dispatches the upstream fusion-mlx cancel
@@ -808,7 +845,15 @@ class RunManager:
         event. A job blocked in a long silent eval or a long poll would
         otherwise keep burning GPU for minutes until the next event trickles
         in. If the job_id isn't recorded yet, the sink retries on the next
-        emit (see _do_cancel)."""
+        emit (see _do_cancel).
+
+        O19 (round-3 audit): wait=True blocks until the run worker reaches a
+        terminal status (joins its thread with a timeout), then returns the
+        final status instead of fire-and-forget "cancelling". Callers that
+        need to chain on actual termination (e.g. CLI `&&`, GUI "stop then
+        release model") pass wait=True. The default stays fire-and-forget so
+        long GUI cancel flows don't block the RPC thread.
+        """
         with self._lock:
             r = self._runs.get(run_id)
             if r is None:
@@ -816,11 +861,23 @@ class RunManager:
             if r.get("status") in _TERMINAL:
                 return {"run_id": run_id, "status": r["status"]}
             r["canceled"] = True
+            thread = r.get("thread")
         sink = self._active_sinks.get(run_id)
         if sink is not None:
             sink.cancel_now()
         logger.info("stop_run requested for %s (active cancel dispatched)", run_id)
-        return {"run_id": run_id, "status": "cancelling"}
+        if not wait:
+            return {"run_id": run_id, "status": "cancelling"}
+        # O19: block on the worker thread reaching terminal. Non-daemon thread
+        # so join() is safe; timeout keeps a hung upstream from wedging the
+        # caller forever.
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+        with self._lock:
+            r = self._runs.get(run_id)
+            status = r.get("status", "cancelling") if r else "cancelling"
+        logger.info("stop_run wait settled for %s -> %s", run_id, status)
+        return {"run_id": run_id, "status": status}
 
     def publish_run(
         self,
@@ -899,13 +956,20 @@ class RunManager:
                     f"(model {base_model!r}); weights may have been deleted"
                 ),
             }
+        from .config import URLGuardError
         from .hub_client import HubPublishError, ModelHubClient
 
         url = hub_url or os.environ.get(
             "FUSION_MODEL_HUB_URL", "http://localhost:11432"
         )
         key = api_key or os.environ.get("FUSION_MODEL_HUB_API_KEY", "")
-        client = ModelHubClient(base_url=url, api_key=key)
+        try:
+            client = ModelHubClient(base_url=url, api_key=key)
+        except URLGuardError as exc:
+            logger.warning(
+                "publish_run %s rejected hub_url (non-blocking): %s", run_id, exc
+            )
+            return {"run_id": run_id, "published": False, "error": str(exc)}
         desc = f"LoRA adapter from fusion-trainer run {run_id}"
         try:
             pub = client.publish_adapter(
@@ -942,11 +1006,16 @@ class RunManager:
         # M2: atomic write — write to a temp file in the same dir, fsync, then
         # os.replace so a crash mid-write never leaves a half-written meta
         # (which would make events.jsonl and run_meta.json disagree on status).
+        # P3-1 (round-3 audit): fsync the tmp file contents before replace, and
+        # clean up the residual tmp on every path (the old success path left
+        # .json.tmp around because os.replace moves it — but a crashed peer that
+        # died after write_text left a stale tmp that this run never cleared).
         tmp_path = meta_path.with_suffix(".json.tmp")
         try:
-            tmp_path.write_text(
-                json.dumps(serial, default=str, ensure_ascii=False, indent=2)
-            )
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(serial, default=str, ensure_ascii=False, indent=2))
+                fh.flush()
+                os.fsync(fh.fileno())
             os.replace(tmp_path, meta_path)
         except Exception as exc:
             logger.warning("persist meta %s failed: %s", run_id, exc)
@@ -1036,7 +1105,7 @@ class _RunSink:
     """Per-run event sink: appends to ring buffer + events.jsonl, and
     records the live job id so a cancel request can hit fusion-mlx."""
 
-    def __init__(self, record: dict[str, Any], lock: threading.Lock):
+    def __init__(self, record: dict[str, Any], lock: threading.RLock):
         self._record = record
         self._lock = lock
         self._events_path = Path(record["events_path"])
@@ -1175,7 +1244,87 @@ def _flatten_metrics(ev: dict[str, Any]) -> dict[str, float]:
         out["grpo_loss"] = float(ev.get("loss", 0.0))
         out["mean_reward"] = float(ev.get("mean_reward", 0.0))
         out["mean_ratio"] = float(ev.get("mean_ratio", 0.0))
+    # O18 (round-3 audit): pass through any upstream throughput fields so the
+    # GUI does not have to re-parse events.jsonl for them. Names are
+    # best-effort — fusion-mlx may emit any subset; missing keys are skipped.
+    for raw_key, out_key in (
+        ("it_per_sec", "it_per_sec"),
+        ("it_sec", "it_sec"),
+        ("tokens_per_sec", "tokens_per_sec"),
+        ("tokens_per_s", "tokens_per_sec"),
+        ("throughput", "throughput"),
+        ("elapsed", "elapsed_s"),
+        ("elapsed_time", "elapsed_s"),
+    ):
+        val = ev.get(raw_key)
+        if val is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                out[out_key] = float(val)
     return out
+
+
+def _preview_rows(path: Path, limit: int) -> tuple[list[dict[str, Any]], set[str]]:
+    """Read first `limit` parsed rows + their field set. Format-aware so a
+    parquet/csv dataset previews the same as jsonl (P2-3)."""
+    rows: list[dict[str, Any]] = []
+    fields: set[str] = set()
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".parquet":
+            import pyarrow.parquet as pq
+
+            batch = next(
+                iter(pq.ParquetFile(path).iter_batches(batch_size=limit)), None
+            )
+            if batch is not None:
+                for obj in batch.to_pylist():
+                    if len(rows) >= limit:
+                        break
+                    if isinstance(obj, dict):
+                        rows.append(obj)
+                        fields.update(obj.keys())
+        elif suffix == ".json":
+            import json as _json
+
+            with open(path, encoding="utf-8") as fh:
+                content = _json.load(fh)
+            if isinstance(content, list):
+                for obj in content[:limit]:
+                    if isinstance(obj, dict):
+                        rows.append(obj)
+                        fields.update(obj.keys())
+            elif isinstance(content, dict):
+                rows.append(content)
+                fields.update(content.keys())
+        else:
+            # jsonl / csv / text — one row per line (csv parsed by csv module).
+            if suffix == ".csv":
+                import csv as _csv
+
+                with open(path, encoding="utf-8") as fh:
+                    for row in _csv.DictReader(fh):
+                        if len(rows) >= limit:
+                            break
+                        rows.append(dict(row))
+                        fields.update(row.keys())
+            else:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        if len(rows) >= limit:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except Exception:
+                            continue
+                        if isinstance(obj, dict):
+                            rows.append(obj)
+                            fields.update(obj.keys())
+    except Exception as exc:
+        logger.warning("preview_rows failed for %s: %s", path, exc)
+    return rows, fields
 
 
 def _count_samples(path: Path) -> int:

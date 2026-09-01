@@ -5,10 +5,22 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# S3 (round-3 audit): depth-of-defense caps against attacker-controlled
+# dataset files. A single multi-GB line / object could OOM the loader even
+# with max_samples set (the bad line is read fully before the count check).
+# These are generous for real training data (1MB/line is a huge document;
+# 2GB file is a large dataset) but stop a malicious file from exhausting
+# unified memory. Override via env for legitimate oversized inputs.
+MAX_LINE_BYTES = int(os.environ.get("FUSION_MAX_LINE_BYTES", str(2 * 1024 * 1024)))
+MAX_JSON_FILE_BYTES = int(
+    os.environ.get("FUSION_MAX_JSON_FILE_BYTES", str(2 * 1024 * 1024 * 1024))
+)
 
 # D1 cleaned-dataset schemas (architecture/future-mlx-landing-plan.md A2):
 #   SFT  : messages-JSONL  -> {"messages": [{"role","content"}, ...]}
@@ -169,10 +181,25 @@ def _load_jsonl(path: Path, max_samples: int = 0) -> list[dict[str, Any]]:
     # dropped rather than getting a raw JSONDecodeError.
     data = []
     bad = 0
+    oversize = 0
     with open(path, encoding="utf-8") as f:
         for lineno, line in enumerate(f, 1):
             line = line.strip()
             if not line:
+                continue
+            # S3 (round-3 audit): per-line byte cap. A single huge line is read
+            # fully before max_samples can stop the loop, so cap the line itself.
+            # Skipping is fail-visible (logged), not a silent truncation.
+            if len(line.encode("utf-8")) > MAX_LINE_BYTES:
+                oversize += 1
+                if oversize <= 5:
+                    logger.warning(
+                        "skip oversize JSONL line %d in %s: %d bytes > cap %d",
+                        lineno,
+                        path,
+                        len(line.encode("utf-8")),
+                        MAX_LINE_BYTES,
+                    )
                 continue
             try:
                 item = json.loads(line)
@@ -191,9 +218,13 @@ def _load_jsonl(path: Path, max_samples: int = 0) -> list[dict[str, Any]]:
             data.append(item)
             if max_samples > 0 and len(data) >= max_samples:
                 break
-    if bad:
+    if bad or oversize:
         logger.warning(
-            "loaded %d samples from %s, skipped %d corrupt lines", len(data), path, bad
+            "loaded %d samples from %s, skipped %d corrupt + %d oversize lines",
+            len(data),
+            path,
+            bad,
+            oversize,
         )
     return data
 
@@ -205,6 +236,14 @@ def _load_json(path: Path) -> list[dict[str, Any]]:
     nested structure like {"data": {"data": [...]}}, only the top-level
     "data" key is extracted — the inner list is NOT walked recursively.
     """
+    # S3 (round-3 audit): whole-file json.load materializes the entire object
+    # in memory with no cap — guard the file size before reading.
+    size = path.stat().st_size
+    if size > MAX_JSON_FILE_BYTES:
+        raise ValueError(
+            f"JSON file {path} is {size} bytes, exceeds cap "
+            f"{MAX_JSON_FILE_BYTES} (set FUSION_MAX_JSON_FILE_BYTES to raise)"
+        )
     with open(path, encoding="utf-8") as f:
         content = json.load(f)
     if isinstance(content, list):

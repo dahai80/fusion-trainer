@@ -38,6 +38,8 @@ from typing import Any
 
 import httpx
 
+from .config import validate_service_url
+
 logger = logging.getLogger(__name__)
 
 JOBS_PATH = "/admin/api/fine-tune/jobs"
@@ -67,7 +69,7 @@ class MLXFineTuneClient:
         admin_token: str = "",
         timeout: float = 30.0,
     ):
-        self._base = f"{base_url}:{port}"
+        self._base = f"{validate_service_url(base_url, field_name='base_url')}:{port}"
         token = admin_token or os.environ.get("FUSION_MLX_ADMIN_TOKEN", "")
         self._headers = {"X-Fusion-Route": "admin"}
         if token:
@@ -326,6 +328,14 @@ class MLXFineTuneClient:
         (P1-3: so stop_run interrupts a multi-hour wait instead of blocking
         until the 86400s timeout). Returns the final job dict. Raises
         MLXFineTuneError on failure or timeout.
+
+        P3-3 (round-3 audit): the new-events slice assumes fusion-mlx's job
+        ``events`` list is append-only and monotonically growing across polls
+        (events[last_seen:] where last_seen = prior len). If fusion-mlx ever
+        truncates, re-orders, or resets the events array mid-job, this slice
+        would miss or replay events. Upstream contract: events are append-only
+        for the lifetime of a job. If that changes, switch to an event-id
+        cursor instead of a positional index.
         """
         deadline = time.monotonic() + timeout
         last_seen = 0
