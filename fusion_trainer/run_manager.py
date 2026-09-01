@@ -52,7 +52,12 @@ _MXF8_ISSUE = "https://github.com/dahai80/fusion-mlx/issues/402"
 # itself / warn on a bypassing direct construction. Filled in at module bottom
 # for readability, but available at __init__ call time (module fully loaded).
 _RUN_MANAGER_SINGLETON: RunManager | None = None
-_SINGLETON_LOCK = threading.Lock()
+# RLock, not Lock: get_run_manager() holds this lock while calling
+# RunManager(), whose __init__ re-acquires it (A3 singleton-bypass warning).
+# A plain Lock self-deadlocks on that re-acquire — get_run_manager() (the
+# supported singleton entry) hung forever while a direct RunManager() worked.
+# RLock lets the same thread reenter, so construction completes.
+_SINGLETON_LOCK = threading.RLock()
 
 
 class RunManager:
@@ -808,6 +813,7 @@ class RunManager:
                 "error": r.get("error", ""),
                 "created": r.get("created", 0),
                 "job_id": r.get("job_id", ""),
+                "events_path": r.get("events_path", ""),
             }
 
     def run_progress(self, run_id: str, since_step: int = -1) -> dict[str, Any]:
@@ -939,7 +945,16 @@ class RunManager:
                 }
         finally:
             mlx_client.close()
-        adapter_exists = any(str(a.get("name", "")) == adapter_name for a in adapters)
+        # fusion-mlx GET /admin/api/fine-tune/adapters returns each adapter as
+        # {model_id, adapter_name, adapter_path, has_weights, has_config} — the
+        # identifier key is "adapter_name", NOT "name". Reading a.get("name")
+        # always returned "" so every publish_run falsely concluded the adapter
+        # was missing and refused to publish (L4 existence check defeated by an
+        # upstream field name the mock-based suite never verified).
+        adapter_exists = any(
+            str(a.get("adapter_name", "") or a.get("name", "")) == adapter_name
+            for a in adapters
+        )
         if not adapter_exists:
             logger.error(
                 "publish_run %s: adapter %r not found on fusion-mlx for "

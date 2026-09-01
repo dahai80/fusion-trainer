@@ -27,8 +27,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from fusion_trainer.config import _default_mlx_port
+from fusion_trainer.config import (
+    DatasetConfig,
+    SFTConfig,
+    TrainerConfig,
+    _default_mlx_port,
+)
 from fusion_trainer.mlx_client import MLXFineTuneClient, MLXFineTuneError
+from fusion_trainer.run_manager import get_run_manager
 
 
 def _mlx_port() -> int:
@@ -37,8 +43,22 @@ def _mlx_port() -> int:
 
 def _server_reachable() -> bool:
     port = _mlx_port()
+    # A fusion-mlx server started with --api-key returns 401 to an
+    # unauthenticated GET, which would look "unreachable" and silently skip
+    # the whole contract suite. Send the admin token if set so a secured
+    # server is correctly detected as live.
+    headers = {}
+    token = os.environ.get("FUSION_MLX_ADMIN_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    # timeout: a live fusion-mlx with a large model cache can take ~10s to
+    # answer GET /v1/models (it scans the cache dir on each call). A 3s cap
+    # would falsely report a busy server as unreachable and skip the whole
+    # suite. 20s is generous but still bounded.
     try:
-        resp = httpx.get(f"http://localhost:{port}/v1/models", timeout=3.0)
+        resp = httpx.get(
+            f"http://localhost:{port}/v1/models", timeout=20.0, headers=headers
+        )
         return resp.status_code == 200
     except Exception:
         return False
@@ -62,10 +82,37 @@ def live_client():
 
 @pytest.fixture(scope="module")
 def base_model_id(live_client: MLXFineTuneClient) -> str:
+    # S4 (soft #4): data[0] is whatever fusion-mlx loaded first — on this host
+    # that is an image/video model (FLUX / Wan), which cannot serve an SFT
+    # text job and makes create_job reject or hang. Pick the first model that
+    # actually declares text_generation capability so the live SFT contract
+    # runs against a real text base. Fall back to data[0] only if no model
+    # reports capabilities (older fusion-mlx without the capabilities field).
     data = live_client.health().get("data", [])
     if not data:
         pytest.skip("no models loaded on fusion-mlx; load a small base model")
-    return str(data[0].get("id", ""))
+    text_models = [
+        m for m in data if (m.get("capabilities") or {}).get("text_generation")
+    ]
+    if not text_models:
+        return str(data[0].get("id", ""))
+
+    # Prefer the smallest text model for a fast 2-iter smoke (parse a "<n>B" or
+    # "<n>M" size hint from the id). Falls back to the first text model.
+    def _size(m: dict) -> float:
+        mid = str(m.get("id", "")).lower()
+        import re
+
+        mb = re.search(r"(\d+(?:\.\d+)?)b\b", mid)
+        if mb:
+            return float(mb.group(1))
+        mm = re.search(r"(\d+(?:\.\d+)?)m\b", mid)
+        if mm:
+            return float(mm.group(1)) / 1000.0
+        return 999.0
+
+    text_models.sort(key=_size)
+    return str(text_models[0].get("id", ""))
 
 
 def test_health_contract(live_client: MLXFineTuneClient):
@@ -77,13 +124,15 @@ def test_health_contract(live_client: MLXFineTuneClient):
 
 
 def test_list_adapters_contract(live_client: MLXFineTuneClient, base_model_id: str):
-    # GET /admin/api/fine-tune/adapters returns a list of dicts each with a
-    # "name" (and "model"). The trainer's publish_run existence check
-    # (L4) and GUI adapter tab depend on this exact shape.
+    # GET /admin/api/fine-tune/adapters returns a list of dicts each carrying
+    # "adapter_name" (the identifier publish_run's L4 existence check matches
+    # on) plus "model_id" and "adapter_path". This test pins that contract: a
+    # field rename upstream (adapter_name -> name) would silently break
+    # publish_run's existence check, which mock-based tests cannot catch.
     adapters = live_client.list_adapters(model_id=base_model_id)
     assert isinstance(adapters, list)
     for a in adapters:
-        assert "name" in a, f"adapter dict missing 'name' key: {a}"
+        assert "adapter_name" in a, f"adapter dict missing 'adapter_name' key: {a}"
 
 
 def test_sft_job_field_contract(
@@ -100,17 +149,15 @@ def test_sft_job_field_contract(
         {"input": "ping", "output": "pong"},
     ]
     dataset_path = MLXFineTuneClient.stage_dataset(
-        samples, tmp_path, filename="contract_train.jsonl"
+        samples, tmp_path, filename="train.jsonl"
     )
     adapter_name = f"contract_test_{int(time.time())}"
     cfg = {
         "fine_tune_type": "lora",
-        "num_epochs": 1,
         "batch_size": 1,
-        "max_steps": 2,
+        "iters": 2,
         "lora_rank": 4,
         "lora_alpha": 8,
-        "iters": 2,
     }
     try:
         job = live_client.create_job(
@@ -153,3 +200,89 @@ def test_sft_job_field_contract(
     )
     assert final.get("adapter_path"), f"'adapter_path' present but empty: {final}"
     assert "adapter_name" in final, f"terminal job missing 'adapter_name': {final}"
+
+
+def test_gui_run_manager_sft_live_e2e(
+    live_client: MLXFineTuneClient, base_model_id: str, tmp_path: Path
+):
+    # soft #4: the GUI drives training through RunManager.start_sft, then polls
+    # run_status / run_progress. The unit suite only exercises that surface
+    # with a FAKE fusion-mlx (patched httpx), so a real end-to-end GUI-shaped
+    # run was never verified in fusion-trainer's own suite. This test closes
+    # that gap: a real model, a real (tiny) SFT job, driven exactly as the
+    # fusion-agent-studio TrainingService does, asserting the live-progress
+    # contract the GUI renders against.
+    if os.environ.get("FUSION_TRAINER_REAL", "") != "1":
+        pytest.skip("set FUSION_TRAINER_REAL=1 to run the GUI live e2e test")
+
+    # dataset.path is the SOURCE file the trainer's DatasetLoader reads; the
+    # trainer stages it into fusion-mlx's expected {train,valid}.jsonl layout
+    # itself in _run_training. Passing a pre-staged dir here double-stages and
+    # the loader rejects the dir suffix ("Unsupported file format"), so write a
+    # plain {input,output} JSONL source the loader detects + transforms.
+    import json
+
+    samples = [
+        {"input": "hello", "output": "world"},
+        {"input": "ping", "output": "pong"},
+    ]
+    src_path = tmp_path / "src_train.jsonl"
+    src_path.write_text("\n".join(json.dumps(s) for s in samples) + "\n")
+    cfg = TrainerConfig(
+        dataset=DatasetConfig(path=str(src_path), max_samples=0),
+        sft=SFTConfig(
+            model=base_model_id,
+            method="lora",
+            num_epochs=1,
+            max_steps=2,
+            lora_rank=4,
+            lora_alpha=8.0,
+            run_name=f"gui_e2e_{int(time.time())}",
+        ),
+        cache_path=str(tmp_path / "cache"),
+        mlx_port=_mlx_port(),
+    )
+
+    mgr = get_run_manager()
+    start = mgr.start_sft(cfg)
+    run_id = start["run_id"]
+    assert start["status"] == "running"
+
+    deadline = time.monotonic() + 600.0
+    terminal = ""
+    saw_running = False
+    while time.monotonic() < deadline:
+        st = mgr.run_status(run_id)
+        status = str(st.get("status", ""))
+        if status == "running":
+            saw_running = True
+        # live-progress: even mid-run, run_progress must return a dict with a
+        # buffer shape the GUI consumes ({"events": [...], ...}).
+        prog = mgr.run_progress(run_id, since_step=-1)
+        assert isinstance(prog, dict)
+        if status in ("completed", "failed", "cancelled"):
+            terminal = status
+            break
+        time.sleep(2.0)
+    else:
+        mgr.stop_run(run_id)
+        pytest.fail("GUI e2e SFT run did not reach terminal status within 600s")
+
+    assert saw_running, "run_status never reported 'running' — GUI would hang"
+    assert terminal == "completed", f"GUI e2e run ended non-completed: {terminal}"
+
+    final_status = mgr.run_status(run_id)
+    assert final_status["status"] == "completed"
+    # the GUI adapter tab + publish path depend on these populated fields.
+    assert final_status.get("adapter_name"), (
+        f"terminal run_status has empty adapter_name: {final_status}"
+    )
+    # events.jsonl must exist on disk (GUI replays from it on reconnect).
+    events_file = Path(final_status.get("events_path", ""))
+    assert events_file.is_file(), f"events.jsonl missing at {events_file}"
+    assert events_file.stat().st_size > 0, "events.jsonl is empty"
+    # the run appears in list_runs (GUI run-history tab).
+    runs = mgr.list_runs(limit=200)
+    assert any(r.get("run_id") == run_id for r in runs), (
+        f"run {run_id} not in list_runs: {runs[:3]}"
+    )

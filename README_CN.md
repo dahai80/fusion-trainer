@@ -160,6 +160,36 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 
 ---
 
+## 发布训练好的适配器到 fusion-model-hub（issue #49）
+
+一次成功的 LoRA 运行后，产出的适配器可注册到 [fusion-model-hub](https://github.com/dahai80/fusion-models-hub)，使网关可索引它（`GET /api/v1/models?model_type=lora`）。默认**关闭**，用 `--publish`（或 YAML 中 `publish_adapter: true`）开启：
+
+```bash
+# SFT 完成后立即发布
+fusion-trainer sft --preset sft_7b_lora \
+    --model qwen2.5-7b-4bit \
+    --dataset /path/to/data.jsonl \
+    --run-name my_adapter \
+    --publish
+
+# 补发一个未带 --publish 训练的已完成 run
+fusion-trainer publish <run_id>
+```
+
+底层调用 `POST /api/v1/models`，`model_type="lora"` + `base_model_id` 指向 run 的基座模型（`fusion_trainer/hub_client.py` 中的 `ModelHubClient`）。发布**失败只警告、不阻断训练结果** —— Hub 不可用时把 published 置 false、记录错误、退出 0（fail-visible，绝不静默）。
+
+**配置**（`TrainerConfig`，可用环境变量覆盖）：
+
+| 字段 | 环境变量 | 默认值 |
+|---|---|---|
+| `hub_url` | `FUSION_MODEL_HUB_URL` | `http://localhost:11432`（网关 → model-hub） |
+| `hub_api_key` | `FUSION_MODEL_HUB_API_KEY` | `""`（无鉴权） |
+| `publish_adapter` | `FUSION_TRAINER_PUBLISH=1` | `False` |
+
+`FUSION_TRAINER_PUBLISH=1` 环境变量覆盖专为 **GUI 路径**存在：fusion-agent-studio `TrainingService._build_trainer_config` 当前会丢弃它构建的配置里的 `publish_adapter`/`hub_url`/`hub_api_key`（上游 [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268) 追踪），导致 GUI 触发的 run 即使操作者想发布也从不发布。在 #268 落地前，设置 `FUSION_TRAINER_PUBLISH=1`（配合 `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`）可强制 GUI run 发布。CLI `--publish` 路径不受影响。
+
+---
+
 ## 产品联动
 
 Fusion-Trainer 作为整条 Fusion 产品矩阵的**模型迭代工厂**：

@@ -211,7 +211,9 @@ Under the hood this calls `POST /api/v1/models` with `model_type="lora"` + `base
 |---|---|---|
 | `hub_url` | `FUSION_MODEL_HUB_URL` | `http://localhost:11432` (gateway → model-hub) |
 | `hub_api_key` | `FUSION_MODEL_HUB_API_KEY` | `""` (no auth) |
-| `publish_adapter` | — | `False` |
+| `publish_adapter` | `FUSION_TRAINER_PUBLISH=1` | `False` |
+
+The `FUSION_TRAINER_PUBLISH=1` env override exists for the **GUI path**: fusion-agent-studio `TrainingService._build_trainer_config` currently drops `publish_adapter`/`hub_url`/`hub_api_key` from the config it builds (tracked at [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268)), so a GUI-triggered run never published even when the operator wanted it to. Setting `FUSION_TRAINER_PUBLISH=1` (plus `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`) forces publish on for GUI runs until #268 lands. The CLI `--publish` path is unaffected.
 
 #### GRPO backend (`grpo_backend`)
 

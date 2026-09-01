@@ -7,6 +7,73 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [Unreleased]
+
+Enterprise-readiness soft-issue remediation (soft #2–#5) plus a real-model
+GUI end-to-end integration test that caught three production defects the
+mock-based suite could not.
+
+### Fixed
+- **P0 — `get_run_manager()` self-deadlock**: the singleton entry acquired
+  `_SINGLETON_LOCK` (a plain `threading.Lock`) then called `RunManager()`,
+  whose `__init__` re-acquired the same lock to emit the A3 singleton-bypass
+  warning. A plain `Lock` self-deadlocks on that re-acquire, so the supported
+  `get_run_manager()` path hung forever (while a direct `RunManager()` worked).
+  Changed `_SINGLETON_LOCK` to `threading.RLock` so the same thread reenters.
+  The CLI/GUI singleton path was silently broken since the A3 warning landed.
+- **`run_status` dropped `events_path`**: the GUI reconnect flow replays run
+  history from `events.jsonl` on disk, but `run_status` never returned the
+  path, so a reconnect could not locate the event stream. Added `events_path`
+  to the returned dict.
+- **`publish_run` adapter existence check read the wrong field**: fusion-mlx
+  `GET /admin/api/fine-tune/adapters` returns each adapter as
+  `{model_id, adapter_name, adapter_path, ...}`, but `publish_run` matched on
+  `a.get("name")` (always `""`), so the L4 existence check always reported the
+  adapter missing and refused to publish — a trained adapter could never be
+  retroactively published via `publish_run`. Now reads `adapter_name` (with a
+  `name` fallback for older servers).
+
+### Security
+- **soft #2 — sandbox code-mode defense-in-depth**: `reward_completion` code
+  mode now sets `RLIMIT_CPU` (reliably kills infinite loops via SIGXCPU) and
+  `RLIMIT_FDATA`/`RLIMIT_NPROC` before exec, in addition to the existing
+  restricted temp dir. `RLIMIT_AS` is unreliable on Apple Silicon (mapped
+  memory doesn't count) and is not relied on. OS-level isolation (container/
+  seccomp) remains tracked at [fusion-mlx#743](https://github.com/dahai80/fusion-mlx/issues/743);
+  the CLI `--sandbox` default stays `off` and `reward_code` still requires
+  `FUSION_CODE_SANDBOX_TRUSTED=1`.
+
+### Changed
+- **soft #3 — GUI publish env-fallback**: the GUI path
+  (fusion-agent-studio `TrainingService._build_trainer_config`) drops
+  `publish_adapter`/`hub_url`/`hub_api_key` from the config it builds, so a
+  GUI-triggered run never published even when the operator wanted it to
+  (upstream [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268)).
+  `publish_adapter_if_enabled` now honors `FUSION_TRAINER_PUBLISH=1` to force
+  publish on, and `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY` supply the
+  endpoint, so GUI runs can publish via env until #268 lands.
+
+### Tests
+- **soft #4 — real-model GUI end-to-end integration test**:
+  `test_gui_run_manager_sft_live_e2e` drives `RunManager.start_sft` through a
+  real fusion-mlx SFT LoRA job (2-iter on the smallest loaded text model) and
+  asserts the live-progress contract the GUI renders against: status reaches
+  `running` then `completed`, `adapter_name` is populated, `events.jsonl`
+  exists + non-empty, and the run appears in `list_runs`. Gated by
+  `FUSION_TRAINER_REAL=1`; auto-skips otherwise. This test is what surfaced
+  the three `Fixed` defects above — the mock-based RunManager suite patched
+  `httpx` and asserted trainer-side assumptions, never the real upstream
+  shapes. Also fixed the contract suite's server-reachability probe
+  (admin-token header + 20s timeout for a large-cache server) and the
+  `base_model_id` fixture (filter `text_generation` capability, prefer the
+  smallest model so the smoke run is fast and never picks an image/video
+  model like FLUX/Wan).
+
+### Chores
+- **soft #5 — `runtime_cache/` products gitignored**: adapter checkpoints,
+  staged datasets, and run artifacts written under `runtime_cache/` are now
+  excluded from version control.
+
 ## [0.1.12] — 2026-09-01
 
 Round-3 product-readiness audit (`audit/fusion-trainer-audit-result-product-0901.md`)
