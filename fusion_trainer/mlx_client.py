@@ -28,6 +28,7 @@ Data schemas: see FineTuneJob status dict from fusion-mlx
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -72,11 +73,76 @@ class MLXFineTuneClient:
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
         self._timeout = timeout
+        # A1: a shared, pooled client instead of a fresh connection per call.
+        # Connection reuse cuts handshake overhead across the long poll loops;
+        # the pool also bounds resource use. Transport-level retry is handled
+        # per-call (see _poll_get) so transient blips don't kill hour-long runs.
+        self._http = httpx.Client(headers=self._headers, timeout=self._timeout)
         logger.info(
             "MLXFineTuneClient init base=%s auth=%s",
             self._base,
             "token" if self._headers else "none",
         )
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._http.close()
+
+    def __del__(self):
+        self.close()
+
+    # A1: poll getter with bounded retry on transient failures. A single
+    # connection reset or a fusion-mlx 503 during a memory-tight training step
+    # must NOT abort an hour-long run (audit A1). Network errors and 5xx are
+    # retried with exponential backoff up to max_retries; 4xx is a real error
+    # (bad job id / auth) and raises immediately. Terminal status is judged by
+    # the job dict's status field, never by a single HTTP success/failure.
+    def _poll_get(self, url: str, max_retries: int = 5) -> dict[str, Any]:
+        backoff = 1.0
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = self._http.get(url)
+            except (httpx.TransportError, httpx.RequestError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "poll get %s transient error (attempt %d/%d): %s",
+                    url,
+                    attempt,
+                    max_retries,
+                    exc,
+                )
+                if attempt < max_retries:
+                    time.sleep(min(backoff, 30.0))
+                    backoff *= 2
+                    continue
+                raise MLXFineTuneError(
+                    f"poll get {url} failed after {max_retries} retries: {exc}"
+                ) from exc
+            if resp.status_code >= 500:
+                last_exc = MLXFineTuneError(f"{resp.status_code} {resp.text[:200]}")
+                logger.warning(
+                    "poll get %s server error %d (attempt %d/%d)",
+                    url,
+                    resp.status_code,
+                    attempt,
+                    max_retries,
+                )
+                if attempt < max_retries:
+                    time.sleep(min(backoff, 30.0))
+                    backoff *= 2
+                    continue
+                raise MLXFineTuneError(
+                    f"poll get {url} returned {resp.status_code} after {max_retries} retries"
+                )
+            if resp.status_code >= 400:
+                # 4xx: real error (bad id / auth), no point retrying.
+                raise MLXFineTuneError(
+                    f"poll get {url} failed {resp.status_code}: {resp.text}"
+                )
+            return resp.json()
+        # Should be unreachable; defensive.
+        raise MLXFineTuneError(f"poll get {url} exhausted retries: {last_exc}")
 
     # ------------------------------------------------------------------
     # Health
@@ -132,13 +198,7 @@ class MLXFineTuneClient:
         return resp.json()
 
     def get_job(self, job_id: str) -> dict[str, Any]:
-        resp = httpx.get(
-            f"{self._base}{JOBS_PATH}/{job_id}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._poll_get(f"{self._base}{JOBS_PATH}/{job_id}")
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         resp = httpx.post(
@@ -174,7 +234,16 @@ class MLXFineTuneClient:
         deadline = time.monotonic() + timeout
         last_seen = 0
         while time.monotonic() < deadline:
-            job = self.get_job(job_id)
+            # A1: a poll failure after retries must not kill the whole run —
+            # the job may still be healthy upstream. Keep polling until the
+            # real timeout; only a genuinely terminal job status (or deadline)
+            # ends the wait.
+            try:
+                job = self.get_job(job_id)
+            except MLXFineTuneError as exc:
+                logger.warning("wait_for_job poll failed, continuing: %s", exc)
+                time.sleep(poll_interval)
+                continue
             events = job.get("events", [])
             if len(events) > last_seen:
                 new_events = events[last_seen:]
@@ -229,13 +298,7 @@ class MLXFineTuneClient:
         return resp.json()
 
     def get_grpo_job(self, job_id: str) -> dict[str, Any]:
-        resp = httpx.get(
-            f"{self._base}{GRPO_JOBS_PATH}/{job_id}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._poll_get(f"{self._base}{GRPO_JOBS_PATH}/{job_id}")
 
     def cancel_grpo_job(self, job_id: str) -> dict[str, Any]:
         resp = httpx.post(
@@ -266,7 +329,13 @@ class MLXFineTuneClient:
         deadline = time.monotonic() + timeout
         last_seen = 0
         while time.monotonic() < deadline:
-            job = self.get_grpo_job(job_id)
+            # A1: keep polling past transient poll failures (see wait_for_job).
+            try:
+                job = self.get_grpo_job(job_id)
+            except MLXFineTuneError as exc:
+                logger.warning("wait_for_grpo_job poll failed, continuing: %s", exc)
+                time.sleep(poll_interval)
+                continue
             events = job.get("events", [])
             if len(events) > last_seen:
                 new_events = events[last_seen:]
@@ -335,13 +404,7 @@ class MLXFineTuneClient:
 
     def get_dpo_job(self, job_id: str) -> dict[str, Any]:
         # DPO 与 ORPO 共用 /dpo/jobs/{id} 查询端点(fusion-mlx 路由:GET /dpo/jobs/{id})。
-        resp = httpx.get(
-            f"{self._base}{DPO_JOBS_PATH}/{job_id}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._poll_get(f"{self._base}{DPO_JOBS_PATH}/{job_id}")
 
     def cancel_dpo_job(self, job_id: str) -> dict[str, Any]:
         resp = httpx.post(
@@ -372,7 +435,13 @@ class MLXFineTuneClient:
         deadline = time.monotonic() + timeout
         last_seen = 0
         while time.monotonic() < deadline:
-            job = self.get_dpo_job(job_id)
+            # A1: keep polling past transient poll failures (see wait_for_job)。
+            try:
+                job = self.get_dpo_job(job_id)
+            except MLXFineTuneError as exc:
+                logger.warning("wait_for_dpo_job poll failed, continuing: %s", exc)
+                time.sleep(poll_interval)
+                continue
             events = job.get("events", [])
             if len(events) > last_seen:
                 new_events = events[last_seen:]
@@ -424,13 +493,7 @@ class MLXFineTuneClient:
         return resp.json()
 
     def get_reward_job(self, job_id: str) -> dict[str, Any]:
-        resp = httpx.get(
-            f"{self._base}{REWARD_JOBS_PATH}/{job_id}",
-            headers=self._headers,
-            timeout=self._timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._poll_get(f"{self._base}{REWARD_JOBS_PATH}/{job_id}")
 
     def cancel_reward_job(self, job_id: str) -> dict[str, Any]:
         resp = httpx.post(
@@ -461,7 +524,13 @@ class MLXFineTuneClient:
         deadline = time.monotonic() + timeout
         last_seen = 0
         while time.monotonic() < deadline:
-            job = self.get_reward_job(job_id)
+            # A1: keep polling past transient poll failures (see wait_for_job)。
+            try:
+                job = self.get_reward_job(job_id)
+            except MLXFineTuneError as exc:
+                logger.warning("wait_for_reward_job poll failed, continuing: %s", exc)
+                time.sleep(poll_interval)
+                continue
             events = job.get("events", [])
             if len(events) > last_seen:
                 new_events = events[last_seen:]
