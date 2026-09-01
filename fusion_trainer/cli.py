@@ -440,8 +440,10 @@ def publish(
     """Publish a completed run's LoRA adapter to fusion-model-hub (issue #49).
 
     Retroactively publishes a run that was trained without --publish. Reads the
-    run's recorded adapter_name + base model from the run registry. Failures
-    warn loudly but exit 0 (fail-visible, non-blocking).
+    run's recorded adapter_name + base model from the run registry. Unlike the
+    in-training --publish flag (non-blocking), this is a STANDALONE CLI op —
+    E6 (round-2 audit): on failure it exits non-zero so CI / `&&` chains can
+    detect it. (The --publish during training stays non-blocking by design.)
     """
     from fusion_trainer.run_manager import get_run_manager
 
@@ -454,7 +456,7 @@ def publish(
         raise typer.Exit(0)
     err = result.get("error", "unknown")
     typer.echo(f"⚠ Publish failed: {err}")
-    raise typer.Exit(0)
+    raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

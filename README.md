@@ -140,7 +140,7 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 
 Training runs through fusion-mlx's HTTP fine-tune API (`create_job → wait_for_job`), writing LoRA/DORA/full adapter weights to `~/.fusion-mlx/adapters/<model>/<run_name>/`. The fusion-router-light 1.5B preset (`sft_router_light_1_5b_lora`) has been validated end-to-end: a synthetic intent-classification dataset trained a LoRA adapter on `Llama-3.2-1B-Instruct-4bit` (1B used as the nearest available base to 1.5B) that correctly routes queries to `code`/`math`/`translate`/`chat`/`summary` (train_loss 0.011, val_loss 0.0026, ~3 GB peak, 10s on M5).
 
-> **Netlayer compliance (issue #16):** MLX calls default to port `11432` (fusion-gateway, which routes to fusion-mlx) per the unified-networking plan. Override with `FUSION_MLX_PORT=11434` to bypass the gateway and hit fusion-mlx directly. Note: the gateway currently proxies `/v1/*` (model verification) but not yet `/admin/api/fine-tune/*` (job creation) — tracked upstream in fusion-gateway#30; set `FUSION_MLX_PORT=11434` for real fine-tune runs until that lands.
+> **Netlayer compliance (issue #16):** MLX calls default to port `11434` (fusion-mlx direct). The fusion-gateway on `:11432` routes to fusion-mlx but currently proxies only `/v1/*` (model verification), not `/admin/api/fine-tune/*` (job creation) — tracked upstream in fusion-gateway#30. Override the default with `FUSION_MLX_PORT` (e.g. `11432` to route through the gateway once it proxies fine-tune paths). The hub (`hub_url`) stays on `:11432` — the gateway proxies `/api/v1/*` to fusion-model-hub.
 
 ### 4. Run Alignment (DPO)
 

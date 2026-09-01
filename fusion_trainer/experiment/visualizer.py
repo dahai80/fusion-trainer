@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# E8 (round-2 audit): cap metrics loaded for a single plot. A 100k-step run
+# produces a 100k-line metrics.jsonl; the old _load_metrics materialized the
+# whole file into a list AND plot_loss/plot_metrics built parallel
+# steps/values lists on top — doubling memory for a one-shot PNG render.
+# Most curves are visually identical past ~5k points; gate the load and log
+# the downsample so the operator knows the curve is sampled, not exhaustive.
+_MAX_PLOT_POINTS = 20000
 
 
 class TrainingVisualizer:
@@ -119,13 +130,50 @@ class TrainingVisualizer:
             return ""
 
     def _load_metrics(self) -> list[dict[str, Any]]:
+        """Stream metrics.jsonl, keeping only numeric metric fields per row.
+
+        E8 (round-2 audit): the old version materialized every full entry
+        (including the timestamp string) into a list, then plot_loss /
+        plot_metrics built more parallel lists on top — O(N) memory ×2-3 for
+        a one-shot PNG. Now each row is parsed, non-numeric / metadata fields
+        (timestamp) are dropped at parse time, and the total is capped at
+        _MAX_PLOT_POINTS with a logged downsample note. A corrupt line is
+        skipped (not fatal) so a half-written tail never blanks the curve.
+        """
         metrics_file = self._log_dir / "metrics.jsonl"
         if not metrics_file.exists():
             return []
-        metrics = []
+        metrics: list[dict[str, Any]] = []
+        bad = 0
         with open(metrics_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line:
-                    metrics.append(json.loads(line))
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (ValueError, json.JSONDecodeError):
+                    bad += 1
+                    continue
+                if not isinstance(row, dict):
+                    bad += 1
+                    continue
+                # Keep step + numeric metric values only; drop timestamp etc.
+                slim: dict[str, Any] = {}
+                for k, v in row.items():
+                    if k == "timestamp":
+                        continue
+                    if isinstance(v, (int, float)):
+                        slim[k] = v
+                if slim:
+                    metrics.append(slim)
+                if len(metrics) >= _MAX_PLOT_POINTS:
+                    logger.info(
+                        "visualizer: capped plot metrics at %d points "
+                        "(metrics.jsonl has more) — curve is sampled",
+                        _MAX_PLOT_POINTS,
+                    )
+                    break
+        if bad:
+            logger.warning("visualizer: skipped %d corrupt metrics lines", bad)
         return metrics

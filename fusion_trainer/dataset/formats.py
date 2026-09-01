@@ -163,14 +163,38 @@ def load_dataset_file(
 def _load_jsonl(path: Path, max_samples: int = 0) -> list[dict[str, Any]]:
     # R4: stream line-by-line; break as soon as max_samples is reached so a
     # multi-GB JSONL with max_samples set doesn't OOM.
+    # R19: a single corrupt line no longer fails the whole file (was: 10M-row
+    # dataset unusable because of 1 bad line). Bad lines are skipped with a
+    # logged line number + a running count, so the operator sees how much was
+    # dropped rather than getting a raw JSONDecodeError.
     data = []
+    bad = 0
     with open(path, encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             line = line.strip()
-            if line:
-                data.append(json.loads(line))
-                if max_samples > 0 and len(data) >= max_samples:
-                    break
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except (ValueError, json.JSONDecodeError) as exc:
+                bad += 1
+                if bad <= 5:
+                    logger.warning(
+                        "skip corrupt JSONL line %d in %s: %s", lineno, path, exc
+                    )
+                continue
+            if not isinstance(item, dict):
+                bad += 1
+                if bad <= 5:
+                    logger.warning("skip non-object JSONL line %d in %s", lineno, path)
+                continue
+            data.append(item)
+            if max_samples > 0 and len(data) >= max_samples:
+                break
+    if bad:
+        logger.warning(
+            "loaded %d samples from %s, skipped %d corrupt lines", len(data), path, bad
+        )
     return data
 
 

@@ -503,6 +503,49 @@ class TestRMRewardServer:
         srv = RMRewardServer(_FakeClient(), model_id="m", adapter_name="a")
         srv.start()
         srv.stop()
+
+    def test_breaker_opens_after_threshold_returns_baseline(self):
+        # R13: a SUSTAINED score outage (>= _CB_FAIL_THRESHOLD consecutive
+        # failures) trips the breaker to OPEN; subsequent calls short-circuit
+        # to a zero-reward baseline (200) instead of 500, so the GRPO loop
+        # stays responsive (degraded) while fusion-mlx recovers. A single
+        # failure (below threshold) still surfaces as 500 (fail-visible).
+        import httpx
+
+        from fusion_trainer.rlsl import rm_reward_server as mod
+        from fusion_trainer.rlsl.rm_reward_server import RMRewardServer
+
+        class _FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def score_reward(self, model_id, adapter_name, prompt, completions):
+                self.calls += 1
+                raise RuntimeError("upstream down")
+
+        # Force a low threshold so the test doesn't depend on the production
+        # constant's value (breaks if the constant is tuned later).
+        orig = mod._CB_FAIL_THRESHOLD
+        mod._CB_FAIL_THRESHOLD = 2
+        try:
+            srv = RMRewardServer(_FakeClient(), model_id="m", adapter_name="a")
+            endpoint = srv.start()
+            try:
+                # Below threshold: fail-visible 500.
+                r1 = httpx.post(
+                    endpoint, json={"prompt": "p", "completions": ["c"]}, timeout=5.0
+                )
+                assert r1.status_code == 500
+                # 2nd consecutive failure trips the breaker -> baseline 200.
+                r2 = httpx.post(
+                    endpoint, json={"prompt": "p", "completions": ["c"]}, timeout=5.0
+                )
+                assert r2.status_code == 200
+                assert r2.json()["rewards"] == [0.0]
+            finally:
+                srv.stop()
+        finally:
+            mod._CB_FAIL_THRESHOLD = orig
         srv.stop()  # no error
 
 

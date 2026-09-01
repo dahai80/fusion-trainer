@@ -175,21 +175,9 @@ class TestLoadModel:
 
 
 class TestCheckpointing:
-    def test_save_checkpoint(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_config(cache_path=tmpdir)
-            trainer = SFTTrainer(cfg)
-            from fusion_trainer.experiment import ExperimentLogger
-
-            logger = ExperimentLogger("test", tmpdir, enable_tensorboard=False)
-            path = trainer._save_checkpoint(100, logger)
-            assert path is not None
-            ckpt_dir = Path(path)
-            assert ckpt_dir.exists()
-            assert (ckpt_dir / "checkpoint.json").exists()
-            with open(ckpt_dir / "checkpoint.json") as f:
-                meta = json.load(f)
-            assert meta["step"] == 100
+    # E7 (round-2 audit): _save_checkpoint / _cleanup_checkpoints removed —
+    # checkpoints live server-side in fusion-mlx, never managed by the trainer.
+    # Only _save_final (local adapter pointer) remains, exercised below.
 
     def test_save_final_lora(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -224,30 +212,6 @@ class TestCheckpointing:
             # Full method saves to output dir directly (no lora_adapter subdir)
             assert path == str(out_dir)
 
-    def test_cleanup_checkpoints(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_config(cache_path=tmpdir, save_total_limit=2)
-            trainer = SFTTrainer(cfg)
-            from fusion_trainer.experiment import ExperimentLogger
-
-            logger = ExperimentLogger("test", tmpdir, enable_tensorboard=False)
-
-            # Create 4 checkpoints
-            for step in [100, 200, 300, 400]:
-                trainer._save_checkpoint(step, logger)
-
-            # After cleanup, only 2 should remain
-            ckpt_base = trainer._output_dir / "checkpoints"
-            remaining = sorted(ckpt_base.iterdir())
-            assert len(remaining) == 2  # save_total_limit=2
-
-    def test_cleanup_checkpoints_no_dir(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_config(cache_path=tmpdir)
-            trainer = SFTTrainer(cfg)
-            # Should not raise if dir doesn't exist
-            trainer._cleanup_checkpoints()  # no-op
-
 
 # ===========================================================================
 # _run_training — mocked HTTP client (real training needs fusion-mlx up)
@@ -269,6 +233,13 @@ def _patch_mlx_client(
     class _FakeClient:
         def __init__(self, *a, **kw):
             pass
+
+        def close(self):
+            pass
+
+        def health(self):
+            # E3: _load_model now checks loaded models via pooled client.health().
+            return {"data": [{"id": "test-model"}]}
 
         def create_job(self, model_id, dataset, config=None, adapter_name=""):
             calls.append(

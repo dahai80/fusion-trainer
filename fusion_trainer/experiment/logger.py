@@ -49,6 +49,10 @@ class ExperimentLogger:
         self._max_in_memory = max_in_memory
         self._flush_every = flush_every
         self._steps_since_flush = 0
+        # E8 (round-2 audit): running count of log_metrics calls so save()
+        # doesn't re-read the whole metrics.jsonl to size it. On a 100k-step
+        # run that re-read was O(N) at finalize for a number already known.
+        self._total_logged = 0
 
         # Streaming file handle (append mode)
         self._metrics_path = self._output_dir / "metrics.jsonl"
@@ -114,6 +118,7 @@ class ExperimentLogger:
         self._metrics_file.write(line + "\n")
         self._metrics_file.flush()
         self._steps_since_flush += 1
+        self._total_logged += 1
 
         # Keep a bounded window in memory
         self._metrics.append(entry)
@@ -202,7 +207,15 @@ class ExperimentLogger:
             self.close()
 
     def _count_total_metrics(self) -> int:
-        """Count total metric entries written to disk."""
+        """Count total metric entries written to disk.
+
+        E8 (round-2 audit): tracked incrementally in log_metrics — no re-read
+        of the (possibly huge) metrics.jsonl at finalize. Fall back to a file
+        line-count only if the counter was lost (e.g. a logger reloaded state
+        without replay), which is not the normal path.
+        """
+        if self._total_logged > 0:
+            return self._total_logged
         try:
             count = 0
             with open(self._metrics_path, encoding="utf-8") as f:

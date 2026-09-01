@@ -33,7 +33,12 @@ def _default_cache_path() -> str:
 
 
 def _default_mlx_port() -> int:
-    return int(os.environ.get("FUSION_MLX_PORT", "11432"))
+    # R16: default 11434 (fusion-mlx direct), not 11432 (fusion-gateway). The
+    # gateway proxies /v1/* but NOT /admin/api/fine-tune/*, so a default of
+    # 11432 made every create_job hit a 404 out-of-the-box — a footgun. Users
+    # who want the gateway for inference can set FUSION_MLX_PORT=11432.
+    # Upstream: fusion-mlx should have the gateway proxy /admin/api/fine-tune/*.
+    return int(os.environ.get("FUSION_MLX_PORT", "11434"))
 
 
 def _default_hub_url() -> str:
@@ -290,8 +295,10 @@ class TrainerConfig:
     """Trainer-local cache directory for checkpoints and temp data."""
 
     mlx_port: int = field(default_factory=_default_mlx_port)
-    """Port for MLX calls. Default 11432 (fusion-gateway, routes to fusion-mlx).
-    Overridable via FUSION_MLX_PORT env var (e.g. 11434 to bypass gateway)."""
+    """Port for MLX calls. Default 11434 (fusion-mlx direct). The fusion-gateway
+    (:11432) proxies /v1/* but NOT /admin/api/fine-tune/*, so a default of 11432
+    made every create_job 404 out-of-the-box (R16). Overridable via FUSION_MLX_PORT
+    env var (set 11432 to use the gateway for inference-only paths)."""
 
     # Model-hub publish (issue #49). After a successful LoRA run, the produced
     # adapter is registered to fusion-model-hub via POST /api/v1/models
@@ -310,11 +317,23 @@ class TrainerConfig:
     but do NOT block the training result (fail-visible, never silent)."""
 
     def __post_init__(self):
+        # E2 (round-2 audit): two runs without --run-name both resolved to
+        # checkpoints/sft_default, so the second overwrote the first's
+        # adapter_config.json / staged_data / logs. Append a short uuid suffix
+        # when no run_name is given so each unnamed run gets a unique dir.
+        # (Real adapter weights live in fusion-mlx's adapters/<model>/<name>/
+        # which A6 already uniquifies; this is the local pointer/staging dir.)
+        import uuid
+
         if not self.sft.output_dir:
+            base = self.sft.run_name or "sft_default"
+            suffix = "" if self.sft.run_name else "_" + uuid.uuid4().hex[:8]
             self.sft.output_dir = os.path.join(
-                self.cache_path, "checkpoints", self.sft.run_name or "sft_default"
+                self.cache_path, "checkpoints", f"{base}{suffix}"
             )
         if not self.rlsl.output_dir:
+            base = self.rlsl.run_name or "rlsl_default"
+            suffix = "" if self.rlsl.run_name else "_" + uuid.uuid4().hex[:8]
             self.rlsl.output_dir = os.path.join(
-                self.cache_path, "checkpoints", self.rlsl.run_name or "rlsl_default"
+                self.cache_path, "checkpoints", f"{base}{suffix}"
             )

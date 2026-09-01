@@ -36,12 +36,16 @@ from pathlib import Path
 from typing import Any
 
 from ._version import __version__
-from .config import TrainerConfig
+from .config import TrainerConfig, _default_mlx_port
 from .mlx_client import MLXFineTuneClient
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL = ("completed", "failed", "cancelled")
+# R10: cap on in-memory (terminal) run records kept by a long-lived daemon.
+# Beyond this the oldest terminal records are evicted from self._runs (full
+# history remains on disk). Running runs are always kept regardless.
+_MAX_INMEM_RUNS = 200
 _MXF8_ISSUE = "https://github.com/dahai80/fusion-mlx/issues/402"
 # A3: module slot + lock declared early so RunManager.__init__ can register
 # itself / warn on a bypassing direct construction. Filled in at module bottom
@@ -69,7 +73,7 @@ class RunManager:
         self.model_hub_path = model_hub_path or os.environ.get(
             "FUSION_MODEL_HUB", str(Path.home() / "fusion-model-hub")
         )
-        self.mlx_port = mlx_port or int(os.environ.get("FUSION_MLX_PORT", "11432"))
+        self.mlx_port = mlx_port or _default_mlx_port()
         self._runs_root = Path(self.cache_path) / "runs"
         self._runs_root.mkdir(parents=True, exist_ok=True)
         self._runs: dict[str, dict[str, Any]] = {}
@@ -83,7 +87,15 @@ class RunManager:
         # Per-instance sinks pair with per-instance _runs; production callers
         # should go through get_run_manager() so there is one shared instance.
         self._active_sinks: dict[str, Any] = {}
-        self._lock = threading.Lock()
+        # R12: RLock (reentrant). _persist_meta takes this lock to snapshot a
+        # record, then does the disk IO outside it — but several callers
+        # (_start, _run_thread terminal paths, publish_run) already hold the
+        # lock when they call _persist_meta. A plain Lock deadlocks on that
+        # re-acquire; RLock lets the nested acquire reenter (same thread) so
+        # the snapshot still runs under the caller's held lock and the IO
+        # happens once the inner `with` returns (still held by the caller for
+        # those paths, lock-free for direct _persist_meta callers).
+        self._lock = threading.RLock()
         # A3: defense-in-depth against the singleton being bypassed. The
         # production GUI path (fusion-agent-studio TrainingService) used to
         # construct RunManager() directly, creating a second registry that the
@@ -112,7 +124,15 @@ class RunManager:
         # skips the terminal _persist_meta. atexit covers graceful exit; the
         # meta-at-start write (in _start) covers the crash-then-restart path.
         atexit.register(self._atexit_persist_all)
+        # R11: zombie-job cancels collected during _load_existing_runs are
+        # dispatched on this background thread (not inline in __init__).
+        self._pending_zombies: list[tuple[str, str, str, int | None]] = []
         self._load_existing_runs()
+        if self._pending_zombies:
+            t = threading.Thread(
+                target=self._cancel_zombies, daemon=True, name="ft-zombie-cancel"
+            )
+            t.start()
 
     # ------------------------------------------------------------------
     # Run registry persistence (lightweight: scan runs/ dir)
@@ -162,41 +182,19 @@ class RunManager:
                 # the recorded job_id/kind, then mark failed. If fusion-mlx is
                 # unreachable, surface the job_id loudly so the operator can
                 # stop it manually.
+                # R11: the cancel HTTP call (30s timeout × 5 retries) used to
+                # run synchronously inside __init__ (under the singleton lock),
+                # so a restart with N zombie runs blocked the first ft info /
+                # get_run_manager() call for minutes. Collect zombies here and
+                # cancel them on a background thread after construction; the
+                # record is already marked failed synchronously so the GUI sees
+                # the correct status immediately.
                 zombie_job = data.get("job_id", "") or ""
                 zombie_kind = data.get("job_kind", "sft") or "sft"
                 if zombie_job:
-                    try:
-                        client = MLXFineTuneClient(
-                            port=int(
-                                data.get("mlx_port")
-                                or os.environ.get("FUSION_MLX_PORT", "11432")
-                            )
-                        )
-                        if zombie_kind in ("dpo", "orpo"):
-                            client.cancel_dpo_job(zombie_job)
-                        elif zombie_kind == "grpo":
-                            client.cancel_grpo_job(zombie_job)
-                        elif zombie_kind == "reward":
-                            client.cancel_reward_job(zombie_job)
-                        else:
-                            client.cancel_job(zombie_job)
-                        client.close()
-                        logger.info(
-                            "zombie run %s: cancelled upstream job %s (kind=%s)",
-                            rid,
-                            zombie_job,
-                            zombie_kind,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "zombie run %s: could not cancel upstream job %s "
-                            "(kind=%s) — it may STILL be running on fusion-mlx. "
-                            "Stop it manually. error=%s",
-                            rid,
-                            zombie_job,
-                            zombie_kind,
-                            exc,
-                        )
+                    self._pending_zombies.append(
+                        (rid, zombie_job, zombie_kind, data.get("mlx_port"))
+                    )
                 data["status"] = "failed"
                 data["error"] = "process restarted while run was active"
             data["events_buffer"] = deque(maxlen=1000)
@@ -226,7 +224,7 @@ class RunManager:
             "job_kind": "sft",
             "phase": "",
             "model": "",
-            "mlx_port": int(os.environ.get("FUSION_MLX_PORT", "11432")),
+            "mlx_port": _default_mlx_port(),
             "metrics": {},
             "final_adapter": "",
             "adapter_name": "",
@@ -647,11 +645,27 @@ class RunManager:
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         """List runs newest-first, without the in-memory event buffer."""
         with self._lock:
-            items = sorted(
+            # R10: self._runs was never pruned — a long-lived daemon accumulated
+            # every run record + its events_buffer deque(maxlen=1000) forever,
+            # so RSS climbed until restart. Keep the most recent MAX_INMEM_RUNS
+            # records plus any still-running ones; drop old terminal records
+            # (their full history stays on disk in events.jsonl/run_meta.json).
+            all_items = sorted(
                 self._runs.values(),
                 key=lambda r: r.get("created", 0),
                 reverse=True,
             )
+            kept: list[dict[str, Any]] = []
+            dropped = 0
+            for r in all_items:
+                if r.get("status") not in _TERMINAL or len(kept) < _MAX_INMEM_RUNS:
+                    kept.append(r)
+                else:
+                    self._runs.pop(r.get("run_id", ""), None)
+                    dropped += 1
+            if dropped:
+                logger.info("pruned %d terminal runs from in-memory registry", dropped)
+            items = kept
         out: list[dict[str, Any]] = []
         for r in items[: max(1, int(limit))]:
             out.append(
@@ -700,9 +714,20 @@ class RunManager:
             buf: deque = r["events_buffer"]
             events = [dict(ev) for ev in buf]
             status = r.get("status", "")
-        filtered = [
-            ev for ev in events if ev.get("step", ev.get("iter", -1)) > since_step
-        ]
+        # R8: events without a step/iter key (status, job, initial-running) are
+        # control-plane events. The old filter `ev.get("step", ev.get("iter",-1))
+        # > since_step` dropped ALL of them — including the terminal
+        # {"type":"status","status":"completed"} — so the GUI polling
+        # run_progress never saw completion and stayed "running" forever. Such
+        # events are always passed through; only step-bearing metric events are
+        # gated by since_step.
+        filtered = []
+        for ev in events:
+            step = ev.get("step")
+            if step is None:
+                step = ev.get("iter")
+            if step is None or step > since_step:
+                filtered.append(ev)
         return {"run_id": run_id, "events": filtered, "status": status}
 
     def stop_run(self, run_id: str) -> dict[str, Any]:
@@ -831,11 +856,19 @@ class RunManager:
     # ------------------------------------------------------------------
 
     def _persist_meta(self, run_id: str) -> None:
-        r = self._runs.get(run_id)
-        if r is None:
-            return
-        meta_path = Path(r["run_dir"]) / "run_meta.json"
-        serial = {k: v for k, v in r.items() if k not in ("events_buffer", "thread")}
+        # R12: snapshot the record under the lock, then do the synchronous disk
+        # IO (write_text + os.replace) OUTSIDE the lock. The old code held
+        # self._lock across the fsync+rename, which on NFS/SMB cache_path
+        # blocked every concurrent list_runs/run_status/run_progress/stop_run
+        # and every sink emit across all runs for the duration of each persist.
+        with self._lock:
+            r = self._runs.get(run_id)
+            if r is None:
+                return
+            meta_path = Path(r["run_dir"]) / "run_meta.json"
+            serial = {
+                k: v for k, v in r.items() if k not in ("events_buffer", "thread")
+            }
         # M2: atomic write — write to a temp file in the same dir, fsync, then
         # os.replace so a crash mid-write never leaves a half-written meta
         # (which would make events.jsonl and run_meta.json disagree on status).
@@ -852,6 +885,46 @@ class RunManager:
                     tmp_path.unlink()
             except Exception:
                 pass
+
+    def _cancel_zombies(self) -> None:
+        """R11: cancel upstream fusion-mlx jobs left running by a dead process,
+        off the construction path so get_run_manager() / ft info don't block.
+        Each cancel is best-effort + fail-visible; a transient fusion-mlx
+        outage surfaces the job_id so the operator can stop it manually."""
+        while True:
+            try:
+                rid, job_id, kind, mlx_port = self._pending_zombies.pop()
+            except IndexError:
+                return
+            try:
+                client = MLXFineTuneClient(
+                    port=int(mlx_port or os.environ.get("FUSION_MLX_PORT", "11434"))
+                )
+                if kind in ("dpo", "orpo"):
+                    client.cancel_dpo_job(job_id)
+                elif kind == "grpo":
+                    client.cancel_grpo_job(job_id)
+                elif kind == "reward":
+                    client.cancel_reward_job(job_id)
+                else:
+                    client.cancel_job(job_id)
+                client.close()
+                logger.info(
+                    "zombie run %s: cancelled upstream job %s (kind=%s)",
+                    rid,
+                    job_id,
+                    kind,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "zombie run %s: could not cancel upstream job %s (kind=%s) "
+                    "— it may STILL be running on fusion-mlx. Stop manually. "
+                    "error=%s",
+                    rid,
+                    job_id,
+                    kind,
+                    exc,
+                )
 
     def _atexit_persist_all(self) -> None:
         """A4: at interpreter exit, persist meta for any still-running run so a
@@ -986,9 +1059,7 @@ class _RunSink:
                 return
             self._cancel_dispatched = True
         try:
-            client = MLXFineTuneClient(
-                port=port or int(os.environ.get("FUSION_MLX_PORT", "11432"))
-            )
+            client = MLXFineTuneClient(port=port or _default_mlx_port())
             try:
                 if kind in ("dpo", "orpo"):
                     client.cancel_dpo_job(job_id)

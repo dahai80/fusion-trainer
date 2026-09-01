@@ -184,7 +184,13 @@ class TestSFTRun:
             assert st["metrics"].get("train_loss") == 1.1
             prog = rm.run_progress(run_id, since_step=0)
             assert len(prog["events"]) >= 1
-            assert all(ev.get("step", 0) > 0 for ev in prog["events"])
+            # R8: step-less events (job/status) are passed through by design;
+            # only train_loss metric events carry a step, and those must be > 0.
+            loss_events = [
+                ev for ev in prog["events"] if ev.get("type") == "train_loss"
+            ]
+            assert loss_events, "expected at least one train_loss event"
+            assert all(ev.get("step", 0) > 0 for ev in loss_events)
 
     def test_events_jsonl_written(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp:

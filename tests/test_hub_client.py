@@ -165,6 +165,37 @@ class TestPublishAdapterErrors:
         with pytest.raises(HubPublishError, match="transport error"):
             client.publish_adapter(name="adapter", base_model="b")
 
+    def test_201_empty_body_raises_no_dangling_success(self, monkeypatch):
+        # R18: a 201 with empty body must not report published=True (dangling).
+        monkeypatch.setattr(
+            hub_mod.httpx,
+            "post",
+            lambda *a, **kw: _Resp(201, payload=None, text=""),
+        )
+        client = ModelHubClient(base_url="http://h")
+        with pytest.raises(HubPublishError, match="no model id"):
+            client.publish_adapter(name="adapter", base_model="b")
+
+
+class TestListModelsEnvelope:
+    def test_data_envelope_unwrapped(self, monkeypatch):
+        # R17: hub returning {"data":[...]} must be unwrapped, not treated as
+        # empty (which silently broke L4 409 idempotency).
+        existing = {
+            "id": "hub-2",
+            "name": "adapter",
+            "base_model_id": "b",
+            "model_type": "lora",
+        }
+        monkeypatch.setattr(
+            hub_mod.httpx,
+            "get",
+            lambda *a, **kw: _Resp(200, payload={"data": [existing]}),
+        )
+        client = ModelHubClient(base_url="http://h")
+        models = client.list_models(model_type="lora", keyword="adapter")
+        assert models and models[0]["id"] == "hub-2"
+
 
 class TestPublishAdapterIfEnabled:
     def _cfg(self, publish=True):

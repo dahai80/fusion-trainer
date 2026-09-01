@@ -191,14 +191,21 @@ class MLXFineTuneClient:
     # ------------------------------------------------------------------
 
     def health(self) -> dict[str, Any]:
-        result = self._request("GET", f"{self._base}/v1/models")
+        # A8 note: health is a liveness probe (info/Settings panel), NOT a
+        # training poll — it must fail FAST so an unreachable fusion-mlx flips
+        # mlx_alive=False in seconds, not after 5 retried backoffs (~45s). One
+        # attempt, no retry; the caller (info/RunManager) catches the error.
+        result = self._request("GET", f"{self._base}/v1/models", max_retries=1)
         if isinstance(result, dict):
             return result
         raise MLXFineTuneError("health returned non-dict")
 
     def list_finetunable_models(self) -> list[dict[str, Any]]:
+        # A8 note: read probe — fail fast (one attempt), no retried backoff.
         result = self._request(
-            "GET", f"{self._base}{JOBS_PATH.replace('/jobs', '/models')}"
+            "GET",
+            f"{self._base}{JOBS_PATH.replace('/jobs', '/models')}",
+            max_retries=1,
         )
         if isinstance(result, list):
             return result
@@ -589,8 +596,13 @@ class MLXFineTuneClient:
     # ------------------------------------------------------------------
 
     def list_adapters(self, model_id: str = "") -> list[dict[str, Any]]:
+        # A8 note: a read/list probe for GUI refresh + publish precheck — fail
+        # fast (one attempt) so a down fusion-mlx doesn't hang a refresh for
+        # ~45s of retried backoffs. Training polls keep the retry budget.
         params = {"model_id": model_id} if model_id else None
-        result = self._request("GET", f"{self._base}{ADAPTERS_PATH}", params=params)
+        result = self._request(
+            "GET", f"{self._base}{ADAPTERS_PATH}", params=params, max_retries=1
+        )
         if isinstance(result, list):
             return result
         raise MLXFineTuneError("list_adapters returned non-list")

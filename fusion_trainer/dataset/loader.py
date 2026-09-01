@@ -309,6 +309,7 @@ class DatasetLoader:
         max_seq_length: int,
     ) -> list[dict[str, Any]]:
         result = []
+        dropped = 0
         for item in raw:
             input_text = item.get(input_field, "")
             output_text = item.get(output_field, "")
@@ -328,9 +329,24 @@ class DatasetLoader:
                         or item.get("output", "")
                     )
             if not input_text or not output_text:
+                # E5 (round-2 audit): a sample missing input OR output was
+                # silently dropped with zero log — a half-empty dataset loaded
+                # "successfully" and trained on missing targets. Count + warn
+                # so the operator sees the data loss before a wasted run.
+                dropped += 1
                 continue
             if max_seq_length > 0:
                 input_text = input_text[:max_seq_length]
                 output_text = output_text[:max_seq_length]
             result.append({"input": input_text, "output": output_text})
+        if dropped:
+            logger.warning(
+                "_normalize: dropped %d/%d samples missing input or output "
+                "field (input_field=%r output_field=%r) — dataset may be "
+                "smaller than expected",
+                dropped,
+                len(raw),
+                input_field,
+                output_field,
+            )
         return result

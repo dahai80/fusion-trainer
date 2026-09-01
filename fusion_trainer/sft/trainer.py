@@ -122,30 +122,45 @@ class SFTTrainer:
         When full training is implemented, model weights will be loaded through
         fusion-mlx's training endpoint rather than importing mlx-lm directly.
         """
-        import httpx
-
         model_path = self.sft_cfg.model
         if not model_path:
             raise ValueError("No model specified. Set --model or sft.model in config.")
 
         print(f"      Checking model via fusion-mlx: {model_path}")
 
-        # Validate the model is registered on fusion-mlx
+        # E3 (round-2 audit): model validation was a sham — raw httpx.get to
+        # localhost (broke multi-node + bypassed the pooled client), empty
+        # model_ids silently skipped the check, and `except Exception` swallowed
+        # connection/JSON/timeout errors with only a print. Use the pooled
+        # client's health() (base_url-aware), warn when no models are loaded,
+        # and catch only the transport/MLX error types so real bugs surface.
+        from ..mlx_client import MLXFineTuneClient, MLXFineTuneError
+
+        client = MLXFineTuneClient(port=self.config.mlx_port)
         try:
-            resp = httpx.get(
-                f"http://localhost:{self.config.mlx_port}/v1/models",
-                timeout=10.0,
-            )
-            resp.raise_for_status()
-            models = resp.json().get("data", [])
-            model_ids = {m.get("id", "") for m in models}
-            if model_path not in model_ids and model_ids:
-                available = ", ".join(sorted(model_ids))
-                print(
-                    f"      ⚠ Model '{model_path}' not found in fusion-mlx. Available: {available}"
+            try:
+                info = client.health()
+            except MLXFineTuneError as e:
+                logger.warning("could not reach fusion-mlx to verify model: %s", e)
+                return None, None
+            models = info.get("data", []) if isinstance(info, dict) else []
+            model_ids = {m.get("id", "") for m in models if isinstance(m, dict)}
+            if not model_ids:
+                logger.warning(
+                    "fusion-mlx reachable but no models loaded — cannot verify "
+                    "'%s' is registered; training will fail at job submit if the "
+                    "model is missing",
+                    model_path,
                 )
-        except Exception as e:
-            print(f"      ⚠ Could not reach fusion-mlx to verify model: {e}")
+            elif model_path not in model_ids:
+                available = ", ".join(sorted(x for x in model_ids if x))
+                logger.warning(
+                    "model '%s' not found in fusion-mlx. Available: %s",
+                    model_path,
+                    available,
+                )
+        finally:
+            client.close()
 
         # Return dummy model/tokenizer handles — the real training loop
         # will load them via fusion-mlx training API when implemented.
@@ -355,89 +370,108 @@ class SFTTrainer:
             output_dir=self._output_dir,
         )
 
-        staged_dir = self._output_dir / "staged_data"
-        dataset_path = MLXFineTuneClient.stage_dataset(
-            train_loader, staged_dir, filename="train.jsonl"
-        )
-        if val_data:
-            MLXFineTuneClient.stage_dataset(
-                val_data, staged_dir, filename="valid.jsonl"
-            )
-
-        mlx_cfg = self._build_mlx_config()
-        adapter_name = self.sft_cfg.run_name or "sft_run"
-
-        client = MLXFineTuneClient(port=self.config.mlx_port)
-        job = client.create_job(
-            model_id=self.sft_cfg.model,
-            dataset=dataset_path,
-            config=mlx_cfg,
-            adapter_name=adapter_name,
-        )
-        job_id = job.get("job_id", "")
-        print(f"      Submitted fine-tune job: {job_id}")
-        print(
-            f"      iters={mlx_cfg['iters']} batch_size={mlx_cfg['batch_size']} "
-            f"lr={mlx_cfg['learning_rate']} type={mlx_cfg['fine_tune_type']}"
-        )
-        print(f"      {'=' * 50}")
-
-        if self.on_event is not None:
-            self.on_event(
-                {
-                    "type": "job",
-                    "job_id": job_id,
-                    "kind": "sft",
-                    "iters": mlx_cfg["iters"],
-                }
-            )
-
-        self._global_step = 0
+        # E4 (round-2 audit): wrap the whole body in try/finally so a non-
+        # MLXFineTuneError (stage_dataset OSError, create_job ConnectError)
+        # still flushes + closes the logger (metrics fd + TensorBoard async
+        # writer thread + event fd) and closes the pooled client. Only
+        # MLXFineTuneError was caught before, so other exceptions leaked fds.
+        client = None
         try:
-            final_job = client.wait_for_job(
-                job_id,
-                on_progress=lambda j, ev: self._ingest_progress(j, ev, exp_logger),
-                poll_interval=2.0,
+            staged_dir = self._output_dir / "staged_data"
+            dataset_path = MLXFineTuneClient.stage_dataset(
+                train_loader, staged_dir, filename="train.jsonl"
             )
-        except MLXFineTuneError as exc:
-            print(f"      ✗ Training failed: {exc}")
+            if val_data:
+                MLXFineTuneClient.stage_dataset(
+                    val_data, staged_dir, filename="valid.jsonl"
+                )
+
+            mlx_cfg = self._build_mlx_config()
+            adapter_name = self.sft_cfg.run_name or "sft_run"
+
+            client = MLXFineTuneClient(port=self.config.mlx_port)
+            job = client.create_job(
+                model_id=self.sft_cfg.model,
+                dataset=dataset_path,
+                config=mlx_cfg,
+                adapter_name=adapter_name,
+            )
+            job_id = job.get("job_id", "")
+            print(f"      Submitted fine-tune job: {job_id}")
+            print(
+                f"      iters={mlx_cfg['iters']} batch_size={mlx_cfg['batch_size']} "
+                f"lr={mlx_cfg['learning_rate']} type={mlx_cfg['fine_tune_type']}"
+            )
+            print(f"      {'=' * 50}")
+
+            if self.on_event is not None:
+                self.on_event(
+                    {
+                        "type": "job",
+                        "job_id": job_id,
+                        "kind": "sft",
+                        "iters": mlx_cfg["iters"],
+                    }
+                )
+
+            self._global_step = 0
+            try:
+                final_job = client.wait_for_job(
+                    job_id,
+                    on_progress=lambda j, ev: self._ingest_progress(j, ev, exp_logger),
+                    poll_interval=2.0,
+                )
+            except MLXFineTuneError as exc:
+                print(f"      ✗ Training failed: {exc}")
+                exp_logger.save()
+                return {
+                    "status": "failed",
+                    "error": str(exc),
+                    "output_dir": str(self._output_dir),
+                    "method": self.sft_cfg.method,
+                }
+
+            status = final_job.get("status", "")
+            if status != "completed":
+                print(f"      ✗ Job ended with status: {status}")
+                exp_logger.save()
+                return {
+                    "status": status,
+                    "error": final_job.get("error", ""),
+                    "output_dir": str(self._output_dir),
+                    "method": self.sft_cfg.method,
+                }
+
+            adapter_path = final_job.get("adapter_path", "")
+            self._adapter_path = adapter_path
+            self._save_final(adapter_path=adapter_path)
             exp_logger.save()
-            return {
-                "status": "failed",
-                "error": str(exc),
+
+            result = {
+                "status": "completed",
+                "total_steps": self._global_step,
                 "output_dir": str(self._output_dir),
+                "final_model_path": adapter_path,
+                "adapter_name": adapter_name,
                 "method": self.sft_cfg.method,
+                "lora_rank": self._lora_cfg.rank
+                if self.sft_cfg.method != "full"
+                else 0,
+                "job_id": job_id,
             }
-
-        status = final_job.get("status", "")
-        if status != "completed":
-            print(f"      ✗ Job ended with status: {status}")
-            exp_logger.save()
-            return {
-                "status": status,
-                "error": final_job.get("error", ""),
-                "output_dir": str(self._output_dir),
-                "method": self.sft_cfg.method,
-            }
-
-        adapter_path = final_job.get("adapter_path", "")
-        self._adapter_path = adapter_path
-        self._save_final(adapter_path=adapter_path)
-        exp_logger.save()
-
-        result = {
-            "status": "completed",
-            "total_steps": self._global_step,
-            "output_dir": str(self._output_dir),
-            "final_model_path": adapter_path,
-            "adapter_name": adapter_name,
-            "method": self.sft_cfg.method,
-            "lora_rank": self._lora_cfg.rank if self.sft_cfg.method != "full" else 0,
-            "job_id": job_id,
-        }
-        print("\n      ✓ Training complete!")
-        print(f"      Adapter: {adapter_path}")
-        return result
+            print("\n      ✓ Training complete!")
+            print(f"      Adapter: {adapter_path}")
+            return result
+        finally:
+            # E4: flush + close logger + pooled client on EVERY exit path,
+            # including non-MLXFineTuneError exceptions that previously leaked.
+            try:
+                exp_logger.save()
+                exp_logger.close()
+            except Exception as e:
+                logger.warning("ExperimentLogger close failed: %s", e)
+            if client is not None:
+                client.close()
 
     def _ingest_progress(
         self,
@@ -476,15 +510,6 @@ class SFTTrainer:
                 )
                 print(f"      Val loss: {ev.get('val_loss', 0.0):.4f}")
 
-    def _save_checkpoint(self, step: int, logger: ExperimentLogger) -> str:
-        """Save a training checkpoint (Trainer-local, not in hub)."""
-        ckpt_dir = self._output_dir / "checkpoints" / f"step_{step}"
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-        with open(ckpt_dir / "checkpoint.json", "w") as f:
-            json.dump({"step": step, "epoch": self._epoch}, f)
-        self._cleanup_checkpoints()
-        return str(ckpt_dir)
-
     def _save_final(self, adapter_path: str = "") -> str:
         """Record final adapter metadata (Trainer-local pointer).
 
@@ -512,17 +537,3 @@ class SFTTrainer:
                 )
             return adapter_path or str(adapter_dir)
         return str(self._output_dir)
-
-    def _cleanup_checkpoints(self):
-        """Remove old checkpoints beyond save_total_limit."""
-        ckpt_base = self._output_dir / "checkpoints"
-        if not ckpt_base.exists():
-            return
-        checkpoints = sorted(ckpt_base.iterdir())
-        while len(checkpoints) > self.sft_cfg.save_total_limit:
-            oldest = checkpoints.pop(0)
-            import shutil
-
-            shutil.rmtree(oldest, ignore_errors=True)
-            # Re-scan to keep the list in sync with the filesystem
-            checkpoints = sorted(ckpt_base.iterdir())

@@ -20,7 +20,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 4096,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 16,
     },
     "sft_7b_full": {
@@ -36,7 +36,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 4096,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 32,
     },
     "sft_14b_qlora": {
@@ -57,7 +57,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 4096,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 28,
     },
     "sft_32b_qlora": {
@@ -78,7 +78,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 2048,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 48,
     },
     "sft_vlm_7b_qlora": {
@@ -99,7 +99,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 4096,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 35,
     },
     "sft_code_7b_lora": {
@@ -127,7 +127,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 8192,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 20,
     },
     "sft_finance_7b_lora": {
@@ -147,7 +147,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 4096,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 16,
     },
     "sft_science_7b_lora": {
@@ -167,7 +167,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 4096,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 16,
     },
     "sft_router_light_1_5b_lora": {
@@ -187,7 +187,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 2048,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 6,
     },
     "sft_router_light_3b_full": {
@@ -203,7 +203,7 @@ SFT_PRESETS: dict[str, dict] = {
         "max_seq_length": 2048,
         "weight_decay": 0.01,
         "max_grad_norm": 1.0,
-        "use_mxfp8": True,
+        "use_mxfp8": False,
         "memory_estimate_gb": 12,
     },
 }

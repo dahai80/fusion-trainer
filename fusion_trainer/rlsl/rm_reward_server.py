@@ -22,6 +22,7 @@ import json
 import logging
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -29,6 +30,14 @@ from urllib.parse import parse_qs, urlparse
 logger = logging.getLogger(__name__)
 
 _REWARD_PATH = "/reward"
+# R13: circuit-breaker thresholds. score_reward runs inside the GRPO reward
+# callback; if fusion-mlx is transiently down, every callback used to block
+# to the 30s client timeout and fusion-mlx's GRPO loop would fail or stall.
+# After _CB_FAIL_THRESHOLD consecutive failures the breaker opens: subsequent
+# callbacks short-circuit to a zero-reward baseline for _CB_COOLDOWN seconds
+# (fail-visible: logged loudly) instead of blocking, then half-opens to probe.
+_CB_FAIL_THRESHOLD = 3
+_CB_COOLDOWN = 30.0
 
 
 class RMRewardServer:
@@ -62,6 +71,11 @@ class RMRewardServer:
         self._thread: threading.Thread | None = None
         self._endpoint = ""
         self._token = ""
+        # R13: circuit-breaker state for score_reward (shared across handler
+        # threads via this lock).
+        self._cb_lock = threading.Lock()
+        self._cb_failures = 0
+        self._cb_open_until = 0.0
 
     @property
     def endpoint(self) -> str:
@@ -81,6 +95,7 @@ class RMRewardServer:
         adapter_name = self._adapter_name
         token = secrets.token_urlsafe(32)
         self._token = token
+        cb_score = self._score_with_breaker
 
         class _Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):  # silence default stderr log
@@ -139,7 +154,8 @@ class RMRewardServer:
                         len(str(prompt)),
                         len(completions),
                     )
-                    result = client.score_reward(
+                    result = cb_score(
+                        client=client,
                         model_id=model_id,
                         adapter_name=adapter_name,
                         prompt=str(prompt),
@@ -182,6 +198,78 @@ class RMRewardServer:
             adapter_name,
         )
         return self._endpoint
+
+    def _score_with_breaker(
+        self,
+        *,
+        client: Any,
+        model_id: str,
+        adapter_name: str,
+        prompt: str,
+        completions: list[str],
+    ) -> dict[str, Any]:
+        """R13: wrap score_reward in a circuit breaker so a *sustained*
+        fusion-mlx outage degrades (not deadlocks) the GRPO reward callback.
+
+        Closed (failures < threshold): forward to score_reward. On failure,
+        increment the counter and RE--RAISE — the handler returns 500 so the
+        error is fail-visible (a single blip must not be silently swallowed
+        into a zero-reward "success"). Only once _CB_FAIL_THRESHOLD consecutive
+        failures trip the breaker do we OPEN it.
+
+        Open: short-circuit to a uniform zero-reward baseline for _CB_COOLDOWN
+        seconds (logged loudly — fail-visible), keeping the GRPO loop
+        responsive (degraded, not dead) while fusion-mlx recovers, then
+        half-open to probe one call. A successful probe closes the breaker.
+        """
+        now = time.monotonic()
+        with self._cb_lock:
+            if self._cb_open_until and now < self._cb_open_until:
+                logger.warning(
+                    "rm-reward-server: breaker OPEN, returning zero-reward "
+                    "baseline (fusion-mlx score unavailable); GRPO reward "
+                    "signal DEGRADED. n_completions=%d",
+                    len(completions),
+                )
+                return {"rewards": [0.0] * len(completions)}
+        try:
+            result = client.score_reward(
+                model_id=model_id,
+                adapter_name=adapter_name,
+                prompt=prompt,
+                completions=completions,
+            )
+        except Exception as exc:
+            tripped = False
+            with self._cb_lock:
+                self._cb_failures += 1
+                if self._cb_failures >= _CB_FAIL_THRESHOLD:
+                    self._cb_open_until = time.monotonic() + _CB_COOLDOWN
+                    tripped = True
+                    logger.warning(
+                        "rm-reward-server: breaker OPENED after %d consecutive "
+                        "score failures (cooldown=%.0fs). error=%s",
+                        self._cb_failures,
+                        _CB_COOLDOWN,
+                        exc,
+                    )
+            if tripped:
+                # Sustained outage — degrade to baseline so GRPO keeps moving.
+                return {"rewards": [0.0] * len(completions)}
+            # Closed + below threshold: re-raise so the handler returns 500
+            # (fail-visible). A single transient error must NOT silently read
+            # as a zero-reward success — that corrupts the reward signal.
+            raise
+        with self._cb_lock:
+            if self._cb_failures or self._cb_open_until:
+                logger.info(
+                    "rm-reward-server: breaker CLOSED (score recovered after "
+                    "%d failures)",
+                    self._cb_failures,
+                )
+            self._cb_failures = 0
+            self._cb_open_until = 0.0
+        return result
 
     def stop(self) -> None:
         if self._server is not None:

@@ -2,8 +2,8 @@
 
 Covers the two blocking bugs for real training:
   - admin route header X-Fusion-Route: admin (fusion-mlx requires it)
-  - default port 11432 (fusion-gateway, routes to fusion-mlx; see issue #16).
-    Overridable via FUSION_MLX_PORT (e.g. 11434 to bypass gateway).
+  - default port 11434 (fusion-mlx direct; R16 — gateway 11432 does not
+    proxy /admin/api/fine-tune/*). Overridable via FUSION_MLX_PORT.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from fusion_trainer.mlx_client import MLXFineTuneClient
 
 
 class TestDefaultPort:
-    def test_default_port_is_gateway(self, monkeypatch):
+    def test_default_port_is_direct(self, monkeypatch):
         monkeypatch.delenv("FUSION_MLX_PORT", raising=False)
-        assert _default_mlx_port() == 11432
+        assert _default_mlx_port() == 11434
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("FUSION_MLX_PORT", "12000")

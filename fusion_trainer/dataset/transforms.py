@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def clean_dataset(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -23,21 +26,46 @@ def clean_dataset(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def deduplicate(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove duplicate entries based on text content hash."""
-    seen = set()
+    """Remove duplicate entries based on input+output content hash.
+
+    E5 (round-2 audit): the old key hashed ONLY the prompt/input side, so two
+    samples with the same prompt but different completions (a real SFT case —
+    one right answer, one wrong answer to the same question) collapsed into
+    one. That silently shrank + corrupted the dataset. The key now includes
+    the completion/output side; a sample is a duplicate only if BOTH sides
+    match. Empty-key samples (no detectable text on either side) are kept
+    rather than dropped-by-dedup — load_messages handles schema filtering.
+    """
+    seen: set[str] = set()
     result = []
+    dropped = 0
     for item in data:
-        # Use the text/input/output as dedup key
-        text = (
+        prompt_text = (
             str(item.get("text", ""))
             or str(item.get("input", ""))
             or str(item.get("prompt", ""))
+            or str(item.get("instruction", ""))
         )
-        # Normalize whitespace for comparison
-        key = re.sub(r"\s+", " ", text).strip().lower()
-        if key and key not in seen:
-            seen.add(key)
-            result.append(item)
+        completion_text = (
+            str(item.get("output", ""))
+            or str(item.get("completion", ""))
+            or str(item.get("response", ""))
+            or str(item.get("answer", ""))
+        )
+        norm_prompt = re.sub(r"\s+", " ", prompt_text).strip().lower()
+        norm_completion = re.sub(r"\s+", " ", completion_text).strip().lower()
+        key = norm_prompt + "\x00" + norm_completion
+        if not norm_prompt and not norm_completion:
+            # No detectable text on either side — drop (nothing to train on).
+            dropped += 1
+            continue
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        result.append(item)
+    if dropped:
+        logger.info("deduplicate: removed %d duplicate samples", dropped)
     return result
 
 

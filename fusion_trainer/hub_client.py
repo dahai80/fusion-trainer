@@ -26,6 +26,8 @@ from typing import Any
 
 import httpx
 
+from .config import _default_hub_url
+
 logger = logging.getLogger(__name__)
 
 MODELS_PATH = "/api/v1/models"
@@ -83,8 +85,15 @@ class ModelHubClient:
         data = resp.json()
         if isinstance(data, list):
             return data
-        if isinstance(data, dict) and isinstance(data.get("items"), list):
-            return data["items"]
+        # R17: hub returns {"data":[...]} (and some versions {"items":[...]}).
+        # Treating the envelope as an empty list made the L4 409-idempotency
+        # check never find an existing lora → re-publish raised instead of
+        # returning idempotent. Unwrap the known envelope keys.
+        if isinstance(data, dict):
+            for key in ("data", "items", "models", "results"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    return val
         return []
 
     def _find_existing_lora(self, name: str, base_model: str) -> dict[str, Any] | None:
@@ -144,7 +153,29 @@ class ModelHubClient:
         except httpx.HTTPError as exc:
             raise HubPublishError(f"hub POST transport error: {exc}") from exc
         if resp.status_code == 201:
-            body = resp.json() if resp.content else {}
+            # R18: an empty 201 body yields a dangling hub entry (model:{}) —
+            # treat a missing id as a publish that did not land cleanly and
+            # surface it loudly rather than reporting success.
+            body: dict[str, Any] = {}
+            if resp.content:
+                try:
+                    parsed = resp.json()
+                    body = parsed if isinstance(parsed, dict) else {}
+                except ValueError:
+                    logger.warning(
+                        "publish_adapter: 201 with non-JSON body: %s",
+                        resp.text[:200],
+                    )
+            if not body.get("id"):
+                logger.warning(
+                    "publish_adapter: 201 returned no model id for name=%s — "
+                    "hub entry may be dangling; not reporting success",
+                    name,
+                )
+                raise HubPublishError(
+                    f"hub POST {url} returned 201 but no model id (empty body) "
+                    f"for name={name}"
+                )
             logger.info(
                 "publish_adapter: created model_id=%s name=%s", body.get("id"), name
             )
@@ -213,7 +244,7 @@ def publish_adapter_if_enabled(
     if not base_model:
         logger.warning("publish_adapter_if_enabled: empty base_model, skipping publish")
         return {"published": False, "reason": "empty base_model"}
-    hub_url = getattr(config, "hub_url", "") or "http://localhost:11432"
+    hub_url = getattr(config, "hub_url", "") or _default_hub_url()
     api_key = getattr(config, "hub_api_key", "") or ""
     desc = f"LoRA adapter from fusion-trainer run ({result.get('method', '')})"
     client = ModelHubClient(base_url=hub_url, api_key=api_key)
