@@ -8,9 +8,12 @@ temp dirs after each test (keep only final outputs + logs).
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 from pathlib import Path
+
+import pytest
 
 from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
 from fusion_trainer.run_manager import RunManager, config_to_dict
@@ -273,6 +276,50 @@ class TestDatasetsAdapters:
             rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
             ds = rm.list_datasets()
             assert any(d["name"] == "sft/code_alpaca" for d in ds)
+            # P1: line-counted jsonl row count is correct.
+            assert ds[0]["n_samples"] == 1
+
+    def test_list_datasets_cached_by_mtime(self):
+        # P1: a second list_datasets call must hit the cache, not re-read.
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = Path(tmp) / "datasets" / "sft"
+            hub.mkdir(parents=True)
+            f = hub / "code_alpaca.jsonl"
+            f.write_text(
+                json.dumps({"input": "q", "output": "a"})
+                + "\n"
+                + json.dumps({"input": "q2", "output": "a2"})
+                + "\n"
+            )
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            first = rm.list_datasets()
+            assert first[0]["n_samples"] == 2
+            # Corrupt the file, then RESTORE its original (mtime, size) so the
+            # cache key still matches — proving the second call serves cache
+            # and does not re-read the now-garbage file.
+            orig_stat = f.stat()
+            f.write_text("x" * orig_stat.st_size)
+            os.utime(f, (orig_stat.st_atime, orig_stat.st_mtime))
+            second = rm.list_datasets()
+            assert second[0]["n_samples"] == 2  # cached value, not re-read
+
+    def test_list_datasets_parquet_row_count(self):
+        # P1: parquet counted via pyarrow (was counted as text lines = wrong).
+        pytest.importorskip("pyarrow")
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = Path(tmp) / "datasets" / "sft"
+            hub.mkdir(parents=True)
+            table = pa.table(
+                {"input": ["q1", "q2", "q3"], "output": ["a1", "a2", "a3"]}
+            )
+            pq.write_table(table, str(hub / "pq.parquet"))
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            ds = rm.list_datasets()
+            ds = [d for d in ds if d["format"] == "parquet"]
+            assert ds and ds[0]["n_samples"] == 3
 
     def test_preview_dataset(self):
         with tempfile.TemporaryDirectory() as tmp:

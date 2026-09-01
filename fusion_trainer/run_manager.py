@@ -67,6 +67,16 @@ class RunManager:
         self._runs_root = Path(self.cache_path) / "runs"
         self._runs_root.mkdir(parents=True, exist_ok=True)
         self._runs: dict[str, dict[str, Any]] = {}
+        # P1: per-file dataset count cache keyed by (mtime, size). Avoids a
+        # full re-scan + re-count of every hub dataset file on each GUI refresh.
+        self._dataset_cache: dict[str, tuple[float, int, int]] = {}
+        # A2: active sinks live on the INSTANCE, not a module global. Two
+        # RunManager instances (CLI + agent-studio daemon) used to share one
+        # module-level sink dict while holding separate _runs registries, so a
+        # stop_run on one instance could not find a run owned by the other.
+        # Per-instance sinks pair with per-instance _runs; production callers
+        # should go through get_run_manager() so there is one shared instance.
+        self._active_sinks: dict[str, Any] = {}
         self._lock = threading.Lock()
         self._load_existing_runs()
 
@@ -93,6 +103,47 @@ class RunManager:
             # Only rehydrate terminal runs; running runs from a dead process
             # are marked failed (fail-visible: never claim a zombie is alive).
             if data.get("status") not in _TERMINAL:
+                # L3: the run's fusion-mlx job is NOT owned by this process.
+                # Marking failed here only updates our view; the upstream job
+                # may still be burning GPU/memory. Best-effort cancel it via
+                # the recorded job_id/kind, then mark failed. If fusion-mlx is
+                # unreachable, surface the job_id loudly so the operator can
+                # stop it manually.
+                zombie_job = data.get("job_id", "") or ""
+                zombie_kind = data.get("job_kind", "sft") or "sft"
+                if zombie_job:
+                    try:
+                        client = MLXFineTuneClient(
+                            port=int(
+                                data.get("mlx_port")
+                                or os.environ.get("FUSION_MLX_PORT", "11432")
+                            )
+                        )
+                        if zombie_kind in ("dpo", "orpo"):
+                            client.cancel_dpo_job(zombie_job)
+                        elif zombie_kind == "grpo":
+                            client.cancel_grpo_job(zombie_job)
+                        elif zombie_kind == "reward":
+                            client.cancel_reward_job(zombie_job)
+                        else:
+                            client.cancel_job(zombie_job)
+                        client.close()
+                        logger.info(
+                            "zombie run %s: cancelled upstream job %s (kind=%s)",
+                            rid,
+                            zombie_job,
+                            zombie_kind,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "zombie run %s: could not cancel upstream job %s "
+                            "(kind=%s) — it may STILL be running on fusion-mlx. "
+                            "Stop it manually. error=%s",
+                            rid,
+                            zombie_job,
+                            zombie_kind,
+                            exc,
+                        )
                 data["status"] = "failed"
                 data["error"] = "process restarted while run was active"
             data["events_buffer"] = deque(maxlen=1000)
@@ -184,7 +235,13 @@ class RunManager:
         return out
 
     def list_datasets(self) -> list[dict[str, Any]]:
-        """Scan {model_hub_path}/datasets/ (read-only hub, by category)."""
+        """Scan {model_hub_path}/datasets/ (read-only hub, by category).
+
+        P1: results are cached per file by (mtime, size) so repeated GUI
+        refreshes do not re-scan + re-count every file. Parquet uses pyarrow
+        row count (was counted as text lines = wrong). Invalidated on file
+        change automatically.
+        """
         hub = Path(self.model_hub_path) / "datasets"
         if not hub.exists():
             logger.info("list_datasets: hub datasets dir missing: %s", hub)
@@ -200,7 +257,7 @@ class RunManager:
                                 "category": entry.name,
                                 "format": f.suffix.lstrip("."),
                                 "path": str(f),
-                                "n_samples": _count_lines(f),
+                                "n_samples": self._count_samples_cached(f),
                             }
                         )
             elif entry.suffix in (".jsonl", ".json", ".csv", ".parquet"):
@@ -210,10 +267,25 @@ class RunManager:
                         "category": "uncategorized",
                         "format": entry.suffix.lstrip("."),
                         "path": str(entry),
-                        "n_samples": _count_lines(entry),
+                        "n_samples": self._count_samples_cached(entry),
                     }
                 )
         return out
+
+    def _count_samples_cached(self, path: Path) -> int:
+        """mtime+size-keyed cache over _count_samples (P1). Avoids re-reading
+        every file on each GUI refresh; fresh data wins when a file changes."""
+        try:
+            st = path.stat()
+        except OSError:
+            return _count_samples(path)
+        key = str(path)
+        cached = self._dataset_cache.get(key)
+        if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            return cached[2]
+        n = _count_samples(path)
+        self._dataset_cache[key] = (st.st_mtime, st.st_size, n)
+        return n
 
     def preview_dataset(self, name: str, limit: int = 5) -> dict[str, Any]:
         """Read first `limit` rows of a hub dataset by {category}/{name}."""
@@ -316,7 +388,7 @@ class RunManager:
             self._runs[run_id] = record
 
         sink = _RunSink(record, self._lock)
-        _ACTIVE_SINKS[run_id] = sink
+        self._active_sinks[run_id] = sink
 
         thread = threading.Thread(
             target=self._run_thread,
@@ -344,8 +416,14 @@ class RunManager:
         fh.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         )
-        root = logging.getLogger()
-        root.addHandler(fh)
+        # A3: attach to the fusion_trainer package logger, NOT the root logger.
+        # Root-level handlers stacked across concurrent runs intercepted ALL
+        # app logs (incl. other libraries) and cross-wrote every run's file.
+        # The package logger scopes the handler to trainer emissions. (Truly
+        # concurrent runs still share this logger; the GUI is single-run-at-a-
+        # time in practice, and each handler is removed in the finally below.)
+        pkg_logger = logging.getLogger("fusion_trainer")
+        pkg_logger.addHandler(fh)
         sink.emit({"type": "status", "status": "running"})
 
         result: dict[str, Any]
@@ -366,7 +444,7 @@ class RunManager:
             logger.exception("run %s crashed", run_id)
             result = {"status": "failed", "error": str(exc)}
         finally:
-            root.removeHandler(fh)
+            pkg_logger.removeHandler(fh)
             fh.close()
 
         canceled = sink.is_canceled()
@@ -419,7 +497,7 @@ class RunManager:
                 if publish_result is not None:
                     rec["publish_result"] = publish_result
                 self._persist_meta(run_id)
-        _ACTIVE_SINKS.pop(run_id, None)
+        self._active_sinks.pop(run_id, None)
         logger.info("run %s ended: %s", run_id, final_status)
 
     # ------------------------------------------------------------------
@@ -497,7 +575,7 @@ class RunManager:
             if r.get("status") in _TERMINAL:
                 return {"run_id": run_id, "status": r["status"]}
             r["canceled"] = True
-        sink = _ACTIVE_SINKS.get(run_id)
+        sink = self._active_sinks.get(run_id)
         if sink is not None:
             sink.request_cancel()
         logger.info("stop_run requested for %s", run_id)
@@ -541,9 +619,50 @@ class RunManager:
                 "published": False,
                 "error": "run has no base model recorded",
             }
+        # L4 point 3: never register a hub model pointing at non-existent
+        # weights. Verify the adapter still exists on fusion-mlx before POST.
+        # If fusion-mlx is unreachable, fail-visible and refuse to publish
+        # rather than register a dangling entry.
+        mlx_client = MLXFineTuneClient(port=self.mlx_port)
+        try:
+            try:
+                adapters = mlx_client.list_adapters(model_id=base_model)
+            except Exception as exc:
+                logger.warning(
+                    "publish_run %s: adapter existence check failed (%s); "
+                    "refusing to publish without verification",
+                    run_id,
+                    exc,
+                )
+                return {
+                    "run_id": run_id,
+                    "published": False,
+                    "error": f"adapter existence check failed: {exc}",
+                }
+        finally:
+            mlx_client.close()
+        adapter_exists = any(str(a.get("name", "")) == adapter_name for a in adapters)
+        if not adapter_exists:
+            logger.error(
+                "publish_run %s: adapter %r not found on fusion-mlx for "
+                "model %r; refusing to publish dangling hub entry",
+                run_id,
+                adapter_name,
+                base_model,
+            )
+            return {
+                "run_id": run_id,
+                "published": False,
+                "error": (
+                    f"adapter {adapter_name!r} not found on fusion-mlx "
+                    f"(model {base_model!r}); weights may have been deleted"
+                ),
+            }
         from .hub_client import HubPublishError, ModelHubClient
 
-        url = hub_url or os.environ.get("FUSION_MODEL_HUB_URL", "http://localhost:11432")
+        url = hub_url or os.environ.get(
+            "FUSION_MODEL_HUB_URL", "http://localhost:11432"
+        )
         key = api_key or os.environ.get("FUSION_MODEL_HUB_API_KEY", "")
         client = ModelHubClient(base_url=url, api_key=key)
         desc = f"LoRA adapter from fusion-trainer run {run_id}"
@@ -571,16 +690,40 @@ class RunManager:
             return
         meta_path = Path(r["run_dir"]) / "run_meta.json"
         serial = {k: v for k, v in r.items() if k not in ("events_buffer", "thread")}
+        # M2: atomic write — write to a temp file in the same dir, fsync, then
+        # os.replace so a crash mid-write never leaves a half-written meta
+        # (which would make events.jsonl and run_meta.json disagree on status).
+        tmp_path = meta_path.with_suffix(".json.tmp")
         try:
-            meta_path.write_text(
+            tmp_path.write_text(
                 json.dumps(serial, default=str, ensure_ascii=False, indent=2)
             )
+            os.replace(tmp_path, meta_path)
         except Exception as exc:
             logger.warning("persist meta %s failed: %s", run_id, exc)
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
 
 
-# Module-level registry of active sinks (shared with stop_run).
-_ACTIVE_SINKS: dict[str, _RunSink] = {}
+# A2: process-wide singleton so the CLI path and the in-process agent-studio
+# path share ONE RunManager (one _runs registry + one _active_sinks map).
+# Callers that want a throwaway isolated instance (tests) still construct
+# RunManager(...) directly; production entry points use get_run_manager().
+_RUN_MANAGER_SINGLETON: RunManager | None = None
+_SINGLETON_LOCK = threading.Lock()
+
+
+def get_run_manager() -> RunManager:
+    """Return the process-wide RunManager, constructing it on first call."""
+    global _RUN_MANAGER_SINGLETON
+    if _RUN_MANAGER_SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _RUN_MANAGER_SINGLETON is None:
+                _RUN_MANAGER_SINGLETON = RunManager()
+    return _RUN_MANAGER_SINGLETON
 
 
 class _RunSink:
@@ -686,7 +829,21 @@ def _flatten_metrics(ev: dict[str, Any]) -> dict[str, float]:
     return out
 
 
-def _count_lines(path: Path) -> int:
+def _count_samples(path: Path) -> int:
+    """Count rows in a dataset file. Parquet via pyarrow; text via line count.
+
+    Parquet is binary — reading it as text lines (the old _count_lines)
+    returned a wrong count and could decode-garbage. jsonl/json/csv are
+    one-row-per-line so line count is the row count.
+    """
+    if path.suffix == ".parquet":
+        try:
+            import pyarrow.parquet as pq
+
+            return int(pq.read_metadata(str(path)).num_rows)
+        except Exception as exc:
+            logger.warning("parquet row count failed for %s: %s", path, exc)
+            return 0
     try:
         with open(path) as fh:
             return sum(1 for _ in fh)
