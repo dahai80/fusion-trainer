@@ -35,7 +35,6 @@ sft:
 
   # Checkpointing
   save_every: 500
-  save_total_limit: 3
   log_every: 10
 
   # Output

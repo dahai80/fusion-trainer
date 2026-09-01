@@ -5,11 +5,9 @@
 
 # ----------- Dataset -----------
 dataset:
-  format: jsonl
   val_ratio: 0.05
   max_samples: 0
   max_seq_length: 4096
-  min_seq_length: 2
   remove_duplicates: true
   input_field: input
   output_field: output

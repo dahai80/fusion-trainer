@@ -10,7 +10,6 @@ def test_rlsl_config_defaults():
     cfg = RLSLConfig()
     assert cfg.method == "dpo"
     assert cfg.beta == 0.1
-    assert cfg.kl_coef == 0.04
     assert cfg.learning_rate == 5e-6
     assert cfg.temperature == 0.7
 

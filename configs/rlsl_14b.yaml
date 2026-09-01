@@ -26,7 +26,6 @@ rlsl:
 
   # RLSL (PPO-light) parameters
   clip_epsilon: 0.2
-  kl_coef: 0.04
   ppo_epochs: 4
 
   # Training hyperparameters

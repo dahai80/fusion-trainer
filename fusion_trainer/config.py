@@ -54,8 +54,6 @@ def _default_hub_api_key() -> str:
 # Dataset config
 # ---------------------------------------------------------------------------
 
-DatasetFormat = Literal["jsonl", "parquet", "json", "csv", "arrow"]
-
 
 @dataclass
 class DatasetConfig:
@@ -74,10 +72,6 @@ class DatasetConfig:
     """Dataset name within the model hub, e.g. 'sft/code_alpaca'.
     Resolved as: {model_hub_path}/datasets/{hub_dataset}.jsonl"""
 
-    # Format
-    format: DatasetFormat = "jsonl"
-    """Dataset file format."""
-
     # Splits
     val_ratio: float = 0.05
     """Ratio of training data to hold out for validation."""
@@ -89,9 +83,6 @@ class DatasetConfig:
     max_seq_length: int = 4096
     """Truncate samples longer than this."""
 
-    min_seq_length: int = 2
-    """Filter samples shorter than this."""
-
     remove_duplicates: bool = True
     """Remove exact duplicate text entries."""
 
@@ -101,9 +92,6 @@ class DatasetConfig:
 
     output_field: str = "output"
     """Field name for target/completion text."""
-
-    chat_template: str = ""
-    """Chat template to apply (empty = use tokenizer default)."""
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +149,6 @@ class SFTConfig:
     save_every: int = 500
     """Save checkpoint every N steps."""
 
-    save_total_limit: int = 3
-    """Keep only the most recent N checkpoints."""
-
     output_dir: str = ""
     """Output directory for checkpoints and final weights (Trainer-local)."""
 
@@ -188,9 +173,6 @@ class RLSLConfig:
     reward_model: str = ""
     """Reward model name or path."""
 
-    reward_model_type: Literal["lm", "classifier"] = "lm"
-    """Type of reward model."""
-
     reward_learning_rate: float = 1e-5
     reward_batch_size: int = 1
     reward_num_epochs: int = 2
@@ -205,7 +187,6 @@ class RLSLConfig:
 
     # RLSL (PPO-light) parameters
     clip_epsilon: float = 0.2
-    kl_coef: float = 0.04
     ppo_epochs: int = 4
 
     # GRPO parameters
@@ -232,9 +213,6 @@ class RLSLConfig:
 
     reward_scale: float = 1.0
     """Multiplier applied to raw sandbox reward before ranking."""
-
-    max_tool_calls: int = 3
-    """Max tool-call rounds during on-policy generation (Thinking + Tool reinforcement)."""
 
     # Training
     batch_size: int = 1

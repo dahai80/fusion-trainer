@@ -26,11 +26,9 @@ class TestDatasetConfig:
         cfg = DatasetConfig()
         assert cfg.path == ""
         assert cfg.hub_dataset == ""
-        assert cfg.format == "jsonl"
         assert cfg.val_ratio == 0.05
         assert cfg.max_samples == 0
         assert cfg.max_seq_length == 4096
-        assert cfg.min_seq_length == 2
         assert cfg.remove_duplicates is True
         assert cfg.input_field == "text"
         assert cfg.output_field == "output"
@@ -42,10 +40,6 @@ class TestDatasetConfig:
     def test_custom_hub_dataset(self):
         cfg = DatasetConfig(hub_dataset="sft/code")
         assert cfg.hub_dataset == "sft/code"
-
-    def test_custom_format(self):
-        cfg = DatasetConfig(format="parquet")
-        assert cfg.format == "parquet"
 
     def test_val_ratio_zero(self):
         cfg = DatasetConfig(val_ratio=0.0)
@@ -96,7 +90,6 @@ class TestSFTConfig:
         assert cfg.max_grad_norm == 1.0
         assert cfg.use_mxfp8 is False  # L2: default off (upstream #402 unresolved)
         assert cfg.save_every == 500
-        assert cfg.save_total_limit == 3
         assert cfg.output_dir == ""
         assert cfg.log_every == 10
         assert cfg.run_name == ""
@@ -131,9 +124,8 @@ class TestSFTConfig:
         assert cfg.use_mxfp8 is False
 
     def test_custom_checkpointing(self):
-        cfg = SFTConfig(save_every=100, save_total_limit=5, log_every=1)
+        cfg = SFTConfig(save_every=100, log_every=1)
         assert cfg.save_every == 100
-        assert cfg.save_total_limit == 5
         assert cfg.log_every == 1
 
     def test_custom_output(self):
@@ -157,14 +149,12 @@ class TestRLSLConfig:
     def test_defaults(self):
         cfg = RLSLConfig()
         assert cfg.reward_model == ""
-        assert cfg.reward_model_type == "lm"
         assert cfg.reward_learning_rate == 1e-5
         assert cfg.reward_batch_size == 1
         assert cfg.reward_num_epochs == 2
         assert cfg.method == "dpo"
         assert cfg.beta == 0.1
         assert cfg.clip_epsilon == 0.2
-        assert cfg.kl_coef == 0.04
         assert cfg.ppo_epochs == 4
         assert cfg.batch_size == 1
         assert cfg.learning_rate == 5e-6
@@ -187,9 +177,8 @@ class TestRLSLConfig:
         assert cfg.beta == 0.2
 
     def test_reward_model_config(self):
-        cfg = RLSLConfig(reward_model="rm-v1", reward_model_type="classifier")
+        cfg = RLSLConfig(reward_model="rm-v1")
         assert cfg.reward_model == "rm-v1"
-        assert cfg.reward_model_type == "classifier"
 
     def test_generation_params(self):
         cfg = RLSLConfig(response_length=1024, temperature=0.8, top_p=0.95)
@@ -198,9 +187,8 @@ class TestRLSLConfig:
         assert cfg.top_p == 0.95
 
     def test_ppo_params(self):
-        cfg = RLSLConfig(clip_epsilon=0.3, kl_coef=0.1, ppo_epochs=8)
+        cfg = RLSLConfig(clip_epsilon=0.3, ppo_epochs=8)
         assert cfg.clip_epsilon == 0.3
-        assert cfg.kl_coef == 0.1
         assert cfg.ppo_epochs == 8
 
 
