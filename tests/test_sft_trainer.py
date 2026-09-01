@@ -397,23 +397,37 @@ class TestRunTraining:
             assert calls[0]["config"]["quantize_base"] is True
             assert calls[0]["config"]["quant_bits"] == 4
 
-    def test_run_training_mxfp8_warns_not_raises(self, monkeypatch, caplog):
-        # 上游 #402:mxfp8 字段已加但 service.py 仍 raise。不发送 mxfp8=True,
-        # 按默认精度训练并告警(fail-visible)。
+    def test_run_training_mxfp8_explicit_true_fail_stops(self, monkeypatch):
+        # L2: use_mxfp8 default False. Explicit True while upstream #402 is
+        # unresolved must fail-stop (raise MLXFineTuneError) rather than
+        # silently downgrade precision. A silent downgrade would make the
+        # preset memory estimates wrong and swallow the user's intent.
+        from fusion_trainer.mlx_client import MLXFineTuneError
+
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(
                 method="lora", cache_path=tmpdir, num_epochs=1, use_mxfp8=True
             )
             trainer = SFTTrainer(cfg)
             train_loader = [{"input": "Q", "output": "A"}]
+            _patch_mlx_client(monkeypatch)
+            with pytest.raises(MLXFineTuneError):
+                trainer._run_training(train_loader, [])
+
+    def test_run_training_mxfp8_default_off_runs_normally(self, monkeypatch):
+        # L2: default use_mxfp8=False trains at default precision with no
+        # warning, no fail-stop. No mxfp8 flag sent upstream.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(
+                method="lora", cache_path=tmpdir, num_epochs=1, use_mxfp8=False
+            )
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
             calls = _patch_mlx_client(monkeypatch)
-            with caplog.at_level("WARNING"):
-                result = trainer._run_training(train_loader, [])
+            result = trainer._run_training(train_loader, [])
             assert result["status"] == "completed"
             assert calls[0]["config"]["fine_tune_type"] == "lora"
-            assert "mxfp8" not in calls[0]["config"]  # 不向上游发送未支持标志
-            assert "MXFP8" in caplog.text
-            assert "fusion-mlx/issues/402" in caplog.text
+            assert "mxfp8" not in calls[0]["config"]
 
     def test_run_training_failure(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:

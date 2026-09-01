@@ -421,13 +421,30 @@ class GRPOTrainer:
         samples: list[dict[str, Any]],
         top_k: int,
     ) -> list[dict[str, Any]]:
-        """Keep top-k completions by advantage across the whole batch.
+        """Keep the top-k completions PER PROMPT by advantage, then merge.
 
-        Per-prompt grouping is already reflected in the advantage (group-relative),
-        so a global top-k by advantage naturally keeps more from high-spread groups.
+        GRPO computes advantage as a group-relative quantity within each
+        prompt's G samples. Selection must therefore be per-prompt: taking a
+        global top-k over all prompts biases the batch toward the few prompts
+        with the highest reward spread and drops most prompts entirely (audit
+        L1). We groupby(prompt), keep min(top_k, G) from each group (highest
+        advantage first), then merge preserving prompt diversity.
         """
-        ranked = sorted(samples, key=lambda s: s["advantage"], reverse=True)
-        return ranked[:top_k] if top_k > 0 else ranked
+        if top_k <= 0:
+            return list(samples)
+        by_prompt: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        for s in samples:
+            p = s.get("prompt", "")
+            if p not in by_prompt:
+                by_prompt[p] = []
+                order.append(p)
+            by_prompt[p].append(s)
+        kept: list[dict[str, Any]] = []
+        for p in order:
+            grp = sorted(by_prompt[p], key=lambda s: s["advantage"], reverse=True)
+            kept.extend(grp[:top_k])
+        return kept
 
     # ------------------------------------------------------------------
     # Step 5: stage reward-filtered completions as chat SFT data

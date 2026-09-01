@@ -147,8 +147,10 @@ class SFTConfig:
     max_grad_norm: float = 1.0
 
     # Precision
-    use_mxfp8: bool = True
-    """Use MXFP8 mixed precision training (MLX-native)."""
+    use_mxfp8: bool = False
+    """Use MXFP8 mixed precision training (MLX-native). Upstream-blocked
+    (fusion-mlx#402); default False. Explicit True fail-stops until upstream
+    lands, so the user's intent is never silently downgraded (audit L2)."""
 
     # Checkpointing
     save_every: int = 500
