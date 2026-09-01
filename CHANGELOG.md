@@ -25,11 +25,15 @@ during the mandatory real-machine smoke test.
 ### Upstream-blocked
 - **GRPO true backend (regression of fusion-mlx #430)**: real policy-gradient
   GRPO jobs (`grpo_backend="grpo"`, `/admin/api/fine-tune/grpo/jobs`) fail
-  within ~0.3s with `There is no Stream(gpu, N) in current thread` on
-  fusion-mlx 0.8.57 — the worker-thread MLX stream is not initialized for the
-  sampling path. Tracked at [fusion-mlx#751](https://github.com/dahai80/fusion-mlx/issues/751).
-  The `rft` backend (reward-filtered SFT via `/admin/api/fine-tune/jobs`) is
-  unaffected and runs end-to-end.
+  within ~0.3s with `There is no Stream(gpu, N) in current thread`. Re-verified
+  on fusion-mlx 0.8.63 (dce6ff15): the `worker_stream` fix in
+  `grpo_service.py:250` is present but insufficient — `mlx_lm.generate` holds a
+  module-level thread-local `generation_stream` (created at import time in the
+  loader thread, not the `asyncio.to_thread` worker), so `generate_step`'s
+  `async_eval` still has no stream in the worker thread. Tracked at
+  [fusion-mlx#751](https://github.com/dahai80/fusion-mlx/issues/751)
+  (comment 5492669837). The `rft` backend (reward-filtered SFT via
+  `/admin/api/fine-tune/jobs`) is unaffected and runs end-to-end.
 
 ### Security
 - **P3-6 / S6**: Added `validate_service_url` scheme+host allow-list applied
