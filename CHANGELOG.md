@@ -10,7 +10,26 @@ by git tags of the form `v<version>`.
 ## [0.1.12] — 2026-09-01
 
 Round-3 product-readiness audit (`audit/fusion-trainer-audit-result-product-0901.md`)
-remediation: closes all P0–P3 checklist items.
+remediation: closes all P0–P3 checklist items, plus a fail-visible defect found
+during the mandatory real-machine smoke test.
+
+### Fail-visible (smoke-test finding)
+- **GRPO status reporting**: `GRPOTrainer.train` (both `rft` and `grpo`
+  backends) and `RLSLEngine.run` unconditionally printed `✓ GRPO complete!` /
+  `✓ Alignment complete!` even when the job `status` was `failed`. A failed
+  true-GRPO job now prints `✗ GRPO failed: status=failed error=<msg>` and the
+  engine prints `✗ Alignment failed`; the CLI already exited non-zero on a
+  non-`completed` status, now the human-readable output matches. The
+  `grpo`-backend return dict also carries the upstream `error` string.
+
+### Upstream-blocked
+- **GRPO true backend (regression of fusion-mlx #430)**: real policy-gradient
+  GRPO jobs (`grpo_backend="grpo"`, `/admin/api/fine-tune/grpo/jobs`) fail
+  within ~0.3s with `There is no Stream(gpu, N) in current thread` on
+  fusion-mlx 0.8.57 — the worker-thread MLX stream is not initialized for the
+  sampling path. Tracked at [fusion-mlx#751](https://github.com/dahai80/fusion-mlx/issues/751).
+  The `rft` backend (reward-filtered SFT via `/admin/api/fine-tune/jobs`) is
+  unaffected and runs end-to-end.
 
 ### Security
 - **P3-6 / S6**: Added `validate_service_url` scheme+host allow-list applied

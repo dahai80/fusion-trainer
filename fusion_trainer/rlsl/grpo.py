@@ -187,9 +187,15 @@ class GRPOTrainer:
             self._adapter_name = job_result.get("adapter_name", self._adapter_name)
 
         exp.save()
-        print("\n      ✓ GRPO complete!")
-        print(f"      Reward trajectory: {[round(r, 3) for r in reward_trajectory]}")
-        print(f"      Final adapter: {last_adapter}")
+        if final_status == "completed":
+            print("\n      ✓ GRPO complete!")
+            print(
+                f"      Reward trajectory: {[round(r, 3) for r in reward_trajectory]}"
+            )
+            print(f"      Final adapter: {last_adapter}")
+        else:
+            logger.error("GRPO ended with status: %s", final_status)
+            print(f"\n      ✗ GRPO failed: status={final_status}")
 
         return {
             "status": final_status,
@@ -335,10 +341,16 @@ class GRPOTrainer:
             reward_server.stop()
 
         exp.save()
-        print("\n      ✓ GRPO complete!")
-        print(f"      Final adapter: {last_adapter}")
+        if final_status == "completed":
+            print("\n      ✓ GRPO complete!")
+            print(f"      Final adapter: {last_adapter}")
+        else:
+            err = final_job.get("error", "") if isinstance(final_job, dict) else ""
+            logger.error("GRPO job ended with status: %s error: %s", final_status, err)
+            print(f"\n      ✗ GRPO failed: status={final_status} error={err}")
         return {
             "status": final_status,
+            "error": final_job.get("error", "") if final_status != "completed" else "",
             "method": "grpo",
             "backend": "grpo",
             "iterations": iters,

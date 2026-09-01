@@ -120,9 +120,15 @@ class RLSLEngine:
             # async writer. close() is idempotent and safe after save().
             self._logger.close()
 
-        print("\n      ✓ Alignment complete!")
-        print(f"      Method: {method}")
-        print(f"      Output: {self.rlsl_cfg.output_dir}")
+        if result.get("status") in ("completed", "succeeded", "ok"):
+            print("\n      ✓ Alignment complete!")
+            print(f"      Method: {method}")
+            print(f"      Output: {self.rlsl_cfg.output_dir}")
+        else:
+            logger.error("alignment ended with status: %s", result.get("status"))
+            print(
+                f"\n      ✗ Alignment failed: {result.get('error', 'status=' + str(result.get('status')))}"
+            )
 
         return result
 
