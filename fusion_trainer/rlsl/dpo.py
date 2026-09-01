@@ -7,6 +7,7 @@ fusion-mlx's /admin/api/fine-tune/dpo/jobs endpoint (upstream #399).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from pathlib import Path
@@ -38,6 +39,13 @@ class DPOTrainer:
 
         # Optional live-progress sink (RunManager). None = CLI mode.
         self.on_event = None
+
+    def close(self) -> None:
+        # P1-1 (round-3 audit): trainers built a pooled client but never
+        # closed it — long-running daemons leaked a connection pool per run.
+        # Mirrors SFTTrainer.close (round-2 E4).
+        with contextlib.suppress(Exception):
+            self._client.close()
 
     def _build_dpo_config(self) -> dict[str, Any]:
         # 映射 RLSLConfig → fusion-mlx DPOConfig 字段(dpo.py:32)。
@@ -115,6 +123,7 @@ class DPOTrainer:
                 job_id,
                 on_progress=self._on_progress if self.on_event else None,
                 poll_interval=2.0,
+                is_canceled=getattr(self, "is_canceled", None),
             )
         except MLXFineTuneError as exc:
             logger.error("DPO job failed: %s", exc)

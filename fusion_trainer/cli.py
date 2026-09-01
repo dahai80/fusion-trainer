@@ -36,7 +36,16 @@ def _root(
         help="Show the fusion-trainer version and exit.",
         is_eager=True,
     ),
+    verbose: int = typer.Option(
+        0,
+        "--verbose",
+        "-v",
+        count=True,
+        help="Increase log verbosity (-v INFO, -vv DEBUG). Default WARNING. "
+        "Also settable via LOG_LEVEL env (DEBUG/INFO/WARNING/ERROR).",
+    ),
 ):
+    _configure_logging(verbose)
     if version:
         typer.echo(f"ft {_get_version()}")
         raise typer.Exit(0)
@@ -87,7 +96,7 @@ def sft(
         "lora",
         "--method",
         "-M",
-        help="Training method: full, lora, qlora",
+        help="Training method: full, lora, dora, qlora",
     ),
     lora_rank: int = typer.Option(
         16,
@@ -246,6 +255,16 @@ def sft(
 
     trainer = SFTTrainer(cfg)
     result = trainer.train()
+    # P0-6 (round-3 audit): a failed/empty result must exit non-zero and print
+    # the error — previously the return dict was discarded and the CLI exited 0
+    # even when training failed, so a failure was silent after terminal scroll.
+    if not result or result.get("status") not in ("completed", "succeeded", "ok"):
+        err = (result or {}).get("error", "training failed (no result returned)")
+        typer.echo(f"✗ SFT failed: {err}")
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ SFT completed: {result.get('adapter_name', result.get('adapter_path', ''))}"
+    )
     if publish:
         from fusion_trainer.hub_client import publish_adapter_if_enabled
 
@@ -291,6 +310,36 @@ def rlsl(
         "--method",
         "-M",
         help="Alignment method: dpo, orpo, rlsl, grpo",
+    ),
+    preset: str = typer.Option(
+        "",
+        "--preset",
+        "-p",
+        help="Named preset from RLSL_PRESETS (e.g. rlsl_grpo_7b). Loads GRPO "
+        "hyperparameters incl. grpo_backend; CLI flags still override.",
+    ),
+    grpo_backend: str = typer.Option(
+        "",
+        "--grpo-backend",
+        help="GRPO backend: rft (reward-filtered SFT, default) or grpo (real "
+        "policy-gradient via fusion-mlx #363 Phase 2). Only used when "
+        "--method grpo.",
+    ),
+    lora_rank: int = typer.Option(
+        0,
+        "--lora-rank",
+        "-r",
+        help="LoRA rank for the alignment adapter (0 = use preset/default).",
+    ),
+    lora_alpha: float = typer.Option(
+        0.0,
+        "--lora-alpha",
+        help="LoRA alpha for the alignment adapter (0 = use preset/default).",
+    ),
+    lora_dropout: float = typer.Option(
+        -1.0,
+        "--lora-dropout",
+        help="LoRA dropout for the alignment adapter (negative = use preset/default).",
     ),
     reward_model: str = typer.Option(
         "",
@@ -354,6 +403,7 @@ def rlsl(
         TrainerConfig,
     )
     from fusion_trainer.rlsl.pipeline import RLSLEngine
+    from fusion_trainer.rlsl.presets import RLSL_PRESETS
 
     # A2 (round-2 audit): --config honored. YAML → CLI flags (flag wins on
     # explicit pass, YAML fills otherwise).
@@ -361,15 +411,36 @@ def rlsl(
     yaml_vals = _load_yaml_config(config, section="rlsl")
     yaml_dataset = _load_yaml_config(config, section="dataset")
 
-    method = _resolve(src, "method", method, yaml_vals, default="dpo")
-    reward_model = _resolve(src, "reward_model", reward_model, yaml_vals, default="")
-    sandbox = _resolve(src, "sandbox", sandbox, yaml_vals, default="off")
-    group_size = int(_resolve(src, "group_size", group_size, yaml_vals, default=8))
-    grpo_iterations = int(
-        _resolve(src, "grpo_iterations", grpo_iterations, yaml_vals, default=1)
+    # P0-3 (round-3 audit): --preset + grpo_backend resolution, so the
+    # headline true-GRPO backend is reachable from the CLI (was CLI-unreachable:
+    # no flag, no preset, YAML field dropped by the old _resolve call set).
+    preset_vals: dict = {}
+    if preset:
+        if preset not in RLSL_PRESETS:
+            raise typer.BadParameter(
+                f"Unknown preset '{preset}'. Available: {', '.join(sorted(RLSL_PRESETS))}"
+            )
+        preset_vals = RLSL_PRESETS[preset]
+
+    method = _resolve(src, "method", method, preset_vals, yaml_vals, default="dpo")
+    reward_model = _resolve(
+        src, "reward_model", reward_model, preset_vals, yaml_vals, default=""
     )
-    run_name = _resolve(src, "run_name", run_name, yaml_vals, default="")
-    model = _resolve(src, "model", model, yaml_vals, default="")
+    sandbox = _resolve(src, "sandbox", sandbox, preset_vals, yaml_vals, default="off")
+    group_size = int(
+        _resolve(src, "group_size", group_size, preset_vals, yaml_vals, default=8)
+    )
+    grpo_iterations = int(
+        _resolve(
+            src, "grpo_iterations", grpo_iterations, preset_vals, yaml_vals, default=1
+        )
+    )
+    # P0-3: grpo_backend now flows through _resolve (preset > YAML > default).
+    grpo_backend = _resolve(
+        src, "grpo_backend", grpo_backend, preset_vals, yaml_vals, default="rft"
+    )
+    run_name = _resolve(src, "run_name", run_name, preset_vals, yaml_vals, default="")
+    model = _resolve(src, "model", model, preset_vals, yaml_vals, default="")
 
     _path, _hub_dataset = _parse_dataset_arg(dataset)
     if not _path and not _hub_dataset and yaml_dataset.get("hub_dataset"):
@@ -380,6 +451,17 @@ def rlsl(
         else 4096
     )
 
+    # P1-6 (round-3 audit): expose LoRA hyperparams so alignment adapters are
+    # tunable (were locked to SFTConfig defaults rank16/alpha32). 0/negative
+    # sentinels = "not passed" → fall back to SFTConfig default.
+    sft_kwargs: dict[str, Any] = {"model": model}
+    if lora_rank and lora_rank > 0:
+        sft_kwargs["lora_rank"] = lora_rank
+    if lora_alpha and lora_alpha > 0:
+        sft_kwargs["lora_alpha"] = lora_alpha
+    if lora_dropout >= 0:
+        sft_kwargs["lora_dropout"] = lora_dropout
+
     cfg = TrainerConfig(
         seed=seed,
         model_hub_path=model_hub_path or os.environ.get("FUSION_MODEL_HUB", ""),
@@ -388,7 +470,7 @@ def rlsl(
             hub_dataset=_hub_dataset,
             max_seq_length=ds_max_seq,
         ),
-        sft=SFTConfig(model=model),
+        sft=SFTConfig(**sft_kwargs),
         rlsl=RLSLConfig(
             method=method,  # type: ignore[arg-type]
             reward_model=reward_model,
@@ -396,12 +478,21 @@ def rlsl(
             sandbox_mode=sandbox,  # type: ignore[arg-type]
             group_size=group_size,
             grpo_iterations=grpo_iterations,
+            grpo_backend=grpo_backend,  # type: ignore[arg-type]
         ),
         publish_adapter=publish,
     )
 
     engine = RLSLEngine(cfg)
     result = engine.run()
+    # P0-6 (round-3 audit): exit non-zero on failure (was discarded → exit 0).
+    if not result or result.get("status") not in ("completed", "succeeded", "ok"):
+        err = (result or {}).get("error", "alignment failed (no result returned)")
+        typer.echo(f"✗ RLSL failed: {err}")
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ RLSL completed: {result.get('adapter_name', result.get('adapter_path', ''))}"
+    )
     if publish:
         from fusion_trainer.hub_client import publish_adapter_if_enabled
 
@@ -467,9 +558,12 @@ def publish(
 @app.command()
 def info():
     """Show system information and hardware check."""
+    import logging
     import platform
 
     import psutil
+
+    from .config import _default_mlx_port
 
     typer.echo(f"{'Fusion-Trainer':30s} v{_get_version()}")
     typer.echo(f"{'Python':30s} {platform.python_version()}")
@@ -477,35 +571,42 @@ def info():
     typer.echo(f"{'Processor':30s} {platform.processor()}")
     typer.echo(f"{'Memory':30s} {psutil.virtual_memory().total / 1024**3:.1f} GB")
 
-    # Check MLX via fusion-mlx
+    # Check MLX via the pooled MLXFineTuneClient (P0-4 round-3 audit): was a
+    # raw httpx.get that bypassed the unified HTTP boundary + retry/guard.
+    mlx_port = _default_mlx_port()
+    mlx_alive = False
+    n_models = 0
     try:
-        import httpx
+        from .mlx_client import MLXFineTuneClient
 
-        from .config import _default_mlx_port
+        client = MLXFineTuneClient(port=mlx_port)
+        try:
+            health = client.health()
+            mlx_alive = bool(health)
+            models = health.get("data", []) if isinstance(health, dict) else []
+            n_models = len(models) if isinstance(models, list) else 0
+        finally:
+            client.close()
+    except Exception as exc:
+        logging.getLogger(__name__).debug("fusion-mlx health probe failed: %s", exc)
 
-        mlx_port = _default_mlx_port()
-        resp = httpx.get(f"http://localhost:{mlx_port}/v1/models", timeout=5.0)
-        if resp.status_code == 200:
-            typer.echo(f"{'fusion-mlx':30s} running")
-            # Try to get MLX version from fusion-mlx package
-            try:
-                from fusion_mlx import __version__ as fm_version
-
-                typer.echo(f"{'fusion-mlx version':30s} {fm_version}")
-            except ImportError:
-                pass
-        else:
-            typer.echo(f"{'fusion-mlx':30s} NOT RUNNING")
-    except Exception:
+    typer.echo(f"{'fusion-mlx port':30s} {mlx_port}")
+    if mlx_alive:
+        typer.echo(f"{'fusion-mlx':30s} running ({n_models} model(s) loaded)")
+        if n_models == 0:
+            typer.echo(
+                f"{'  ⚠ warning':30s} no models loaded — a training job will fail until a model is loaded"
+            )
+    else:
         typer.echo(f"{'fusion-mlx':30s} NOT RUNNING")
 
-    # Check fusion-mlx
+    # Check fusion-mlx package version
     try:
         from fusion_mlx import __version__ as fm_version
 
         typer.echo(f"{'fusion-mlx version':30s} {fm_version}")
     except ImportError:
-        typer.echo(f"{'fusion-mlx':30s} NOT INSTALLED")
+        typer.echo(f"{'fusion-mlx version':30s} NOT INSTALLED")
 
     # Report model hub path
     hub_path = os.environ.get("FUSION_MODEL_HUB", str(Path.home() / "fusion-model-hub"))
@@ -516,6 +617,32 @@ def info():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _configure_logging(verbose: int) -> None:
+    """P0-5 (round-3 audit): wire up logging so INFO/DEBUG reach the user and
+    run.log. Without this the root logger stays at WARNING and every
+    logger.info in trainers is dropped — failures become undiagnosable.
+
+    Precedence: --verbose flag > LOG_LEVEL env > default WARNING.
+    """
+    import logging
+
+    env_level = os.environ.get("LOG_LEVEL", "").upper()
+    if verbose >= 2 or env_level == "DEBUG":
+        level = logging.DEBUG
+    elif verbose >= 1 or env_level == "INFO":
+        level = logging.INFO
+    elif env_level == "ERROR":
+        level = logging.ERROR
+    else:
+        level = logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logging.getLogger("fusion_trainer").setLevel(level)
 
 
 def _flag_sources(ctx: typer.Context) -> dict[str, Any]:

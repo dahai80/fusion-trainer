@@ -5,9 +5,10 @@ reward-model are upstream-blocked, see fusion-mlx#399). These presets target
 GRPO with sensible defaults per model size, including a memory_estimate_gb
 for M5 96GB capacity planning — mirroring the SFT_PRESETS convention.
 
-The CLI's rlsl command does not yet consume these (preset support is SFT-only
-today); they are exposed for programmatic use and as documented reference
-configs. See README "Reinforcement Learning from Supervised Learning (RLSL)".
+The CLI's rlsl command consumes these via --preset (round-3 audit P0-3):
+e.g. `ft rlsl --preset rlsl_grpo_14b_true --method grpo` selects the real
+policy-gradient GRPO backend (grpo_backend=grpo). See README "Reinforcement
+Learning from Supervised Learning (RLSL)".
 """
 
 from __future__ import annotations

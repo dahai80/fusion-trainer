@@ -55,52 +55,52 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ---- 构建命令 ----
-CMD="fusion-trainer sft"
+# ---- 构建命令（数组，P2-12 round-3 audit：去 eval，避免未引用变量注入）----
+CMD=(fusion-trainer sft)
 
 if [ -n "$CONFIG" ]; then
-    CMD="$CMD --config $CONFIG"
+    CMD+=(--config "$CONFIG")
 fi
 if [ -n "$MODEL" ]; then
-    CMD="$CMD --model $MODEL"
+    CMD+=(--model "$MODEL")
 fi
 if [ -n "$DATASET" ]; then
-    CMD="$CMD --dataset $DATASET"
+    CMD+=(--dataset "$DATASET")
 fi
 if [ -n "$PRESET" ]; then
-    CMD="$CMD --preset $PRESET"
+    CMD+=(--preset "$PRESET")
 fi
 if [ -n "$OUTPUT" ]; then
-    CMD="$CMD --output $OUTPUT"
+    CMD+=(--output "$OUTPUT")
 fi
 if [ -n "$METHOD" ]; then
-    CMD="$CMD --method $METHOD"
+    CMD+=(--method "$METHOD")
 fi
 if [ -n "$LR" ]; then
-    CMD="$CMD --learning-rate $LR"
+    CMD+=(--learning-rate "$LR")
 fi
 if [ -n "$EPOCHS" ]; then
-    CMD="$CMD --epochs $EPOCHS"
+    CMD+=(--epochs "$EPOCHS")
 fi
 if [ -n "$BATCH_SIZE" ]; then
-    CMD="$CMD --batch-size $BATCH_SIZE"
+    CMD+=(--batch-size "$BATCH_SIZE")
 fi
 if [ -n "$RUN_NAME" ]; then
-    CMD="$CMD --run-name $RUN_NAME"
+    CMD+=(--run-name "$RUN_NAME")
 fi
 
 # 附加参数
 for arg in "${EXTRA_ARGS[@]}"; do
-    CMD="$CMD $arg"
+    CMD+=("$arg")
 done
 
 # ---- 显示配置 ----
 echo "╔══ Fusion-Trainer SFT 启动 ═══════════════════════════════╗"
-echo "║  命令: $CMD"
+echo "║  命令: ${CMD[*]}"
 echo "╚═══════════════════════════════════════════════════════════╝"
 
 # ---- 执行 ----
 echo ""
-eval "$CMD"
+"${CMD[@]}"
 echo ""
 echo "✓ SFT 训练完成"

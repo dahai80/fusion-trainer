@@ -12,6 +12,7 @@ from external paths and writes outputs to its own cache directory.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from pathlib import Path
@@ -129,19 +130,32 @@ class RLSLEngine:
         """Run DPO alignment."""
         trainer = DPOTrainer(self.config)
         trainer.on_event = self.on_event
-        return trainer.train(dataset)
+        trainer.is_canceled = getattr(self, "is_canceled", None)
+        try:
+            return trainer.train(dataset)
+        finally:
+            # P1-1 (round-3 audit): close the trainer's pooled client.
+            trainer.close()
 
     def _run_orpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run ORPO alignment."""
         trainer = ORPOTrainer(self.config)
         trainer.on_event = self.on_event
-        return trainer.train(dataset)
+        trainer.is_canceled = getattr(self, "is_canceled", None)
+        try:
+            return trainer.train(dataset)
+        finally:
+            trainer.close()
 
     def _run_grpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run GRPO alignment with sandbox feedback reward."""
         trainer = GRPOTrainer(self.config)
         trainer.on_event = self.on_event
-        return trainer.train(dataset)
+        trainer.is_canceled = getattr(self, "is_canceled", None)
+        try:
+            return trainer.train(dataset)
+        finally:
+            trainer.close()
 
     def _forward_grpo_events(
         self, job: dict[str, Any], new_events: list[dict[str, Any]]
@@ -170,7 +184,13 @@ class RLSLEngine:
             self.on_event({"type": "phase", "phase": 1, "name": "reward_model_train"})
         rm_trainer = RewardTrainer(self.config)
         rm_trainer.on_event = self.on_event
-        rm_result = rm_trainer.train(dataset)
+        rm_trainer.is_canceled = getattr(self, "is_canceled", None)
+        try:
+            rm_result = rm_trainer.train(dataset)
+        finally:
+            # P1-1 (round-3 audit): close the RM trainer's pooled client even
+            # on the early-return failure paths below.
+            rm_trainer.close()
         if rm_result.get("status") != "completed":
             logger.error("RLSL Phase 1 reward model failed: %s", rm_result)
             return {
@@ -283,6 +303,7 @@ class RLSLEngine:
                     job_id,
                     on_progress=self._forward_grpo_events if self.on_event else None,
                     poll_interval=2.0,
+                    is_canceled=getattr(self, "is_canceled", None),
                 )
             except MLXFineTuneError as exc:
                 logger.error("RLSL Phase 2 GRPO job failed: %s", exc)
@@ -310,6 +331,11 @@ class RLSLEngine:
             print(f"       Final adapter: {last_adapter}")
         finally:
             reward_server.stop()
+            # P1-1 (round-3 audit): close the Phase-2 pooled client — the RM
+            # reward server held a ref, and the local `client` was never closed
+            # on the early-return / exception paths, leaking a pool per RLSL run.
+            with contextlib.suppress(Exception):
+                client.close()
 
         overall = "completed" if phase2_status == "completed" else phase2_status
         return {

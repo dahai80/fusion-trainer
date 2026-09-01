@@ -2,7 +2,7 @@
 # ===========================================
 # Target: 14B-class models (Qwen2.5-14B, DeepSeek-14B)
 # Hardware: M5 96GB unified memory
-# Estimated memory: ~28 GB with 4-bit QLoRA + MXFP8
+# Estimated memory: ~28 GB with 4-bit QLoRA (default precision; MXFP8 upstream-blocked, see fusion-mlx#402)
 
 sft:
   model: ""  # e.g. "qwen2.5-14b-4bit" (fusion-mlx alias)
@@ -31,8 +31,8 @@ sft:
   weight_decay: 0.01
   max_grad_norm: 1.0
 
-  # Precision
-  use_mxfp8: true
+  # Precision — MXFP8 upstream-blocked (fusion-mlx#402); explicit True fail-stops.
+  use_mxfp8: false
 
   # Checkpointing
   save_every: 500

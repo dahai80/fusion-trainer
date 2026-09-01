@@ -123,8 +123,8 @@ class SFTConfig:
     """Model type: language model or vision-language model."""
 
     # Training method
-    method: Literal["full", "lora", "qlora"] = "lora"
-    """Fine-tuning method."""
+    method: Literal["full", "lora", "dora", "qlora"] = "lora"
+    """Fine-tuning method: full / lora / dora / qlora (DoRA via fusion-mlx #402)."""
 
     # LoRA parameters
     lora_rank: int = 16

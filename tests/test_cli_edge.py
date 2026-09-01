@@ -195,6 +195,11 @@ class TestCLIPreset:
 
             def train(self):
                 called["trained"] = True
+                return {
+                    "status": "completed",
+                    "adapter_name": "fake",
+                    "adapter_path": "/fake",
+                }
 
         monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
         # sft_7b_full: method=full, gradient_accumulation_steps=8, lr=1e-5
@@ -228,7 +233,11 @@ class TestCLIPreset:
                 called["cfg"] = cfg
 
             def train(self):
-                pass
+                return {
+                    "status": "completed",
+                    "adapter_name": "fake",
+                    "adapter_path": "/fake",
+                }
 
         monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
         # sft_7b_lora has lora_rank=16; CLI --lora-rank 32 wins
@@ -268,7 +277,11 @@ class TestCLIConfig:
                 called["cfg"] = cfg
 
             def train(self):
-                pass
+                return {
+                    "status": "completed",
+                    "adapter_name": "fake",
+                    "adapter_path": "/fake",
+                }
 
         monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
         cfg_yaml = tmp_path / "my.yaml"
@@ -314,7 +327,11 @@ class TestCLIConfig:
                 called["cfg"] = cfg
 
             def train(self):
-                pass
+                return {
+                    "status": "completed",
+                    "adapter_name": "fake",
+                    "adapter_path": "/fake",
+                }
 
         monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
         cfg_yaml = tmp_path / "my.yaml"
@@ -347,7 +364,11 @@ class TestCLIConfig:
                 called["cfg"] = cfg
 
             def train(self):
-                pass
+                return {
+                    "status": "completed",
+                    "adapter_name": "fake",
+                    "adapter_path": "/fake",
+                }
 
         monkeypatch.setattr("fusion_trainer.sft.trainer.SFTTrainer", FakeTrainer)
         result = runner.invoke(

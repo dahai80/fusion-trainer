@@ -25,6 +25,7 @@ silently downgraded. Run crashes/unknown statuses never fake "completed".
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import logging
 import os
@@ -284,7 +285,29 @@ class RunManager:
         except Exception as exc:
             logger.info("info: fusion-mlx unreachable: %s", exc)
 
+        # P1-4 (round-3 audit): gpu_mem_gb was hard-wired to None — the GUI
+        # Dashboard showed a permanent blank. Best-effort fill via psutil's
+        # physical memory (Apple Silicon unified memory = the pool MLX shares).
+        # Optional dep: import-guarded so a missing psutil degrades to None.
+        try:
+            import psutil
+
+            gpu_mem_gb = round(psutil.virtual_memory().total / (1024**3), 1)
+        except Exception:
+            gpu_mem_gb = None
+
         presets = self.list_presets()
+        warnings = self._upstream_warnings()
+        # P1-4: surface a loud warning when fusion-mlx is alive but loaded no
+        # models — every SFT/RLSL run would fail to find a base model.
+        if mlx_alive and not models:
+            warnings.append(
+                {
+                    "id": "no_models",
+                    "level": "warn",
+                    "message": "fusion-mlx is running but no models are loaded; pull a model before training",
+                }
+            )
         return {
             "version": __version__,
             "mlx_port": self.mlx_port,
@@ -294,7 +317,7 @@ class RunManager:
             "model_hub_path": self.model_hub_path,
             "cache_path": self.cache_path,
             "presets": presets,
-            "warnings": self._upstream_warnings(),
+            "warnings": warnings,
         }
 
     @staticmethod
@@ -405,12 +428,32 @@ class RunManager:
     def preview_dataset(self, name: str, limit: int = 5) -> dict[str, Any]:
         """Read first `limit` rows of a hub dataset by {category}/{name}."""
         limit = max(1, min(int(limit), 100))
-        path = Path(self.model_hub_path) / "datasets" / f"{name}.jsonl"
-        if not path.exists():
-            path = (
-                Path(self.model_hub_path) / "datasets" / f"{name.split('/')[-1]}.jsonl"
-            )
-        if not path.exists():
+        # P2 (round-3 audit): path-traversal guard. `name` is caller-supplied
+        # (GUI/CLI) and was joined straight into the datasets path — a crafted
+        # "../" name could read arbitrary files under model_hub_path. Resolve
+        # the candidate and confirm it stays inside the datasets dir.
+        datasets_dir = (Path(self.model_hub_path) / "datasets").resolve()
+        if not datasets_dir.exists():
+            return {
+                "rows": [],
+                "fields": [],
+                "n_total": 0,
+                "error": "datasets directory not found",
+            }
+
+        def _safe_join(base: Path, leaf: str) -> Path | None:
+            cand = (base / f"{leaf}.jsonl").resolve()
+            try:
+                cand.relative_to(base)
+            except ValueError:
+                logger.warning("preview_dataset: rejecting traversal name=%r", leaf)
+                return None
+            return cand
+
+        path = _safe_join(datasets_dir, name)
+        if path is None or not path.exists():
+            path = _safe_join(datasets_dir, name.split("/")[-1])
+        if path is None or not path.exists():
             return {
                 "rows": [],
                 "fields": [],
@@ -571,14 +614,20 @@ class RunManager:
 
                 trainer = SFTTrainer(config)
                 trainer.on_event = sink.emit
+                # P1-3 (round-3 audit): propagate the sink cancel flag so the
+                # pooled-client poll loops honor stop_run between polls.
+                trainer.is_canceled = sink.is_canceled
                 result = trainer.train()
             else:
                 from .rlsl import RLSLEngine
 
                 engine = RLSLEngine(config)
                 engine.on_event = sink.emit
+                engine.is_canceled = sink.is_canceled
                 result = engine.run()
-        except Exception as exc:
+        except BaseException as exc:  # P1-3 (round-3 audit): catch
+            # KeyboardInterrupt/SystemExit too — `except Exception` missed them,
+            # so Ctrl-C / interpreter shutdown left the run stuck "running".
             logger.exception("run %s crashed", run_id)
             result = {"status": "failed", "error": str(exc)}
         finally:
@@ -595,9 +644,30 @@ class RunManager:
         # outage warns loudly but never flips the run status (fail-visible).
         publish_result = None
         if final_status == "completed" and getattr(config, "publish_adapter", False):
-            from .hub_client import publish_adapter_if_enabled
+            from .hub_client import HubPublishError, publish_adapter_if_enabled
 
-            publish_result = publish_adapter_if_enabled(config, result)
+            # P1-2 (round-3 audit): publish_adapter_if_enabled raises
+            # HubPublishError on a *known* hub failure (already handled →
+            # returned as {published:False, error}). But any OTHER exception
+            # (a bug in the publish path, an unexpected transport error) used
+            # to propagate uncaught past this point and kill the worker thread
+            # mid-run, leaving the run stuck "running" with no terminal status
+            # ever emitted. Catch everything, log loud, still emit terminal.
+            try:
+                publish_result = publish_adapter_if_enabled(config, result)
+            except HubPublishError as exc:
+                logger.warning(
+                    "run %s adapter publish failed (non-blocking): %s",
+                    run_id,
+                    exc,
+                )
+                publish_result = {"published": False, "error": str(exc)}
+            except Exception as exc:
+                logger.exception(
+                    "run %s adapter publish raised unexpectedly (non-blocking)",
+                    run_id,
+                )
+                publish_result = {"published": False, "error": str(exc)}
             if publish_result.get("published"):
                 logger.info(
                     "run %s adapter published to hub: %s",
@@ -941,8 +1011,11 @@ class RunManager:
                 ]
             for rid in running:
                 self._persist_meta(rid)
-        except Exception:
-            pass
+        except Exception as exc:
+            # P2 (round-3 audit): was bare `except: pass` — a persist failure
+            # at exit was swallowed with zero trace. Log loud (fail-visible);
+            # atexit can't propagate, but the operator gets the reason.
+            logger.warning("atexit persist-all failed: %s", exc)
 
 
 # A2/A3: process-wide singleton so the CLI path and the in-process
@@ -989,6 +1062,13 @@ class _RunSink:
                     self._record["job_id"] = ev["job_id"]
                 if ev.get("kind"):
                     self._record["job_kind"] = ev["kind"]
+                # P2-11 (round-3 audit): total_steps was always 0 — the job
+                # event carries the planned iteration count; record it so the
+                # GUI progress bar has a denominator.
+                iters = ev.get("iters")
+                if iters is not None:
+                    with contextlib.suppress(TypeError, ValueError):
+                        self._record["total_steps"] = int(iters)
             return
         # Track step / phase / metrics on the record.
         step = ev.get("step", ev.get("iter"))
@@ -1005,11 +1085,16 @@ class _RunSink:
         # Buffer + disk.
         with self._lock:
             self._record["events_buffer"].append(ev)
-        try:
-            with open(self._events_path, "a") as fh:
-                fh.write(json.dumps(ev, default=str, ensure_ascii=False) + "\n")
-        except Exception as exc:
-            logger.warning("write events.jsonl failed: %s", exc)
+            # P2 (round-3 audit): serialize the append under the same lock and
+            # fsync so concurrent emitters never interleave half-lines and a
+            # crash leaves complete records on disk (atomic-ish per event).
+            try:
+                with open(self._events_path, "a") as fh:
+                    fh.write(json.dumps(ev, default=str, ensure_ascii=False) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except Exception as exc:
+                logger.warning("write events.jsonl failed: %s", exc)
         # Honor cancel between events.
         if self._cancel_event.is_set():
             self._do_cancel()

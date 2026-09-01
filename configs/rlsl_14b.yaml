@@ -5,7 +5,7 @@
 # Peak memory (RLSL): ~62 GB
 
 rlsl:
-  method: dpo  # Options: dpo, orpo, rlsl
+  method: dpo  # Options: dpo, orpo, grpo, rlsl
 
   # Reward model (only for rlsl method)
   reward_model: ""
@@ -15,6 +15,14 @@ rlsl:
 
   # DPO / ORPO parameters
   beta: 0.1
+
+  # GRPO parameters (method=grpo)
+  grpo_backend: rft  # rft = reward-filtered SFT approx; grpo = real policy-gradient (fusion-mlx #363)
+  group_size: 4
+  grpo_iterations: 2
+  reward_top_k: 2
+  reward_scale: 1.0
+  sandbox_mode: off  # off | math | code (code exec gated by FUSION_CODE_SANDBOX_TRUSTED=1)
 
   # RLSL (PPO-light) parameters
   clip_epsilon: 0.2

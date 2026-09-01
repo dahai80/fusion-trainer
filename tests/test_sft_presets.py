@@ -17,7 +17,6 @@ class TestLoRAConfig:
         assert cfg.dropout == 0.05
         assert cfg.quantize_base is False
         assert cfg.quant_bits == 4
-        assert cfg.use_dora is False
         assert "q_proj" in cfg.target_modules
 
     def test_from_method_full(self):
@@ -56,9 +55,13 @@ class TestLoRAConfig:
         cfg = LoRAConfig(quantize_base=True, quant_bits=8)
         assert cfg.quant_bits == 8
 
-    def test_dora(self):
-        cfg = LoRAConfig(use_dora=True)
-        assert cfg.use_dora is True
+    def test_from_method_dora(self):
+        # P1-5 (round-3 audit): DoRA is selected via method="dora" (→
+        # fine_tune_type=dora in fusion-mlx), not the removed use_dora flag.
+        cfg = LoRAConfig.from_method("dora")
+        assert cfg.rank == 16
+        assert cfg.alpha == 32.0
+        assert cfg.quantize_base is False
 
 
 class TestSFTPresets:

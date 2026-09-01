@@ -6,6 +6,7 @@ Delegates the Bradley-Terry value-head gradient loop to fusion-mlx's
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from pathlib import Path
@@ -41,6 +42,12 @@ class RewardTrainer:
 
         # Optional live-progress sink (RunManager). None = CLI mode.
         self.on_event = None
+
+    def close(self) -> None:
+        # P1-1 (round-3 audit): close the pooled client (was leaked).
+        # Mirrors SFTTrainer.close (round-2 E4).
+        with contextlib.suppress(Exception):
+            self._client.close()
 
     def _build_reward_config(self) -> dict[str, Any]:
         # 映射 RLSLConfig → fusion-mlx RewardConfig 字段(reward.py:RewardConfig)。
@@ -113,6 +120,7 @@ class RewardTrainer:
                 job_id,
                 on_progress=self._on_progress if self.on_event else None,
                 poll_interval=2.0,
+                is_canceled=getattr(self, "is_canceled", None),
             )
         except MLXFineTuneError as exc:
             logger.error("Reward job failed: %s", exc)

@@ -29,8 +29,8 @@ sft:
   weight_decay: 0.01
   max_grad_norm: 1.0
 
-  # Precision
-  use_mxfp8: true
+  # Precision — MXFP8 upstream-blocked (fusion-mlx#402); explicit True fail-stops.
+  use_mxfp8: false
 
   # Checkpointing
   save_every: 200

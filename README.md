@@ -104,16 +104,22 @@ source .venv/bin/activate
 Verify the install:
 
 ```bash
-ft --version     # ft 0.1.6
+ft --version     # ft 0.1.11
 ```
 
-### 2. Import a Dataset
+### 2. Prepare a Dataset
+
+Dataset import/list/info is handled by the companion project **fusion-model-hub** — Fusion-Trainer has no `dataset` subcommand. Place a JSONL file (one JSON object per line) on disk and pass its path to `--dataset`, or use a hub dataset path (`hub:sft/code_alpaca` → `{FUSION_MODEL_HUB}/datasets/sft/code_alpaca.jsonl`).
 
 ```bash
-fusion-trainer dataset import /path/to/data.jsonl \
-    --name my_dataset \
-    --category sft \
-    --format jsonl
+# Local file (messages schema)
+{"input": "Translate: hello", "output": "你好"}
+{"input": "Summarize: ...", "output": "..."}
+
+# Or a hub dataset (managed by fusion-model-hub)
+fusion-trainer sft --preset sft_7b_lora \
+    --model qwen2.5-7b-4bit \
+    --dataset hub:sft/code_alpaca
 ```
 
 ### 3. Run SFT Fine-Tuning
@@ -137,6 +143,8 @@ fusion-trainer sft --config configs/sft_7b.yaml \
     --model qwen2.5-7b-4bit \
     --dataset /path/to/data.jsonl
 ```
+
+`--method` selects the fine-tune type: `full`, `lora` (default), `dora` (DoRA via fusion-mlx `fine_tune_type=dora`, issue #402), or `qlora` (4-bit quantized-base LoRA). The former `use_dora` flag was a dead field and is removed — set `--method dora` instead.
 
 Training runs through fusion-mlx's HTTP fine-tune API (`create_job → wait_for_job`), writing LoRA/DORA/full adapter weights to `~/.fusion-mlx/adapters/<model>/<run_name>/`. The fusion-router-light 1.5B preset (`sft_router_light_1_5b_lora`) has been validated end-to-end: a synthetic intent-classification dataset trained a LoRA adapter on `Llama-3.2-1B-Instruct-4bit` (1B used as the nearest available base to 1.5B) that correctly routes queries to `code`/`math`/`translate`/`chat`/`summary` (train_loss 0.011, val_loss 0.0026, ~3 GB peak, 10s on M5).
 

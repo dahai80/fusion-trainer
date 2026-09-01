@@ -127,6 +127,8 @@ fusion-trainer sft --config configs/sft_7b.yaml \
     --dataset /path/to/data.jsonl
 ```
 
+`--method` 选择微调类型：`full`（全量）、`lora`（默认）、`dora`（DoRA，经 fusion-mlx `fine_tune_type=dora`，issue #402）、`qlora`（4-bit 量化基座 LoRA）。旧的 `use_dora` 开关是无效死字段，已移除——请改用 `--method dora`。
+
 ### 4. 运行 DPO 对齐
 
 ```bash

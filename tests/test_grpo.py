@@ -590,7 +590,12 @@ class TestGRPOTrueBackend:
                 }
 
             def wait_for_grpo_job(
-                self, job_id, on_progress=None, poll_interval=2.0, timeout=86400.0
+                self,
+                job_id,
+                on_progress=None,
+                poll_interval=2.0,
+                timeout=86400.0,
+                is_canceled=None,
             ):
                 if on_progress is not None:
                     on_progress(

@@ -213,6 +213,11 @@ class SFTTrainer:
             fine_tune_type = "qlora"
         elif method == "full":
             fine_tune_type = "full"
+        elif method == "dora":
+            # P1-5 (round-3 audit): DoRA was a declared-but-unreachable dead
+            # field (use_dora never read, method had no "dora"). Upstream
+            # fusion-mlx #402 accepts fine_tune_type=dora; wire it through.
+            fine_tune_type = "dora"
         else:
             fine_tune_type = "lora"
 
@@ -420,6 +425,7 @@ class SFTTrainer:
                     job_id,
                     on_progress=lambda j, ev: self._ingest_progress(j, ev, exp_logger),
                     poll_interval=2.0,
+                    is_canceled=getattr(self, "is_canceled", None),
                 )
             except MLXFineTuneError as exc:
                 print(f"      ✗ Training failed: {exc}")

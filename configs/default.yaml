@@ -6,8 +6,6 @@
 # ----------- Dataset -----------
 dataset:
   format: jsonl
-  train_split: train
-  val_split: val
   val_ratio: 0.05
   max_samples: 0
   max_seq_length: 4096

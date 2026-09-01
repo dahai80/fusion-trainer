@@ -211,6 +211,56 @@ class MLXFineTuneClient:
             return result
         raise MLXFineTuneError("list_finetunable_models returned non-list")
 
+    def chat_completions(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        n: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 512,
+        timeout: float = 120.0,
+    ) -> list[str]:
+        """Sample completions via fusion-mlx /v1/chat/completions.
+
+        P0-4 (round-3 audit): GRPO on-policy sampling now routes through the
+        unified _request wrapper (pooled client + retry/backoff + JSON guard +
+        single MLXFineTuneError) instead of a raw httpx.post that swallowed
+        every error into `return []` — producing a zero-training fake
+        "completed". A failed sample now raises MLXFineTuneError so the caller
+        can fail visibly rather than silently degrade to no training.
+
+        Returns the list of non-empty completion strings (one per choice).
+        """
+        body = {
+            "model": model_id,
+            "messages": messages,
+            "n": n,
+            "temperature": float(temperature),
+            "top_p": float(top_p),
+            "max_tokens": int(max_tokens),
+        }
+        # Sampling is a single user-facing call (not a long poll), but a
+        # transient 5xx should still retry a couple times before failing the
+        # GRPO iteration. max_retries=3 balances responsiveness vs resilience.
+        result = self._request(
+            "POST",
+            f"{self._base}/v1/chat/completions",
+            json_body=body,
+            max_retries=3,
+        )
+        if not isinstance(result, dict):
+            raise MLXFineTuneError(f"chat/completions returned non-dict: {result!r}")
+        choices = result.get("choices", [])
+        out: list[str] = []
+        for ch in choices:
+            if isinstance(ch, dict):
+                content = (ch.get("message") or {}).get("content", "")
+                if content:
+                    out.append(str(content))
+        return out
+
     # ------------------------------------------------------------------
     # Job lifecycle
     # ------------------------------------------------------------------
@@ -267,12 +317,15 @@ class MLXFineTuneClient:
         on_progress=None,
         poll_interval: float = 2.0,
         timeout: float = 86400.0,
+        is_canceled=None,
     ) -> dict[str, Any]:
         """Block until job reaches a terminal state, emitting progress.
 
         on_progress(job_dict, new_events) is called after each poll.
-        Returns the final job dict. Raises MLXFineTuneError on failure
-        or timeout.
+        is_canceled() -> bool, checked each poll; True raises MLXFineTuneError
+        (P1-3: so stop_run interrupts a multi-hour wait instead of blocking
+        until the 86400s timeout). Returns the final job dict. Raises
+        MLXFineTuneError on failure or timeout.
         """
         deadline = time.monotonic() + timeout
         last_seen = 0
@@ -296,6 +349,11 @@ class MLXFineTuneClient:
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
+            # P1-3 (round-3 audit): honor a cancel flag between polls so
+            # stop_run / Ctrl-C interrupts the wait promptly.
+            if is_canceled is not None and is_canceled():
+                logger.info("wait_for_job %s interrupted by cancel", job_id)
+                raise MLXFineTuneError(f"job {job_id} cancelled by user")
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"job {job_id} timed out after {timeout}s")
 
@@ -358,6 +416,7 @@ class MLXFineTuneClient:
         on_progress=None,
         poll_interval: float = 2.0,
         timeout: float = 86400.0,
+        is_canceled=None,
     ) -> dict[str, Any]:
         """Block until a GRPO job reaches a terminal state, emitting progress."""
         deadline = time.monotonic() + timeout
@@ -379,6 +438,10 @@ class MLXFineTuneClient:
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
+            # P1-3 (round-3 audit): honor cancel between polls.
+            if is_canceled is not None and is_canceled():
+                logger.info("wait_for_grpo_job %s interrupted by cancel", job_id)
+                raise MLXFineTuneError(f"grpo job {job_id} cancelled by user")
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"grpo job {job_id} timed out after {timeout}s")
 
@@ -455,6 +518,7 @@ class MLXFineTuneClient:
         on_progress=None,
         poll_interval: float = 2.0,
         timeout: float = 86400.0,
+        is_canceled=None,
     ) -> dict[str, Any]:
         # 轮询 DPO/ORPO job 到终态。事件流同 SFT/GRPO 模式。
         deadline = time.monotonic() + timeout
@@ -476,6 +540,10 @@ class MLXFineTuneClient:
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
+            # P1-3 (round-3 audit): honor cancel between polls.
+            if is_canceled is not None and is_canceled():
+                logger.info("wait_for_dpo_job %s interrupted by cancel", job_id)
+                raise MLXFineTuneError(f"dpo job {job_id} cancelled by user")
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"dpo job {job_id} timed out after {timeout}s")
 
@@ -537,6 +605,7 @@ class MLXFineTuneClient:
         on_progress=None,
         poll_interval: float = 2.0,
         timeout: float = 86400.0,
+        is_canceled=None,
     ) -> dict[str, Any]:
         # 轮询 reward job 到终态。progress 含 loss/reward_margin/acc_chosen。
         deadline = time.monotonic() + timeout
@@ -558,6 +627,10 @@ class MLXFineTuneClient:
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
+            # P1-3 (round-3 audit): honor cancel between polls.
+            if is_canceled is not None and is_canceled():
+                logger.info("wait_for_reward_job %s interrupted by cancel", job_id)
+                raise MLXFineTuneError(f"reward job {job_id} cancelled by user")
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"reward job {job_id} timed out after {timeout}s")
 

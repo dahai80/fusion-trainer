@@ -19,8 +19,10 @@ cd "$SCRIPT_DIR"
 echo "╔══ Fusion-Trainer 环境部署 ═══════════════════════════════╗"
 
 # ---- Python 版本检查 ----
+# P0-7 (round-3 audit): grep -oP is PCRE (GNU-only); macOS BSD grep does not
+# support -P and fails outright. Use sed instead (portable POSIX).
 PYTHON="python3"
-PYTHON_VERSION=$($PYTHON --version 2>&1 | grep -oP '\d+\.\d+')
+PYTHON_VERSION=$($PYTHON --version 2>&1 | sed -E 's/Python ([0-9]+\.[0-9]+).*/\1/')
 PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
 PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
 
@@ -31,11 +33,18 @@ fi
 echo "✓ Python $PYTHON_VERSION"
 
 # ---- 检查 fusion-mlx 依赖 ----
-FUSION_MLX_PATH="${FUSION_MLX_PATH:-/Users/dahai/claude-home/fusion-mlx}"
+# P0-7 (round-3 audit): no hardcoded developer path. fusion-mlx is optional
+# at install time (trainer talks to it over HTTP at runtime), so a missing
+# path is a soft warning, never a silent broken install. Resolve from env,
+# fall back to a sibling directory convention, warn if neither exists.
+FUSION_MLX_PATH="${FUSION_MLX_PATH:-$(dirname "$SCRIPT_DIR")/fusion-mlx}"
 if [ ! -d "$FUSION_MLX_PATH" ]; then
     echo "⚠️  fusion-mlx 未在 $FUSION_MLX_PATH 找到"
-    echo "   请设置 FUSION_MLX_PATH 环境变量指向 fusion-mlx 目录"
+    echo "   fusion-mlx 在安装阶段可选（运行时通过 HTTP 对接）。"
+    echo "   如需本地安装 fusion-mlx：设置 FUSION_MLX_PATH 环境变量指向其目录，"
     echo "   或手动安装: cd /path/to/fusion-mlx && pip install -e ."
+    echo "   跳过 fusion-mlx 本地安装，继续安装 Fusion-Trainer。"
+    FUSION_MLX_PATH=""
 else
     echo "✓ fusion-mlx 路径: $FUSION_MLX_PATH"
 fi

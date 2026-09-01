@@ -37,14 +37,13 @@ Data schemas:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-import httpx
 
 from ..config import TrainerConfig
 from ..mlx_client import MLXFineTuneClient, MLXFineTuneError
@@ -78,6 +77,13 @@ class GRPOTrainer:
 
         # Optional live-progress sink (RunManager). None = CLI mode.
         self.on_event = None
+
+    def close(self) -> None:
+        # P1-1 (round-3 audit): trainers built a pooled client but never
+        # closed it — long-running daemons leaked a connection pool per run.
+        # Mirrors SFTTrainer.close (round-2 E4).
+        with contextlib.suppress(Exception):
+            self._client.close()
 
     def train(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run GRPO outer loop.
@@ -118,6 +124,7 @@ class GRPOTrainer:
         print("╚══════════════════════════════════════════════════════")
 
         from ..experiment import ExperimentLogger
+        from ..mlx_client import MLXFineTuneError
 
         exp = ExperimentLogger(
             run_name=self.rlsl_cfg.run_name or "grpo_default",
@@ -130,7 +137,16 @@ class GRPOTrainer:
 
         for it in range(iters):
             print(f"\n  [GRPO iter {it + 1}/{iters}]")
-            samples = self._sample_and_score(dataset, g, mode, scale)
+            # P0-4 (round-3 audit): a total sampling outage raises
+            # MLXFineTuneError from _sample_and_score — fail the run visibly
+            # instead of `continue`-ing every iteration into a zero-training
+            # fake "completed".
+            try:
+                samples = self._sample_and_score(dataset, g, mode, scale)
+            except MLXFineTuneError as exc:
+                logger.error("GRPO iter %d sampling failed: %s", it, exc)
+                final_status = "failed"
+                break
             if not samples:
                 logger.warning("GRPO iter %d produced no scored samples", it)
                 continue
@@ -279,6 +295,7 @@ class GRPOTrainer:
                     job_id,
                     on_progress=lambda j, ev: self._ingest_grpo_progress(j, ev, exp),
                     poll_interval=2.0,
+                    is_canceled=getattr(self, "is_canceled", None),
                 )
             except MLXFineTuneError as exc:
                 print(f"      ✗ GRPO job failed: {exc}")
@@ -368,15 +385,35 @@ class GRPOTrainer:
         mode: str,
         scale: float,
     ) -> list[dict[str, Any]]:
-        """For each prompt, sample G completions and score them. Returns flat list."""
+        """For each prompt, sample G completions and score them. Returns flat list.
+
+        P0-4 (round-3 audit): _generate now raises MLXFineTuneError on HTTP
+        failure. We catch per-prompt so a single bad prompt is skipped (the
+        batch keeps going), but track failures. If EVERY prompt's sampling
+        failed, we re-raise — a total sampling outage must surface as a failed
+        run, not silently degrade to "no samples → completed → zero training".
+        A prompt that sampled but produced only empty completions is a
+        separate, benign case (still skipped, not counted as a failure).
+        """
+        from ..mlx_client import MLXFineTuneError
         from .sandbox import reward_completion
 
         out: list[dict[str, Any]] = []
+        n_gen_failures = 0
+        n_attempted = 0
+        last_err = ""
         for sample in dataset:
             prompt = sample.get("prompt", "")
             if not prompt:
                 continue
-            completions = self._generate(prompt, g)
+            n_attempted += 1
+            try:
+                completions = self._generate(prompt, g)
+            except MLXFineTuneError as exc:
+                n_gen_failures += 1
+                last_err = str(exc)
+                logger.warning("GRPO sample failed for prompt: %s", exc)
+                continue
             rewards = [
                 reward_completion(sample, c, mode=mode, scale=scale)
                 for c in completions
@@ -396,41 +433,38 @@ class GRPOTrainer:
                         "sample": sample,
                     }
                 )
+        # All prompts attempted and every one failed to sample → fail visibly.
+        if n_attempted > 0 and n_gen_failures == n_attempted:
+            raise MLXFineTuneError(
+                f"GRPO sampling failed for all {n_attempted} prompts "
+                f"(last error: {last_err}); cannot produce training data"
+            )
         return out
 
     def _generate(self, prompt: str, n: int) -> list[str]:
-        """Sample n completions from fusion-mlx /v1/chat/completions with temperature."""
-        url = f"{self._client._base}/v1/chat/completions"
-        body = {
-            "model": self._model,
-            "messages": [{"role": "user", "content": prompt}],
-            "n": n,
-            "temperature": float(self.rlsl_cfg.temperature),
-            "top_p": float(self.rlsl_cfg.top_p),
-            "max_tokens": int(self.rlsl_cfg.response_length),
-        }
-        try:
-            resp = httpx.post(
-                url, json=body, headers=self._client._headers, timeout=120.0
-            )
-            if resp.status_code >= 400:
-                logger.warning(
-                    "generate failed %d: %s", resp.status_code, resp.text[:200]
-                )
-                return []
-            data = resp.json()
-        except Exception as exc:
-            logger.warning("generate request error: %s", exc)
-            return []
+        """Sample n completions via the pooled MLXFineTuneClient.
 
-        choices = data.get("choices", [])
-        results = []
-        for ch in choices:
-            msg = ch.get("message", {})
-            content = msg.get("content", "")
-            if content:
-                results.append(content)
-        return results
+        P0-4 (round-3 audit): was a raw httpx.post reaching into private
+        _base/_headers, bypassing the unified _request wrapper (no retry, no
+        JSON guard) and swallowing EVERY error into `return []`. That made a
+        sustained fusion-mlx outage look like "all completions empty" → no
+        scored samples → the train loop `continue`d every iteration → the run
+        returned status "completed" with an empty reward_trajectory = zero
+        training, fake success, wasted GPU.
+
+        Now routes through client.chat_completions, which raises
+        MLXFineTuneError on HTTP failure. The caller (_sample_and_score)
+        catches per-prompt so one bad prompt doesn't kill the batch, but if
+        ALL prompts fail it raises so the run fails visibly.
+        """
+        return self._client.chat_completions(
+            self._model,
+            [{"role": "user", "content": prompt}],
+            n=n,
+            temperature=float(self.rlsl_cfg.temperature),
+            top_p=float(self.rlsl_cfg.top_p),
+            max_tokens=int(self.rlsl_cfg.response_length),
+        )
 
     # ------------------------------------------------------------------
     # Step 3-4: group-relative advantage + top-k selection
@@ -537,6 +571,7 @@ class GRPOTrainer:
                 job_id,
                 on_progress=self._on_progress if self.on_event else None,
                 poll_interval=2.0,
+                is_canceled=getattr(self, "is_canceled", None),
             )
         except MLXFineTuneError as exc:
             return {"status": "failed", "error": str(exc), "adapter_name": adapter_name}

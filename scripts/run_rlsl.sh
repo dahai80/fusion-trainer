@@ -54,31 +54,31 @@ if [ "$METHOD" = "rlsl" ] && [ -z "$REWARD_MODEL" ]; then
     exit 1
 fi
 
-# ---- 构建命令 ----
-CMD="fusion-trainer rlsl"
+# ---- 构建命令（数组，P2-12 round-3 audit：去 eval，避免未引用变量注入）----
+CMD=(fusion-trainer rlsl)
 
 if [ -n "$CONFIG" ]; then
-    CMD="$CMD --config $CONFIG"
+    CMD+=(--config "$CONFIG")
 fi
 if [ -n "$MODEL" ]; then
-    CMD="$CMD --model $MODEL"
+    CMD+=(--model "$MODEL")
 fi
 if [ -n "$DATASET" ]; then
-    CMD="$CMD --dataset $DATASET"
+    CMD+=(--dataset "$DATASET")
 fi
 if [ -n "$METHOD" ]; then
-    CMD="$CMD --method $METHOD"
+    CMD+=(--method "$METHOD")
 fi
 if [ -n "$REWARD_MODEL" ]; then
-    CMD="$CMD --reward-model $REWARD_MODEL"
+    CMD+=(--reward-model "$REWARD_MODEL")
 fi
 if [ -n "$RUN_NAME" ]; then
-    CMD="$CMD --run-name $RUN_NAME"
+    CMD+=(--run-name "$RUN_NAME")
 fi
 
 # 附加参数
 for arg in "${EXTRA_ARGS[@]}"; do
-    CMD="$CMD $arg"
+    CMD+=("$arg")
 done
 
 # ---- 显示配置 ----
@@ -86,11 +86,11 @@ echo "╔══ Fusion-Trainer RLSL 流水线 ═══════════�
 echo "║  方法:   $METHOD"
 echo "║  模型:   ${MODEL:-<从配置读取>}"
 echo "║  数据集: ${DATASET:-<从配置读取>}"
-echo "║  命令:   $CMD"
+echo "║  命令:   ${CMD[*]}"
 echo "╚═══════════════════════════════════════════════════════════╝"
 
 # ---- 执行 ----
 echo ""
-eval "$CMD"
+"${CMD[@]}"
 echo ""
 echo "✓ RLSL 对齐完成"
