@@ -224,13 +224,17 @@ class RLSLEngine:
             client, model_id=model_id, adapter_name=rm_adapter
         )
         endpoint = reward_server.start()
+        # A2 (round-2 audit): log/print the REDACTED endpoint — the raw URL
+        # carries the reward-server bearer token and must never reach stdout
+        # or log files. The real endpoint stays in cfg["reward_endpoint"] for
+        # fusion-mlx's verbatim POST.
         logger.info(
-            "RLSL Phase 2: RM reward server on %s (model=%s adapter=%s)",
-            endpoint,
+            "RLSL Phase 2: RM reward server on %s (model=%s adapter=%s auth=token)",
+            reward_server.redacted_endpoint,
             model_id,
             rm_adapter,
         )
-        print(f"       RM reward endpoint: {endpoint}")
+        print(f"       RM reward endpoint: {reward_server.redacted_endpoint}")
 
         g = max(2, int(self.rlsl_cfg.group_size))
         iters = max(1, int(self.rlsl_cfg.grpo_iterations))

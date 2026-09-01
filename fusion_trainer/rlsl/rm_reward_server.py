@@ -67,6 +67,14 @@ class RMRewardServer:
     def endpoint(self) -> str:
         return self._endpoint
 
+    @property
+    def redacted_endpoint(self) -> str:
+        # A2 (round-2 audit): endpoint carries the bearer token; callers must
+        # use this redacted form for stdout/log/run-meta. See _redact_token.
+        if not self._endpoint:
+            return ""
+        return _redact_token(self._endpoint)
+
     def start(self) -> str:
         client = self._client
         model_id = self._model_id
@@ -76,7 +84,9 @@ class RMRewardServer:
 
         class _Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):  # silence default stderr log
-                logger.debug("rm-reward-server: " + fmt, *args)
+                # A2 (round-2 audit): fmt holds the request line with ?token=
+                safe = _redact_token(fmt % args) if args else _redact_token(fmt)
+                logger.debug("rm-reward-server: %s", safe)
 
             def _forbid(self, code: int, msg: str) -> None:
                 body = json.dumps({"error": msg}).encode("utf-8")
@@ -102,12 +112,25 @@ class RMRewardServer:
                     return
                 try:
                     length = int(self.headers.get("Content-Length", 0))
-                    raw = self.rfile.read(length) if length else b"{}"
+                    if length <= 0 or length > _MAX_BODY_BYTES:
+                        logger.warning(
+                            "rm-reward-server: rejected body length=%s", length
+                        )
+                        self._forbid(400, "invalid content length")
+                        return
+                    raw = self.rfile.read(length)
                     body = json.loads(raw.decode("utf-8"))
                     prompt = body.get("prompt", "")
                     completions = body.get("completions", [])
                     if not isinstance(completions, list):
                         completions = []
+                    if len(completions) > _MAX_COMPLETIONS:
+                        logger.warning(
+                            "rm-reward-server: completions capped %d -> %d",
+                            len(completions),
+                            _MAX_COMPLETIONS,
+                        )
+                        completions = completions[:_MAX_COMPLETIONS]
                     logger.info(
                         "rm-reward-server callback: model=%s adapter=%s "
                         "prompt_len=%d n_completions=%d",
@@ -132,7 +155,8 @@ class RMRewardServer:
                     self.wfile.write(payload)
                 except Exception as exc:
                     logger.exception("rm-reward-server scoring failed")
-                    err = json.dumps({"error": str(exc)}).encode("utf-8")
+                    # A2 (round-2 audit): never leak exception detail to caller.
+                    err = json.dumps({"error": "scoring failed"}).encode("utf-8")
                     self.send_response(500)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(err)))
@@ -168,4 +192,16 @@ class RMRewardServer:
             self._thread.join(timeout=5.0)
         self._thread = None
         self._token = ""
+        self._endpoint = ""
         logger.info("rm-reward server stopped")
+
+
+# A2 (round-2 audit): bounds + token redaction (shared with reward_server).
+_MAX_BODY_BYTES = 16 * 1024 * 1024
+_MAX_COMPLETIONS = 64
+
+
+def _redact_token(url_or_str: str) -> str:
+    import re
+
+    return re.sub(r"([?&]token=)[^&\s]*", r"\1<redacted>", url_or_str)

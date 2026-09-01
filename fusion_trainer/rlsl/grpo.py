@@ -250,7 +250,20 @@ class GRPOTrainer:
                 adapter_name=adapter_name,
             )
             job_id = job.get("job_id", "")
-            print(f"      Submitted GRPO job: {job_id}  reward_endpoint={endpoint}")
+            # A2 (round-2 audit): print the REDACTED endpoint only — the raw
+            # URL carries the reward-server bearer token and must never reach
+            # stdout/log. The real endpoint stays in cfg["reward_endpoint"]
+            # for fusion-mlx's verbatim POST (upstream must avoid persisting
+            # it — tracked separately).
+            print(
+                f"      Submitted GRPO job: {job_id}  "
+                f"reward_endpoint={reward_server.redacted_endpoint}"
+            )
+            logger.info(
+                "GRPO job %s submitted (reward endpoint redacted=%s)",
+                job_id,
+                reward_server.redacted_endpoint,
+            )
             if self.on_event is not None:
                 self.on_event({"type": "job", "job_id": job_id, "kind": "grpo"})
 

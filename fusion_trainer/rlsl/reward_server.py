@@ -78,6 +78,17 @@ class RewardServer:
     def endpoint(self) -> str:
         return self._endpoint
 
+    @property
+    def redacted_endpoint(self) -> str:
+        # A2 (round-2 audit): the endpoint carries the bearer token in
+        # ?token=...; printing/logging the raw endpoint leaks the secret.
+        # Callers must use this redacted form for any human-visible output
+        # (stdout, log files, run meta). Only the fusion-mlx POST needs the
+        # raw endpoint, and only in the job-config field it sends verbatim.
+        if not self._endpoint:
+            return ""
+        return _redact_token(self._endpoint)
+
     def start(self) -> str:
         mode = self._mode
         scale = self._scale
@@ -89,7 +100,10 @@ class RewardServer:
 
         class _Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):  # silence default stderr log
-                logger.debug("reward-server: " + fmt, *args)
+                # A2 (round-2 audit): fmt contains the request line including
+                # ?token=...; strip the token before it reaches the log.
+                safe = _redact_token(fmt % args) if args else _redact_token(fmt)
+                logger.debug("reward-server: %s", safe)
 
             def _forbid(self, code: int, msg: str) -> None:
                 body = json.dumps({"error": msg}).encode("utf-8")
@@ -115,10 +129,27 @@ class RewardServer:
                     return
                 try:
                     length = int(self.headers.get("Content-Length", 0))
-                    raw = self.rfile.read(length) if length else b"{}"
+                    if length <= 0 or length > _MAX_BODY_BYTES:
+                        logger.warning(
+                            "reward-server: rejected body length=%s", length
+                        )
+                        self._forbid(400, "invalid content length")
+                        return
+                    raw = self.rfile.read(length)
                     body = json.loads(raw.decode("utf-8"))
                     prompt = body.get("prompt", "")
                     completions = body.get("completions", [])
+                    if not isinstance(completions, list):
+                        logger.warning("reward-server: completions not a list")
+                        self._forbid(400, "completions must be a list")
+                        return
+                    if len(completions) > _MAX_COMPLETIONS:
+                        logger.warning(
+                            "reward-server: completions capped %d -> %d",
+                            len(completions),
+                            _MAX_COMPLETIONS,
+                        )
+                        completions = completions[:_MAX_COMPLETIONS]
                     key = _prompt_key(str(prompt))
                     sample = index.get(key)
                     if sample is None:
@@ -144,7 +175,10 @@ class RewardServer:
                     self.wfile.write(payload)
                 except Exception as exc:
                     logger.exception("reward-server scoring failed")
-                    err = json.dumps({"error": str(exc)}).encode("utf-8")
+                    # A2 (round-2 audit): never leak exception detail to the
+                    # caller — a 500 body echoing str(exc) can disclose the
+                    # internal stack/state. Return a fixed message.
+                    err = json.dumps({"error": "scoring failed"}).encode("utf-8")
                     self.send_response(500)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(err)))
@@ -179,9 +213,24 @@ class RewardServer:
             self._thread.join(timeout=5.0)
         self._thread = None
         self._token = ""
+        self._endpoint = ""
         logger.info("reward server stopped")
 
 
 # Short stable hash of a prompt for the sample index (P2).
 def _prompt_key(prompt: str) -> str:
     return hashlib.sha1(str(prompt).encode("utf-8")).hexdigest()[:16]
+
+
+# A2 (round-2 audit): bounds to prevent unbounded reads / huge payloads.
+_MAX_BODY_BYTES = 16 * 1024 * 1024
+_MAX_COMPLETIONS = 64
+
+
+def _redact_token(url_or_str: str) -> str:
+    # A2 (round-2 audit): strip ?token=... / &token=... from any string before
+    # it reaches stdout, log files, or run meta. Replaces the secret value
+    # with the literal "<redacted>".
+    import re
+
+    return re.sub(r"([?&]token=)[^&\s]*", r"\1<redacted>", url_or_str)

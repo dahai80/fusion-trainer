@@ -404,6 +404,24 @@ class TestRewardServer:
         srv.stop()
         srv.stop()  # no error
 
+    def test_redacted_endpoint_hides_token(self):
+        # A1 (round-2 audit): endpoint URL carries the bearer token in
+        # ?token=...; the redacted form must never expose it to stdout/log.
+        from fusion_trainer.rlsl.reward_server import RewardServer
+
+        srv = RewardServer([], mode="off")
+        endpoint = srv.start()
+        try:
+            assert "token=" in endpoint, "raw endpoint must carry the token"
+            redacted = srv.redacted_endpoint
+            assert "<redacted>" in redacted
+            # raw token value must not appear in the redacted form
+            raw_token = endpoint.split("token=")[1]
+            assert raw_token not in redacted
+        finally:
+            srv.stop()
+        assert srv.redacted_endpoint == "", "cleared after stop"
+
 
 # ===========================================================================
 # RMRewardServer — RM-backed reward endpoint for RLSL Phase 2 (#431)
@@ -469,7 +487,9 @@ class TestRMRewardServer:
                 timeout=5.0,
             )
             assert resp.status_code == 500
-            assert "upstream down" in resp.json()["error"]
+            # A2 (round-2 audit): 500 must NOT echo the internal exception
+            # string (info leak) — it returns a fixed "scoring failed" body.
+            assert resp.json()["error"] == "scoring failed"
         finally:
             srv.stop()
 
