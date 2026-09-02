@@ -53,6 +53,18 @@ mock-based suite could not.
   as an inner CPU cap. `FUSION_CODE_SANDBOX_TRUSTED=1` gate unchanged. Real
   container isolation for the inference-server reward path stays upstream at
   [fusion-mlx#743](https://github.com/dahai80/fusion-mlx/issues/743).
+- **#53 — seatbelt data-read narrowed**: the seatbelt profile previously allowed
+  `(allow file-read* (subpath "/"))` — read-only access to every path — because
+  enumerated per-dir allow-lists SIGABRT'd during dyld-init (cryptex/firmlink
+  mounts cross subpath boundaries). Replaced with `(import "system.sb")` (pulls
+  in `dyld-support.sb`, solving the dyld-init crash) plus
+  `(allow file-read-metadata (subpath "/"))` (broad lstat for realpath ancestor
+  walks — leaks directory structure, not contents) and
+  `(allow file-read-data ...)` narrowed to the interpreter prefix + stdlib +
+  lib-dynload + tmpdir. Reads of `~/.ssh`, `/etc/hosts`, and sibling project
+  source are now denied. Threat model shifts from buggy-not-malicious to
+  malicious-capable for data-exfiltration attempts; timing side-channels remain
+  out of scope ([fusion-mlx#743](https://github.com/dahai80/fusion-mlx/issues/743)).
 
 ### Changed
 - **soft #3 — GUI publish env-fallback**: the GUI path

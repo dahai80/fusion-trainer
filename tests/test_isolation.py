@@ -155,6 +155,65 @@ class TestSeatbeltBackendRun:
         )
         assert r.timed_out is True
 
+    @_seatbelt
+    def test_read_user_secrets_denied(self, tmp_path):
+        import pathlib
+
+        secret = pathlib.Path.home() / ".fusion_sb_secret_test"
+        secret.write_text("topsecret")
+        secret_path = str(secret)
+        try:
+            b = isolation._SeatbeltBackend()
+            code = (
+                "import os\n"
+                f"p = {secret_path!r}\n"
+                "try:\n"
+                "    open(p).read(10)\n"
+                "    raise SystemExit(7)\n"
+                "except PermissionError:\n"
+                "    raise SystemExit(0)\n"
+                "except FileNotFoundError:\n"
+                "    raise SystemExit(0)\n"
+            )
+            r = b.run(
+                code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
+            )
+            assert r.returncode == 0, (
+                f"reading user secret must be denied: rc={r.returncode} stderr={r.stderr}"
+            )
+        finally:
+            secret.unlink(missing_ok=True)
+
+    @_seatbelt
+    def test_read_etc_hosts_denied(self, tmp_path):
+        b = isolation._SeatbeltBackend()
+        code = (
+            "try:\n"
+            "    open('/etc/hosts').read(10)\n"
+            "    raise SystemExit(7)\n"
+            "except PermissionError:\n"
+            "    raise SystemExit(0)\n"
+            "except FileNotFoundError:\n"
+            "    raise SystemExit(0)\n"
+        )
+        r = b.run(
+            code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
+        )
+        assert r.returncode == 0, (
+            f"reading /etc/hosts must be denied: rc={r.returncode} stderr={r.stderr}"
+        )
+
+    @_seatbelt
+    def test_stdlib_import_ok(self, tmp_path):
+        b = isolation._SeatbeltBackend()
+        code = "import json, math, collections\nraise SystemExit(0)"
+        r = b.run(
+            code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
+        )
+        assert r.returncode == 0, (
+            f"stdlib import must work under narrowed profile: rc={r.returncode} stderr={r.stderr}"
+        )
+
 
 class TestBackendSelection:
     def setup_method(self):
