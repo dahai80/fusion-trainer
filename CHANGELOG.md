@@ -65,6 +65,18 @@ mock-based suite could not.
   source are now denied. Threat model shifts from buggy-not-malicious to
   malicious-capable for data-exfiltration attempts; timing side-channels remain
   out of scope ([fusion-mlx#743](https://github.com/dahai80/fusion-mlx/issues/743)).
+- **enterprise #2 — RunManager audit log + api-key gate**: `RunManager` now
+  keeps an append-only JSONL audit trail at `{cache_path}/audit.jsonl` — one
+  line per mutating op (`start_sft`, `start_rlsl`, `stop_run`, `publish_run`,
+  `delete_adapter`): `{timestamp, actor, action, run_id, detail, ok}`. Actor
+  comes from `FUSION_TRAINER_ACTOR` (default `local`). An optional api-key gate
+  (`FUSION_TRAINER_API_KEY` set) rejects mutating ops with
+  `PermissionDeniedError` on a mismatched key (constant-time compare); when the
+  env is unset, local-trust mode allows all ops (appropriate for single-user
+  Mac). `info()` reports whether the gate is active and the audit-log path.
+  `start_sft`/`start_rlsl`/`stop_run`/`delete_adapter` take an optional
+  `api_key`; `publish_run` takes `trainer_api_key` (distinct from the hub
+  `api_key` so a deployment can gate ops without sharing the hub secret).
 
 ### Changed
 - **soft #3 — GUI publish env-fallback**: the GUI path

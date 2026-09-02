@@ -217,6 +217,19 @@ Under the hood this calls `POST /api/v1/models` with `model_type="lora"` + `base
 
 The `FUSION_TRAINER_PUBLISH=1` env override exists for the **GUI path**: fusion-agent-studio `TrainingService._build_trainer_config` currently drops `publish_adapter`/`hub_url`/`hub_api_key` from the config it builds (tracked at [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268)), so a GUI-triggered run never published even when the operator wanted it to. Setting `FUSION_TRAINER_PUBLISH=1` (plus `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`) forces publish on for GUI runs until #268 lands. The CLI `--publish` path is unaffected.
 
+#### Audit log & api-key gate (enterprise)
+
+`RunManager` keeps an **append-only JSONL audit trail** at `{cache_path}/audit.jsonl` — one line per mutating operation (`start_sft`, `start_rlsl`, `stop_run`, `publish_run`, `delete_adapter`), each record `{timestamp, actor, action, run_id, detail, ok}`. Actor comes from `FUSION_TRAINER_ACTOR` (default `local`). The file is append-only; it is an accountability trail, not a forensic non-repudiation store (no signing — tamper-protection is out of scope for a local-first file).
+
+An optional **api-key gate** (`FUSION_TRAINER_API_KEY` set) rejects mutating `RunManager` ops with `PermissionDeniedError` on a mismatched key (constant-time compare). When the env var is **unset**, local-trust mode allows all ops — appropriate for a single-user Mac. Set it for shared / multi-operator deployments. `info()` reports whether the gate is active and the audit-log path.
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `FUSION_TRAINER_ACTOR` | actor recorded in each audit entry | `local` |
+| `FUSION_TRAINER_API_KEY` | gate mutating RunManager ops; unset = allow all | unset (local-trust) |
+
+`start_sft`/`start_rlsl`/`stop_run`/`delete_adapter` accept an optional `api_key` arg; `publish_run` accepts `trainer_api_key` (kept distinct from the hub `api_key`, so a deployment can gate ops without sharing the hub secret).
+
 #### GRPO backend (`grpo_backend`)
 
 `RLSLConfig.grpo_backend` selects the GRPO execution path:

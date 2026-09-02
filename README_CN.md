@@ -190,6 +190,19 @@ fusion-trainer publish <run_id>
 
 `FUSION_TRAINER_PUBLISH=1` 环境变量覆盖专为 **GUI 路径**存在：fusion-agent-studio `TrainingService._build_trainer_config` 当前会丢弃它构建的配置里的 `publish_adapter`/`hub_url`/`hub_api_key`（上游 [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268) 追踪），导致 GUI 触发的 run 即使操作者想发布也从不发布。在 #268 落地前，设置 `FUSION_TRAINER_PUBLISH=1`（配合 `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`）可强制 GUI run 发布。CLI `--publish` 路径不受影响。
 
+#### 审计日志与 api-key 网关（企业级）
+
+`RunManager` 在 `{cache_path}/audit.jsonl` 维护 **只追加 JSONL 审计日志** —— 每个写操作（`start_sft`、`start_rlsl`、`stop_run`、`publish_run`、`delete_adapter`）记录一行，格式 `{timestamp, actor, action, run_id, detail, ok}`。actor 来自 `FUSION_TRAINER_ACTOR`（默认 `local`）。文件只追加，不重写历史；它是问责追踪，不是防篡改的不可否认日志（本地优先文件不做签名，超出范围）。
+
+可选 **api-key 网关**（设置 `FUSION_TRAINER_API_KEY`）会在密钥不匹配时以 `PermissionDeniedError` 拒绝写操作（常数时间比较）。当该环境变量 **未设置** 时为本地信任模式，允许全部操作 —— 适合单用户 Mac。共享/多操作者部署请设置它。`info()` 会报告网关是否启用及审计日志路径。
+
+| 环境变量 | 用途 | 默认值 |
+|---|---|---|
+| `FUSION_TRAINER_ACTOR` | 每条审计记录的 actor | `local` |
+| `FUSION_TRAINER_API_KEY` | 网关写操作；未设置则全部放行 | 未设置（本地信任） |
+
+`start_sft`/`start_rlsl`/`stop_run`/`delete_adapter` 接受可选 `api_key` 参数；`publish_run` 接受 `trainer_api_key`（与 hub 的 `api_key` 区分开，使部署可在不泄露 hub 密钥的情况下网关操作）。
+
 ---
 
 ## 产品联动
