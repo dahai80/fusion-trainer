@@ -60,9 +60,18 @@ class TestRewardCode:
         # C2: reward_code refuses to exec without FUSION_CODE_SANDBOX_TRUSTED=1.
         # These unit tests use trusted inline fixtures, so opt in per-test.
         os.environ["FUSION_CODE_SANDBOX_TRUSTED"] = "1"
+        # Force the rlimit backend: seatbelt lands in Task 3 (placeholder now).
+        os.environ["FUSION_CODE_SANDBOX_BACKEND"] = "rlimit"
+        import fusion_trainer.rlsl.isolation as _iso
+
+        _iso._BACKEND = _iso._RlimitBackend()
 
     def teardown_method(self):
         os.environ.pop("FUSION_CODE_SANDBOX_TRUSTED", None)
+        os.environ.pop("FUSION_CODE_SANDBOX_BACKEND", None)
+        import fusion_trainer.rlsl.isolation as _iso
+
+        _iso._BACKEND = None
 
     def test_passing_code(self):
         code = "x = 2 + 3\nassert x == 5"
@@ -104,6 +113,7 @@ class TestRewardCode:
         import sys as _sys
         import tempfile as _tf
         from pathlib import Path as _Path
+
         with _tf.TemporaryDirectory(prefix="grpo_sandbox_") as td:
             script = _Path(td) / "sol.py"
             prelude = sandbox._build_prelude(
@@ -119,7 +129,11 @@ class TestRewardCode:
             }
             proc = _sp.run(
                 [_sys.executable, str(script)],
-                capture_output=True, text=True, timeout=10, cwd=td, env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=td,
+                env=env,
             )
             assert proc.returncode == 0
             assert "rlimits applied" in proc.stderr
@@ -129,9 +143,18 @@ class TestRewardCompletion:
     def setup_method(self):
         # C2: the auto->code path (tests field present) execs code; opt in.
         os.environ["FUSION_CODE_SANDBOX_TRUSTED"] = "1"
+        # Force the rlimit backend: seatbelt lands in Task 3 (placeholder now).
+        os.environ["FUSION_CODE_SANDBOX_BACKEND"] = "rlimit"
+        import fusion_trainer.rlsl.isolation as _iso
+
+        _iso._BACKEND = _iso._RlimitBackend()
 
     def teardown_method(self):
         os.environ.pop("FUSION_CODE_SANDBOX_TRUSTED", None)
+        os.environ.pop("FUSION_CODE_SANDBOX_BACKEND", None)
+        import fusion_trainer.rlsl.isolation as _iso
+
+        _iso._BACKEND = None
 
     def test_auto_picks_code_when_tests(self):
         sample = {"tests": "assert True"}
@@ -292,6 +315,11 @@ class TestGRPOTrainerRun:
         # C2: code-mode sandbox only runs when FUSION_CODE_SANDBOX_TRUSTED=1
         # (refuse-to-exec on untrusted data). This test uses trusted fixtures.
         monkeypatch.setenv("FUSION_CODE_SANDBOX_TRUSTED", "1")
+        # Force the rlimit backend: seatbelt lands in Task 3 (placeholder now).
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "rlimit")
+        import fusion_trainer.rlsl.isolation as _iso
+
+        monkeypatch.setattr(_iso, "_BACKEND", _iso._RlimitBackend())
         good = "```python\nassert True\n```"
         bad = "```python\nassert 1==2\n```"
         self._patch_http(monkeypatch, [good, bad])
