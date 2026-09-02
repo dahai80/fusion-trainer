@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from ._version import __version__
+from .audit import ApiKeyGate, AuditLog, PermissionDeniedError
 from .config import TrainerConfig, _default_mlx_port
 from .mlx_client import MLXFineTuneClient
 
@@ -80,6 +81,11 @@ class RunManager:
             "FUSION_MODEL_HUB", str(Path.home() / "fusion-model-hub")
         )
         self.mlx_port = mlx_port or _default_mlx_port()
+        # Item #2: append-only audit trail + optional api-key gate on mutating
+        # ops (start/stop/publish/delete). Local-trust when FUSION_TRAINER_API_KEY
+        # unset (single-user Mac); set it for shared/multi-operator deployments.
+        self._audit = AuditLog(Path(self.cache_path) / "audit.jsonl")
+        self._api_key_gate = ApiKeyGate()
         self._runs_root = Path(self.cache_path) / "runs"
         self._runs_root.mkdir(parents=True, exist_ok=True)
         self._runs: dict[str, dict[str, Any]] = {}
@@ -332,6 +338,8 @@ class RunManager:
             "cache_path": self.cache_path,
             "presets": presets,
             "warnings": warnings,
+            "api_key_required": self._api_key_gate.enabled,
+            "audit_log": str(Path(self.cache_path) / "audit.jsonl"),
         }
 
     @staticmethod
@@ -511,12 +519,15 @@ class RunManager:
             logger.error("list_adapters failed: %s", exc)
             return {"items": [], "error": f"fusion-mlx unreachable: {exc}"}
 
-    def delete_adapter(self, name: str) -> dict[str, Any]:
+    def delete_adapter(
+        self, name: str, api_key: str | None = None
+    ) -> dict[str, Any]:
         """Adapter deletion — upstream endpoint pending; fail-visible stub.
 
         fusion-mlx has no DELETE /adapters yet. Return explicit unsupported
         rather than fake success (Rule 12).
         """
+        self._audit_op("delete_adapter", "", f"adapter={name}", False, api_key)
         logger.warning("delete_adapter unsupported upstream: %s", name)
         return {
             "ok": False,
@@ -527,12 +538,39 @@ class RunManager:
     # Run lifecycle: start
     # ------------------------------------------------------------------
 
-    def start_sft(self, config: TrainerConfig) -> dict[str, Any]:
+    def _audit_op(
+        self,
+        action: str,
+        run_id: str,
+        detail: str,
+        ok: bool,
+        api_key: str | None,
+    ) -> None:
+        """Item #2: gate a mutating op by api_key, then append an audit record.
+
+        Fail-visible: a PermissionDenied on the gate propagates to the caller
+        (after an ok=False audit entry) so the rejected op is still recorded.
+        """
+        try:
+            self._api_key_gate.check(api_key)
+        except PermissionDeniedError:
+            self._audit.record(action, run_id=run_id, detail=detail, ok=False)
+            raise
+        self._audit.record(action, run_id=run_id, detail=detail, ok=ok)
+
+    def start_sft(
+        self, config: TrainerConfig, api_key: str | None = None
+    ) -> dict[str, Any]:
         """Start an SFT run in a worker thread; return {run_id, status}."""
+        self._audit_op("start_sft", "", "sft run requested", True, api_key)
         return self._start(config, method="sft")
 
-    def start_rlsl(self, config: TrainerConfig) -> dict[str, Any]:
+    def start_rlsl(
+        self, config: TrainerConfig, api_key: str | None = None
+    ) -> dict[str, Any]:
         """Start an RLSL/alignment run (method in dpo|orpo|grpo|rlsl)."""
+        method = getattr(config.rlsl, "method", "rlsl")
+        self._audit_op("start_rlsl", "", f"rlsl/{method} run requested", True, api_key)
         return self._start(config, method="rlsl")
 
     def _start(self, config: TrainerConfig, method: str) -> dict[str, Any]:
@@ -842,7 +880,11 @@ class RunManager:
         return {"run_id": run_id, "events": filtered, "status": status}
 
     def stop_run(
-        self, run_id: str, wait: bool = False, timeout: float = 30.0
+        self,
+        run_id: str,
+        wait: bool = False,
+        timeout: float = 30.0,
+        api_key: str | None = None,
     ) -> dict[str, Any]:
         """Request cancellation; returns {status: cancelling}.
 
@@ -863,8 +905,12 @@ class RunManager:
         with self._lock:
             r = self._runs.get(run_id)
             if r is None:
+                self._audit_op("stop_run", run_id, "no such run", False, api_key)
                 return {"run_id": run_id, "status": "unknown", "error": "no such run"}
             if r.get("status") in _TERMINAL:
+                self._audit_op(
+                    "stop_run", run_id, f"already {r['status']}", False, api_key
+                )
                 return {"run_id": run_id, "status": r["status"]}
             r["canceled"] = True
             thread = r.get("thread")
@@ -872,6 +918,7 @@ class RunManager:
         if sink is not None:
             sink.cancel_now()
         logger.info("stop_run requested for %s (active cancel dispatched)", run_id)
+        self._audit_op("stop_run", run_id, "cancel dispatched", True, api_key)
         if not wait:
             return {"run_id": run_id, "status": "cancelling"}
         # O19: block on the worker thread reaching terminal. Non-daemon thread
@@ -890,6 +937,7 @@ class RunManager:
         run_id: str,
         hub_url: str = "",
         api_key: str = "",
+        trainer_api_key: str | None = None,
     ) -> dict[str, Any]:
         """Publish a completed run's adapter to fusion-model-hub (issue #49).
 
@@ -897,7 +945,12 @@ class RunManager:
         CLI `publish <run_id>` subcommand to retroactively publish a run that
         was trained without --publish. Fail-visible: returns {published:False,
         error:...} never raises.
+
+        `api_key` is the fusion-model-hub bearer key. `trainer_api_key` is the
+        RunManager api-key gate (item #2, FUSION_TRAINER_API_KEY) — distinct so
+        a deployment can gate ops without sharing the hub secret.
         """
+        self._audit_op("publish_run", run_id, "publish requested", True, trainer_api_key)
         with self._lock:
             r = self._runs.get(run_id)
             if r is None:
@@ -998,6 +1051,12 @@ class RunManager:
             if r is not None:
                 r["publish_result"] = pub
                 self._persist_meta(run_id)
+        self._audit.record(
+            "publish_run",
+            run_id=run_id,
+            detail=str(pub.get("model", {}).get("id", pub.get("error", ""))),
+            ok=bool(pub.get("published")),
+        )
         return {"run_id": run_id, **pub}
 
     # ------------------------------------------------------------------
