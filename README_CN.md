@@ -2,6 +2,9 @@
 
 **[English](README.md)** | **[中文](README_CN.md)**
 
+![version](https://img.shields.io/badge/version-1.0.0-blue)
+![status](https://img.shields.io/badge/API-stable%20(SemVer)-green)
+
 **基于 Apple MLX 的轻量化强化 + 监督学习训练工作台，专为 Mac M5 统一内存设计。**
 
 Fusion-Trainer 是构建在 [fusion-mlx](https://github.com/fusion-mlx/fusion-mlx)（推理层与模型管理层）之上的专业训练工作台。提供完整的本地训练流水线——数据集管理、SFT 微调、RLSL/DPO/ORPO 对齐、实验追踪——全程无需云端依赖。
@@ -189,6 +192,12 @@ fusion-trainer publish <run_id>
 | `publish_adapter` | `FUSION_TRAINER_PUBLISH=1` | `False` |
 
 `FUSION_TRAINER_PUBLISH=1` 环境变量覆盖专为 **GUI 路径**存在：fusion-agent-studio `TrainingService._build_trainer_config` 当前会丢弃它构建的配置里的 `publish_adapter`/`hub_url`/`hub_api_key`（上游 [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268) 追踪），导致 GUI 触发的 run 即使操作者想发布也从不发布。在 #268 落地前，设置 `FUSION_TRAINER_PUBLISH=1`（配合 `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`）可强制 GUI run 发布。CLI `--publish` 路径不受影响。
+
+---
+
+## API 稳定性（v1.0）
+
+自 **1.0.0** 起，公开 API 表面遵循 [语义化版本](https://semver.org/lang/zh-CN/) 冻结。冻结表面 —— CLI 子命令、`TrainerConfig` 字段、`RunManager` 方法、`MLXFineTuneClient` 方法及公开异常类型 —— 详见 [`docs/API_STABILITY.md`](docs/API_STABILITY.md)。对该表面的破坏性变更需主版本号升级；新增为次版本；修复为修订号。内部模块（`_` 前缀、`presets.py`、`sandbox.py` 奖励内部、`experiment/` 日志内部）未冻结，任意版本均可变更。
 
 ---
 

@@ -2,6 +2,9 @@
 
 **[English](README.md)** | **[中文](README_CN.md)**
 
+![version](https://img.shields.io/badge/version-1.0.0-blue)
+![status](https://img.shields.io/badge/API-stable%20(SemVer)-green)
+
 **Lightweight supervised + reinforcement learning trainer on Apple MLX, purpose-built for Mac M5 unified memory.**
 
 Fusion-Trainer is a specialized training workbench that sits on top of [fusion-mlx](https://github.com/fusion-mlx/fusion-mlx) (the inference and model management layer). It provides a complete local training pipeline — dataset management, SFT fine-tuning, RLSL/DPO/ORPO alignment, and experiment tracking — without any cloud dependency.
@@ -242,6 +245,19 @@ The `FUSION_TRAINER_PUBLISH=1` env override exists for the **GUI path**: fusion-
 | `fusion-trainer --help` | Show full help |
 
 > Dataset import/list/info is handled by the companion project **fusion-model-hub**, not by Fusion-Trainer — there is no `dataset` subcommand here.
+
+---
+
+## API Stability (v1.0)
+
+As of **1.0.0**, the public API surface is frozen under
+[Semantic Versioning](https://semver.org/). The frozen surface — CLI
+subcommands, `TrainerConfig` fields, `RunManager` methods,
+`MLXFineTuneClient` methods, and public exception types — is documented in
+[`docs/API_STABILITY.md`](docs/API_STABILITY.md). Breaking changes to that
+surface require a major-version bump; additions are minor; fixes are patch.
+Internal modules (`_`-prefixed, `presets.py`, `sandbox.py` reward internals,
+`experiment/` logger internals) are not frozen and may change in any release.
 
 ---
 

@@ -97,6 +97,22 @@ mock-based suite could not.
   staged datasets, and run artifacts written under `runtime_cache/` are now
   excluded from version control.
 
+## [1.0.0] — 2026-09-02
+
+**First stable release.** The public API surface is now frozen under
+[Semantic Versioning](https://semver.org/). See
+[`docs/API_STABILITY.md`](docs/API_STABILITY.md) for the full freeze list —
+CLI subcommands, `TrainerConfig` fields, `RunManager` methods,
+`MLXFineTuneClient` methods, and public exception types.
+
+- **Version bump** `0.1.12` → `1.0.0` (`fusion_trainer/_version.py`).
+- **API stability contract** added at `docs/API_STABILITY.md`: defines which
+  surfaces are frozen (SemVer-protected) vs internal (may change anytime), and
+  the SemVer rules for major/minor/patch against that surface.
+- **Upstream-bound surface** explicitly excluded from the freeze: MXFP8
+  (fusion-mlx#402), OS-level sandbox isolation (fusion-mlx#743), Prometheus
+  scrape endpoint (fusion-agent-studio).
+
 ## [0.1.12] — 2026-09-01
 
 Round-3 product-readiness audit (`audit/fusion-trainer-audit-result-product-0901.md`)
