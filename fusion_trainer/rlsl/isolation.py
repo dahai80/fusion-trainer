@@ -1,8 +1,13 @@
 """Isolation backends for the GRPO code-sandbox reward (issue #53).
 
 Two backends:
-  - seatbelt: macOS sandbox-exec (real MAC isolation: deny network, read-only
-    root, tmpfs workspace). Auto-selected on Darwin when the binary is present.
+  - seatbelt: macOS sandbox-exec (real MAC isolation: deny network, data-read
+    confined to interpreter prefix + stdlib + tmpdir, tmpfs workspace). Metadata
+    reads stay broad (lstat for realpath ancestor walks) — leaks directory
+    structure, not file contents. Auto-selected on Darwin when the binary is
+    present. Threat model: malicious-capable for data exfiltration attempts
+    (reads of ~/.ssh, /etc, sibling projects are denied); not for timing
+    side-channels (tracked at fusion-mlx#743).
   - rlimit: subprocess + RLIMIT_AS/RLIMIT_CPU (bounds buggy programs, NOT real
     isolation). Fallback on non-macOS or when seatbelt is unavailable.
 
@@ -137,21 +142,49 @@ class _RlimitBackend(_IsolationBackend):
 
 
 class _SeatbeltBackend(_IsolationBackend):
+    def _child_read_paths(self, python_prefix: str) -> list[str]:
+        import sysconfig
+
+        paths: list[str] = [os.path.realpath(python_prefix)]
+        for key in ("stdlib", "platstdlib"):
+            p = sysconfig.get_paths().get(key)
+            if p:
+                paths.append(os.path.realpath(p))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for p in paths:
+            if p and p not in seen:
+                seen.add(p)
+                deduped.append(p)
+        return deduped
+
     def _build_profile(self, python_prefix: str, real_exe: str, tmpdir: str) -> str:
         real_tmpdir = os.path.realpath(tmpdir)
+        read_paths = self._child_read_paths(python_prefix)
+        logger.info(
+            "seatbelt profile data-read paths (metadata stays broad): %s",
+            read_paths,
+        )
         lines = [
             "(version 1)",
             "(deny default)",
+            '(import "system.sb")',
+            '(allow file-read-metadata (subpath "/"))',
             f'(allow process-exec* (literal "{real_exe}"))',
             f'(allow process-exec* (subpath "{python_prefix}"))',
-            '(allow file-read* (subpath "/"))',
-            f'(allow file-read* file-write* (subpath "{real_tmpdir}"))',
-            '(allow file-write* (literal "/dev/null"))',
-            '(allow file-write* (literal "/dev/urandom"))',
-            "(allow process-fork)",
-            "(allow signal (target self))",
-            "(deny network*)",
         ]
+        for p in read_paths:
+            lines.append(f'(allow file-read-data (subpath "{p}"))')
+        lines.extend(
+            [
+                f'(allow file-read* file-write* (subpath "{real_tmpdir}"))',
+                '(allow file-write* (literal "/dev/null"))',
+                '(allow file-write* (literal "/dev/urandom"))',
+                "(allow process-fork)",
+                "(allow signal (target self))",
+                "(deny network*)",
+            ]
+        )
         return "\n".join(lines) + "\n"
 
     def run(
