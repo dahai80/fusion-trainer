@@ -13,6 +13,15 @@ Enterprise-readiness soft-issue remediation (soft #2–#5) plus a real-model
 GUI end-to-end integration test that caught three production defects the
 mock-based suite could not.
 
+### Added
+- **enterprise #6 — change management / release process**:
+  `docs/RELEASE_PROCESS.md` defines the branch strategy (`release/vX.Y.Z`
+  release branches off `master`), the version-bump rules (one source of
+  truth in `_version.py`), the release-cut steps, the release-PR review
+  checklist, the hotfix flow, and the rollback policy (never rewrite/delete
+  published tags; yank + cut a patch instead). Pairs with
+  `docs/API_STABILITY.md` (the SemVer frozen-surface contract).
+
 ### Fixed
 - **P0 — `get_run_manager()` self-deadlock**: the singleton entry acquired
   `_SINGLETON_LOCK` (a plain `threading.Lock`) then called `RunManager()`,

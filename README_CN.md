@@ -208,6 +208,12 @@ Fusion-Trainer 作为整条 Fusion 产品矩阵的**模型迭代工厂**：
 
 ---
 
+## 发布与变更管理
+
+发布遵循[语义化版本](https://semver.org/lang/zh-CN/)，冻结 API 表面见 [`docs/API_STABILITY.md`](docs/API_STABILITY.md)。完整发布流程 —— 分支策略（`release/vX.Y.Z`）、版本号规则、切版步骤、评审清单、热修复流程、回滚策略 —— 详见 [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md)。`CHANGELOG.md` 存放各版本发布说明；git 标签 `vX.Y.Z` 为不可变发布点。
+
+---
+
 ## 许可证
 
 本项目采用 [Apache License 2.0](LICENSE) 许可证。
