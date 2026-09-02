@@ -192,6 +192,26 @@ fusion-trainer publish <run_id>
 
 ---
 
+## 负载 / 稳定性验证（企业级 #4）
+
+连续多轮运行的稳定性是一类 mock 测试套件无法捕获的缺陷 —— 文件句柄泄漏、单例累积状态、事件日志跨轮追加，这类问题只会在连续第 N 次运行时才暴露。两件产物补齐该缺口：
+
+**`scripts/load_test.sh`** —— 面向运维的 shell 压测：对实时 fusion-mlx 连续 N 轮 SFT（默认 5 轮），每轮之间用 `~/claude-home/fusion-mlx/start.sh doctor` 做健康检查。首轮失败即非零退出，便于 CI `&&` 链捕获。需 `FUSION_MLX_ADMIN_TOKEN` + 已加载文本模型；可用 `ROUNDS`、`MODEL`、`PORT` 覆盖。
+
+```bash
+FUSION_MLX_ADMIN_TOKEN=<admin-key> ./scripts/load_test.sh
+ROUNDS=10 ./scripts/load_test.sh
+```
+
+**`tests/test_load_stability.py`** —— pytest 压测（marker `integration`+`load`，由 `FUSION_TRAINER_LOAD=1` 开关）经 `RunManager` 连续驱动 N 轮 SFT，断言无状态泄漏：每轮到达 `running` 再 `completed`、产出非空 `events.jsonl`、注册表记得前序 run。默认 3 轮（`FUSION_TRAINER_LOAD_ROUNDS`）。无实时服务器时自动跳过。
+
+```bash
+FUSION_TRAINER_LOAD=1 FUSION_MLX_ADMIN_TOKEN=<key> \
+    pytest tests/test_load_stability.py -m load -v
+```
+
+---
+
 ## 产品联动
 
 Fusion-Trainer 作为整条 Fusion 产品矩阵的**模型迭代工厂**：

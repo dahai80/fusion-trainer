@@ -13,6 +13,22 @@ Enterprise-readiness soft-issue remediation (soft #2–#5) plus a real-model
 GUI end-to-end integration test that caught three production defects the
 mock-based suite could not.
 
+### Added
+- **enterprise #4 — load / stability verification**: `tests/test_load_stability.py`
+  (markers `integration`+`load`, gated by `FUSION_TRAINER_LOAD=1`) drives N
+  consecutive SFT runs through `RunManager` against a real fusion-mlx and
+  asserts no state leak between rounds — each run reaches `running` then
+  `completed`, produces a non-empty `events.jsonl`, and the registry
+  remembers prior runs. Default 3 rounds, overridable via
+  `FUSION_TRAINER_LOAD_ROUNDS`. Auto-skips without a live server. The
+  companion `scripts/load_test.sh` runs an operator-facing shell soak (N
+  consecutive SFT runs with `~/claude-home/fusion-mlx/start.sh doctor`
+  health checks between, default 5, exits non-zero on the first failed
+  round so a CI `&&` chain catches it). Mock-based suites cannot surface
+  the class of bugs that only appear on the Nth consecutive run (leaked
+  file handles, accumulating singleton state, cross-run event-log
+  corruption); this closes that gap.
+
 ### Fixed
 - **P0 — `get_run_manager()` self-deadlock**: the singleton entry acquired
   `_SINGLETON_LOCK` (a plain `threading.Lock`) then called `RunManager()`,

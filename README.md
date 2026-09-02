@@ -245,6 +245,38 @@ The `FUSION_TRAINER_PUBLISH=1` env override exists for the **GUI path**: fusion-
 
 ---
 
+## Load / Stability Verification (enterprise #4)
+
+Consecutive-run stability is a class of bug the mock-based suite cannot catch —
+a leaked file handle, a singleton that accumulates state, or an event log that
+appends across runs only surfaces on the Nth back-to-back run. Two artifacts
+close that gap:
+
+**`scripts/load_test.sh`** — an operator-facing shell soak: N consecutive SFT
+runs (default 5) against a live fusion-mlx, with `~/claude-home/fusion-mlx/start.sh doctor`
+health checks between each round. Exits non-zero on the first failed round so a
+CI `&&` chain catches it. Requires `FUSION_MLX_ADMIN_TOKEN` and a loaded text
+model; override with `ROUNDS`, `MODEL`, `PORT`.
+
+```bash
+FUSION_MLX_ADMIN_TOKEN=<admin-key> ./scripts/load_test.sh
+ROUNDS=10 ./scripts/load_test.sh
+```
+
+**`tests/test_load_stability.py`** — a pytest harness (markers `integration` +
+`load`, gated by `FUSION_TRAINER_LOAD=1`) that drives N consecutive SFT runs
+through `RunManager` and asserts no state leak: each run reaches `running` then
+`completed`, produces a non-empty `events.jsonl`, and the registry remembers
+prior runs. Default 3 rounds (`FUSION_TRAINER_LOAD_ROUNDS`). Auto-skips without
+a live server.
+
+```bash
+FUSION_TRAINER_LOAD=1 FUSION_MLX_ADMIN_TOKEN=<key> \
+    pytest tests/test_load_stability.py -m load -v
+```
+
+---
+
 ## Product Integration
 
 Fusion-Trainer is designed as the **model iteration factory** for the entire Fusion product ecosystem:
