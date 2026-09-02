@@ -341,3 +341,67 @@ class TestTrainingVisualizer:
         with tempfile.TemporaryDirectory() as tmpdir:
             viz = TrainingVisualizer(Path(tmpdir))
             assert viz._load_metrics() == []
+
+
+class TestPrometheusExport:
+    def test_export_prometheus_snapshot_writes_gauges(self, tmp_path):
+        from fusion_trainer.experiment.logger import export_prometheus_snapshot
+
+        out = export_prometheus_snapshot(
+            tmp_path / "m.prom",
+            {"train_loss": 0.5, "learning_rate": 0.001},
+            run_id="run-1",
+            extra_series={"run_steps_total": 42.0, "run_status_code": 1.0},
+        )
+        text = out.read_text()
+        assert "# TYPE fusion_trainer_train_loss gauge" in text
+        assert "# TYPE fusion_trainer_run_steps_total gauge" in text
+        assert 'fusion_trainer_train_loss{run="run-1"} 0.5' in text
+        assert 'fusion_trainer_run_status_code{run="run-1"} 1.0' in text
+
+    def test_export_prometheus_skips_non_scalar(self, tmp_path):
+        from fusion_trainer.experiment.logger import export_prometheus_snapshot
+
+        out = export_prometheus_snapshot(
+            tmp_path / "m.prom",
+            {"loss": 0.1, "junk": "not-a-number"},
+            run_id="r",
+        )
+        text = out.read_text()
+        assert "fusion_trainer_loss" in text
+        assert "junk" not in text
+
+    def test_export_prometheus_name_sanitized(self, tmp_path):
+        from fusion_trainer.experiment.logger import export_prometheus_snapshot
+
+        out = export_prometheus_snapshot(
+            tmp_path / "m.prom",
+            {"val/loss": 0.2, "acc%top1": 0.9},
+            run_id="r",
+        )
+        text = out.read_text()
+        assert "fusion_trainer_val_loss" in text
+        assert "fusion_trainer_acc_top1" in text
+        # no illegal chars in a metric name token
+        for line in text.splitlines():
+            if line.startswith("fusion_trainer_") and "{" not in line:
+                continue
+            if line.startswith("fusion_trainer_"):
+                name = line.split("{", 1)[0]
+                assert all(c.isalnum() or c in "_:" for c in name)
+
+    def test_logger_export_prometheus_uses_latest(self, tmp_path):
+        logger = ExperimentLogger("promrun", tmp_path)
+        logger.log_metrics(step=1, metrics={"loss": 0.9})
+        logger.log_metrics(step=2, metrics={"loss": 0.1})
+        out = logger.export_prometheus(tmp_path / "out.prom", run_id="promrun")
+        text = out.read_text()
+        # latest value (0.1) not the first
+        assert 'fusion_trainer_loss{run="promrun"} 0.1' in text
+        logger.close()
+
+    def test_export_empty_metrics_writes_empty_file(self, tmp_path):
+        from fusion_trainer.experiment.logger import export_prometheus_snapshot
+
+        out = export_prometheus_snapshot(tmp_path / "m.prom", {}, run_id="r")
+        assert out.read_text() == ""

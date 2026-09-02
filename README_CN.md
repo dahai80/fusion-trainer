@@ -190,6 +190,18 @@ fusion-trainer publish <run_id>
 
 `FUSION_TRAINER_PUBLISH=1` 环境变量覆盖专为 **GUI 路径**存在：fusion-agent-studio `TrainingService._build_trainer_config` 当前会丢弃它构建的配置里的 `publish_adapter`/`hub_url`/`hub_api_key`（上游 [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268) 追踪），导致 GUI 触发的 run 即使操作者想发布也从不发布。在 #268 落地前，设置 `FUSION_TRAINER_PUBLISH=1`（配合 `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`）可强制 GUI run 发布。CLI `--publish` 路径不受影响。
 
+#### 指标导出（企业级）
+
+`ExperimentLogger.export_prometheus(path, run_id=, extra_series=)` 与模块级 `export_prometheus_snapshot(path, metrics, run_id=, extra_series=)` 写入 **Prometheus 文本格式**（`.prom`）快照 —— 每个标量指标键一个 gauge：
+
+```
+# HELP fusion_trainer_train_loss run-1
+# TYPE fusion_trainer_train_loss gauge
+fusion_trainer_train_loss{run="run-1"} 0.1234
+```
+
+`RunManager` 在 run 结束时写 `{cache_path}/runs/<run_id>/metrics.prom`，包含 `run_steps_total`、`run_total_steps`、`run_status_code`（`0=running,1=completed,2=failed,3=cancelled`）。指标名按 Prometheus `[a-zA-Z_:][a-zA-Z0-9_:]*` 语法净化；非标量值跳过。这是**文件导出** —— 由 node-exporter `textfile_collector` 或 sidecar 投递。实时抓取端点上游在 fusion-agent-studio（不在 fusion-trainer，它是纯计算层，无 HTTP 服务器）。
+
 ---
 
 ## 产品联动
