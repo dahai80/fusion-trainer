@@ -39,6 +39,13 @@ mock-based suite could not.
   the class of bugs that only appear on the Nth consecutive run (leaked
   file handles, accumulating singleton state, cross-run event-log
   corruption); this closes that gap.
+- **enterprise #6 — change management / release process**:
+  `docs/RELEASE_PROCESS.md` defines the branch strategy (`release/vX.Y.Z`
+  release branches off `master`), the version-bump rules (one source of
+  truth in `_version.py`), the release-cut steps, the release-PR review
+  checklist, the hotfix flow, and the rollback policy (never rewrite/delete
+  published tags; yank + cut a patch instead). Pairs with
+  `docs/API_STABILITY.md` (the SemVer frozen-surface contract).
 
 ### Fixed
 - **P0 — `get_run_manager()` self-deadlock**: the singleton entry acquired

@@ -363,6 +363,18 @@ fusion-studio (SwiftUI TrainerView)
 
 ---
 
+## Releases & Change Management
+
+Releases follow [Semantic Versioning](https://semver.org/) against the frozen
+API surface in [`docs/API_STABILITY.md`](docs/API_STABILITY.md). The full
+release process — branch strategy (`release/vX.Y.Z`), version-bump rules,
+release-cut steps, review checklist, hotfix flow, and rollback policy — is
+documented in [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md).
+`CHANGELOG.md` holds the per-version release notes; git tags `vX.Y.Z` mark the
+immutable release points.
+
+---
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
