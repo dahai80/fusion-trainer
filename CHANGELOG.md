@@ -143,21 +143,40 @@ mock-based suite could not.
   staged datasets, and run artifacts written under `runtime_cache/` are now
   excluded from version control.
 
-## [1.0.0] — 2026-09-02
+## [1.0.0rc1] — 2026-09-02
 
-**First stable release.** The public API surface is now frozen under
+**First release candidate.** The public API surface is now frozen under
 [Semantic Versioning](https://semver.org/). See
 [`docs/API_STABILITY.md`](docs/API_STABILITY.md) for the full freeze list —
 CLI subcommands, `TrainerConfig` fields, `RunManager` methods,
-`MLXFineTuneClient` methods, and public exception types.
+`MLXFineTuneClient` methods, and public exception types. This is a release
+candidate, not a stable release: the training loops, security gates, audit
+trail, metrics export, and publish-to-hub flow are all real and verified, but
+three upstream gaps block the final `1.0.0` (listed below). `1.0.0` is cut
+only when those land or are explicitly descoped.
 
-- **Version bump** `0.1.12` → `1.0.0` (`fusion_trainer/_version.py`).
+- **Version bump** `0.1.12` → `1.0.0rc1` (`fusion_trainer/_version.py`).
 - **API stability contract** added at `docs/API_STABILITY.md`: defines which
   surfaces are frozen (SemVer-protected) vs internal (may change anytime), and
   the SemVer rules for major/minor/patch against that surface.
-- **Upstream-bound surface** explicitly excluded from the freeze: MXFP8
-  (fusion-mlx#402), OS-level sandbox isolation (fusion-mlx#743), Prometheus
-  scrape endpoint (fusion-agent-studio).
+- **Release process** documented at `docs/RELEASE_PROCESS.md`: branch strategy,
+  version-bump rules, release-cut steps, review checklist, hotfix flow,
+  rollback policy.
+- **Upstream-bound surface** explicitly excluded from the freeze, and blocking
+  the `1.0.0` stable cut:
+  - **MXFP8 mixed precision** — fusion-mlx#402. `use_mxfp8` defaults `False`;
+    explicit `True` fail-stops. Training runs at default precision; peak
+    memory may exceed preset estimates on M5 96GB.
+  - **OS-level sandbox isolation** — fusion-mlx#743. The seatbelt backend
+    (`sandbox-exec`) narrows data reads and denies network, but is defense-in-
+    depth, not a true container; timing side-channels remain. Untrusted
+    model-generated code needs container/seccomp upstream.
+  - **GUI publish-to-hub** — fusion-studio#390. The Trainer panel does not
+    expose `publish_adapter`/`hub_url`/`hub_api_key`, so GUI-triggered runs
+    never publish natively (env-var bypass `FUSION_TRAINER_PUBLISH=1` works).
+    CLI `--publish` is unaffected.
+  - **Prometheus scrape endpoint** — lives upstream in fusion-agent-studio;
+    this release exports `.prom` textfiles only.
 
 ## [0.1.12] — 2026-09-01
 
