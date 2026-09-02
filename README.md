@@ -181,6 +181,8 @@ GRPO prompt dataset (one JSON object per line):
 
 `--sandbox` defaults to `off` (no code exec). Set `code` for code-mode reward (execs the model's completion + dataset `tests` in a subprocess) or `math` for answer-normalization reward. **Code mode execs untrusted output** — it requires `FUSION_CODE_SANDBOX_TRUSTED=1` and is not a true OS sandbox; see `fusion_trainer/rlsl/sandbox.py`. `auto` still picks `code` when a `tests` field is present / `math` when an `answer` field is present, but is opt-in only. See [GRPO backend](#5-run-grpo-with-sandbox-reward).
 
+`reward_code` runs the generated code under a real isolation layer on macOS via the built-in seatbelt sandbox (`sandbox-exec`): network denied, filesystem locked to a tmpfs workspace, killed on timeout. Override the backend with `FUSION_CODE_SANDBOX_BACKEND` (`auto` default | `seatbelt` | `rlimit`); on non-macOS it falls back to rlimits with a loud warning. The `FUSION_CODE_SANDBOX_TRUSTED=1` gate still applies regardless of backend. See `fusion_trainer/rlsl/isolation.py`.
+
 ### 6. Publish a Trained Adapter to fusion-model-hub (issue #49)
 
 After a successful LoRA run, the produced adapter can be registered in [fusion-model-hub](https://github.com/dahai80/fusion-models-hub) so the gateway can index it (`GET /api/v1/models?model_type=lora`). This is **off by default** — opt in with `--publish` (or `publish_adapter: true` in YAML):

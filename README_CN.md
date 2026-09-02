@@ -58,6 +58,8 @@ fusion-* 产品（消费层）
 
 > **为何 DPO/ORPO/RLSL 抛错而非训练：** 按项目规则，fusion-trainer **只**通过 HTTP 对接 fusion-mlx，绝不直接 import `mlx-lm`。这些方法需要模型内 logprob + 梯度更新，必须由 fusion-mlx 承载。在 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) 落地前，它们显式失败而非静默返回假 "completed"。GRPO 当前已完整可用。
 
+`reward_code` 在 macOS 上通过内置 seatbelt 沙箱（`sandbox-exec`）运行生成的代码：禁用网络、文件系统锁定在 tmpfs 工作区、超时即杀。用 `FUSION_CODE_SANDBOX_BACKEND` 覆盖后端（默认 `auto` | `seatbelt` | `rlimit`）；非 macOS 回退到 rlimit 并大声告警。无论何种后端，`FUSION_CODE_SANDBOX_TRUSTED=1` 显式开关仍然生效。详见 `fusion_trainer/rlsl/isolation.py`。
+
 ### 实验追踪
 - 指标日志记录，支持 TensorBoard —— **默认开启**，每个指标/步通过 `add_scalar` 流式写入 `output_dir/tensorboard`（设 `enable_tensorboard=False` 关闭）；JSONL 流式始终并行写入
 - Loss 曲线可视化（matplotlib）

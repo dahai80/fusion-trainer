@@ -42,6 +42,17 @@ mock-based suite could not.
   seccomp) remains tracked at [fusion-mlx#743](https://github.com/dahai80/fusion-mlx/issues/743);
   the CLI `--sandbox` default stays `off` and `reward_code` still requires
   `FUSION_CODE_SANDBOX_TRUSTED=1`.
+- **soft #2 / #53 — seatbelt isolation backend**: `reward_code` now runs
+  model-generated code under a real MAC isolation layer on macOS via
+  `sandbox-exec` (seatbelt): network denied, filesystem restricted to the
+  tmpfs workspace + read-only interpreter prefix, killed on timeout. Selected
+  automatically on Darwin (`FUSION_CODE_SANDBOX_BACKEND=auto`, default);
+  `=rlimit` forces the existing rlimit-only path; `=seatbelt` on a platform
+  without the binary raises `SandboxIsolationError` (fail-visible, never a
+  silent downgrade). The rlimit prelude still runs *inside* the seatbelt child
+  as an inner CPU cap. `FUSION_CODE_SANDBOX_TRUSTED=1` gate unchanged. Real
+  container isolation for the inference-server reward path stays upstream at
+  [fusion-mlx#743](https://github.com/dahai80/fusion-mlx/issues/743).
 
 ### Changed
 - **soft #3 — GUI publish env-fallback**: the GUI path
