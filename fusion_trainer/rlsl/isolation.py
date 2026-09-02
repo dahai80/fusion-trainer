@@ -137,6 +137,23 @@ class _RlimitBackend(_IsolationBackend):
 
 
 class _SeatbeltBackend(_IsolationBackend):
+    def _build_profile(self, python_prefix: str, real_exe: str, tmpdir: str) -> str:
+        real_tmpdir = os.path.realpath(tmpdir)
+        lines = [
+            "(version 1)",
+            "(deny default)",
+            f'(allow process-exec* (literal "{real_exe}"))',
+            f'(allow process-exec* (subpath "{python_prefix}"))',
+            '(allow file-read* (subpath "/"))',
+            f'(allow file-read* file-write* (subpath "{real_tmpdir}"))',
+            '(allow file-write* (literal "/dev/null"))',
+            '(allow file-write* (literal "/dev/urandom"))',
+            "(allow process-fork)",
+            "(allow signal (target self))",
+            "(deny network*)",
+        ]
+        return "\n".join(lines) + "\n"
+
     def run(
         self,
         code: str,
@@ -144,8 +161,39 @@ class _SeatbeltBackend(_IsolationBackend):
         env: dict[str, str],
         timeout: float,
     ) -> IsolationResult:
-        # placeholder — real impl lands in Task 3
-        return IsolationResult(1, "", "not implemented", False)
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        real_exe = os.path.realpath(sys.executable)
+        python_prefix = os.path.dirname(os.path.dirname(real_exe))
+        profile = self._build_profile(python_prefix, real_exe, tmpdir)
+        profile_path = Path(tmpdir) / "grpo_seatbelt.sb"
+        profile_path.write_text(profile)
+        script = Path(tmpdir) / "sol.py"
+        prelude = _build_prelude(_MEM_LIMIT_BYTES_ENV, _CPU_LIMIT_SECONDS_ENV)
+        script.write_text(prelude + "\n" + code)
+        try:
+            proc = subprocess.run(
+                ["sandbox-exec", "-f", str(profile_path), real_exe, str(script)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=tmpdir,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("seatbelt sandbox timed out (%ss wall)", timeout)
+            return IsolationResult(-1, "", "timeout", True)
+        except FileNotFoundError as exc:
+            logger.error("seatbelt sandbox-exec missing: %s", exc)
+            return IsolationResult(1, "", str(exc), False)
+        except Exception as exc:
+            logger.warning("seatbelt sandbox failed to run: %s", exc)
+            return IsolationResult(1, "", str(exc), False)
+        return IsolationResult(
+            proc.returncode, proc.stdout or "", proc.stderr or "", False
+        )
 
 
 _BACKEND: _IsolationBackend | None = None
