@@ -129,3 +129,36 @@ class TestSeatbeltBackendRun:
             1,
         )
         assert r.timed_out is True
+
+
+class TestBackendSelection:
+    def setup_method(self):
+        isolation._reset_backend()
+
+    def teardown_method(self):
+        isolation._reset_backend()
+
+    def test_explicit_rlimit(self, monkeypatch):
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "rlimit")
+        b = isolation.get_isolation_backend()
+        assert isinstance(b, isolation._RlimitBackend)
+
+    def test_seatbelt_unavailable_raises_when_explicit(self, monkeypatch):
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "seatbelt")
+        monkeypatch.setattr(isolation, "_seatbelt_available", lambda: False)
+        with pytest.raises(
+            isolation.SandboxIsolationError, match="refusing to silently downgrade"
+        ):
+            isolation.get_isolation_backend()
+
+    def test_auto_falls_back_to_rlimit_when_unavailable(self, monkeypatch):
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "auto")
+        monkeypatch.setattr(isolation, "_seatbelt_available", lambda: False)
+        b = isolation.get_isolation_backend()
+        assert isinstance(b, isolation._RlimitBackend)
+
+    def test_auto_picks_seatbelt_when_available(self, monkeypatch):
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "auto")
+        monkeypatch.setattr(isolation, "_seatbelt_available", lambda: True)
+        b = isolation.get_isolation_backend()
+        assert isinstance(b, isolation._SeatbeltBackend)

@@ -199,6 +199,11 @@ class _SeatbeltBackend(_IsolationBackend):
 _BACKEND: _IsolationBackend | None = None
 
 
+def _reset_backend() -> None:
+    global _BACKEND
+    _BACKEND = None
+
+
 def _seatbelt_available() -> bool:
     return platform.system() == "Darwin" and shutil.which(_SEATBELT_BIN) is not None
 
