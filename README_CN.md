@@ -203,6 +203,18 @@ fusion-trainer publish <run_id>
 
 `start_sft`/`start_rlsl`/`stop_run`/`delete_adapter` 接受可选 `api_key` 参数；`publish_run` 接受 `trainer_api_key`（与 hub 的 `api_key` 区分开，使部署可在不泄露 hub 密钥的情况下网关操作）。
 
+#### 指标导出（企业级）
+
+`ExperimentLogger.export_prometheus(path, run_id=, extra_series=)` 与模块级 `export_prometheus_snapshot(path, metrics, run_id=, extra_series=)` 写入 **Prometheus 文本格式**（`.prom`）快照 —— 每个标量指标键一个 gauge：
+
+```
+# HELP fusion_trainer_train_loss run-1
+# TYPE fusion_trainer_train_loss gauge
+fusion_trainer_train_loss{run="run-1"} 0.1234
+```
+
+`RunManager` 在 run 结束时写 `{cache_path}/runs/<run_id>/metrics.prom`，包含 `run_steps_total`、`run_total_steps`、`run_status_code`（`0=running,1=completed,2=failed,3=cancelled`）。指标名按 Prometheus `[a-zA-Z_:][a-zA-Z0-9_:]*` 语法净化；非标量值跳过。这是**文件导出** —— 由 node-exporter `textfile_collector` 或 sidecar 投递。实时抓取端点上游在 fusion-agent-studio（不在 fusion-trainer，它是纯计算层，无 HTTP 服务器）。
+
 ---
 
 ## 产品联动

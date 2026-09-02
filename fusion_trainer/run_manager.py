@@ -767,6 +767,11 @@ class RunManager:
                     rec["publish_result"] = publish_result
                 self._persist_meta(run_id)
         self._active_sinks.pop(run_id, None)
+        # Enterprise #3: emit a Prometheus text-format snapshot at run end so
+        # a node-exporter textfile collector / sidecar can ship the last-known
+        # metric values + run status. A scrape endpoint lives upstream
+        # (fusion-agent-studio); this is a file export, deterministic (Rule 5).
+        self._export_run_metrics(run_id, final_status)
         logger.info("run %s ended: %s", run_id, final_status)
 
     # ------------------------------------------------------------------
@@ -1062,6 +1067,44 @@ class RunManager:
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    _STATUS_CODE = {
+        "running": 0,
+        "completed": 1,
+        "failed": 2,
+        "cancelled": 3,
+    }
+
+    def _export_run_metrics(self, run_id: str, final_status: str) -> None:
+        """Enterprise #3: write a Prometheus text-format snapshot for a run.
+
+        Uses the record's metrics dict (kept current by _RunSink) rather than
+        re-reading events.jsonl (Rule 5: deterministic from record state).
+        Fail-visible: logs on error, never raises into the run path.
+        """
+        try:
+            with self._lock:
+                rec = self._runs.get(run_id)
+                if rec is None:
+                    return
+                metrics = dict(rec.get("metrics", {}))
+                step = int(rec.get("step", 0))
+                total_steps = int(rec.get("total_steps", 0))
+            prom_path = Path(rec["run_dir"]) / "metrics.prom"
+            from .experiment.logger import export_prometheus_snapshot
+
+            extra = {
+                "run_steps_total": float(step),
+                "run_total_steps": float(total_steps),
+                "run_status_code": float(
+                    self._STATUS_CODE.get(final_status, 2)
+                ),
+            }
+            export_prometheus_snapshot(
+                prom_path, metrics, run_id=run_id, extra_series=extra
+            )
+        except Exception as exc:
+            logger.warning("export run metrics %s failed: %s", run_id, exc)
 
     def _persist_meta(self, run_id: str) -> None:
         # R12: snapshot the record under the lock, then do the synchronous disk

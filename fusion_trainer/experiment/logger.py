@@ -224,3 +224,103 @@ class ExperimentLogger:
             return count
         except Exception:
             return len(self._metrics)
+
+    # ------------------------------------------------------------------
+    # Prometheus text-format export (enterprise #3)
+    # ------------------------------------------------------------------
+
+    def latest_metrics(self) -> dict[str, float]:
+        """Return the most recent value of each scalar metric key.
+
+        Deterministic scan of the in-memory window (Rule 5): the last entry
+        that has a key wins. Used by export_prometheus so the .prom file
+        reflects the current state, not a moving average.
+        """
+        latest: dict[str, float] = {}
+        for entry in self._metrics:
+            for key, value in entry.items():
+                if key in ("step", "timestamp"):
+                    continue
+                try:
+                    latest[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        return latest
+
+    def export_prometheus(
+        self,
+        path: str | Path,
+        run_id: str = "",
+        extra_series: dict[str, float] | None = None,
+    ) -> Path:
+        """Write a Prometheus text-format (.prom) snapshot for this run.
+
+        One gauge per scalar metric key, plus any extra_series (e.g.
+        run_steps_total / run_status supplied by RunManager). A scrape
+        endpoint is out of scope (lives in fusion-agent-studio upstream); this
+        is a file export a node-exporter textfile collector or a sidecar can
+        ship. Fail-visible: logs on write error, never raises into a run.
+        """
+        return export_prometheus_snapshot(
+            path, self.latest_metrics(), run_id=run_id or self.run_name,
+            extra_series=extra_series,
+        )
+
+
+def export_prometheus_snapshot(
+    path: str | Path,
+    metrics: dict[str, float],
+    run_id: str = "",
+    extra_series: dict[str, float] | None = None,
+) -> Path:
+    """Write a Prometheus text-format (.prom) snapshot from a flat metrics dict.
+
+    Module-level helper (enterprise #3) so RunManager can emit a .prom file at
+    run end without constructing an ExperimentLogger. One gauge per scalar key
+    + any extra_series (run_steps_total / run_status_code). Fail-visible: logs
+    on write error, never raises.
+    """
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    series: dict[str, float] = {}
+    for key, value in metrics.items():
+        try:
+            series[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    if extra_series:
+        for k, v in extra_series.items():
+            try:
+                series[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+    run_label = run_id
+    lines: list[str] = []
+    for key in sorted(series):
+        name = f"fusion_trainer_{_prom_safe(key)}"
+        lines.append(f"# HELP {name} {run_label}")
+        lines.append(f"# TYPE {name} gauge")
+        lines.append(f'{name}{{run="{run_label}"}} {series[key]}')
+    text = "\n".join(lines) + ("\n" if lines else "")
+    try:
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except Exception as exc:
+        logger.warning("export_prometheus_snapshot write to %s failed: %s", out_path, exc)
+    return out_path
+
+
+def _prom_safe(key: str) -> str:
+    """Sanitize a metric key into a Prometheus-valid metric name segment.
+
+    Prom metric names: [a-zA-Z_:][a-zA-Z0-9_:]*. Replace anything else with _.
+    """
+    out: list[str] = []
+    for ch in key:
+        if ch.isalnum() or ch in ("_", ":"):
+            out.append(ch)
+        else:
+            out.append("_")
+    if out and not (out[0].isalpha() or out[0] == "_"):
+        out.insert(0, "_")
+    return "".join(out) or "metric"

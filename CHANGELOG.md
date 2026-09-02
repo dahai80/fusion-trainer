@@ -13,6 +13,19 @@ Enterprise-readiness soft-issue remediation (soft #2–#5) plus a real-model
 GUI end-to-end integration test that caught three production defects the
 mock-based suite could not.
 
+### Added
+- **enterprise #3 — Prometheus metrics export**: `ExperimentLogger.export_prometheus`
+  and module-level `export_prometheus_snapshot` write a Prometheus
+  text-format (`.prom`) snapshot — one gauge per scalar metric key
+  (`fusion_trainer_<metric>{run="<id>"} <value>`), plus `run_steps_total` /
+  `run_total_steps` / `run_status_code` supplied by `RunManager`. Metric
+  names are sanitized to the Prom `[a-zA-Z_:][a-zA-Z0-9_:]*` grammar; non-
+  scalar values are skipped. `RunManager._export_run_metrics` emits
+  `{cache_path}/runs/<run_id>/metrics.prom` at run end (deterministic from
+  record state, Rule 5; fail-visible, never raises into the run path). A
+  scrape endpoint lives upstream (fusion-agent-studio); this is a file
+  export for a node-exporter textfile collector or sidecar.
+
 ### Fixed
 - **P0 — `get_run_manager()` self-deadlock**: the singleton entry acquired
   `_SINGLETON_LOCK` (a plain `threading.Lock`) then called `RunManager()`,

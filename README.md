@@ -230,6 +230,18 @@ An optional **api-key gate** (`FUSION_TRAINER_API_KEY` set) rejects mutating `Ru
 
 `start_sft`/`start_rlsl`/`stop_run`/`delete_adapter` accept an optional `api_key` arg; `publish_run` accepts `trainer_api_key` (kept distinct from the hub `api_key`, so a deployment can gate ops without sharing the hub secret).
 
+#### Metrics export (enterprise)
+
+`ExperimentLogger.export_prometheus(path, run_id=, extra_series=)` and the module-level `export_prometheus_snapshot(path, metrics, run_id=, extra_series=)` write a **Prometheus text-format** (`.prom`) snapshot — one gauge per scalar metric key:
+
+```
+# HELP fusion_trainer_train_loss run-1
+# TYPE fusion_trainer_train_loss gauge
+fusion_trainer_train_loss{run="run-1"} 0.1234
+```
+
+`RunManager` emits `{cache_path}/runs/<run_id>/metrics.prom` at run end, including `run_steps_total`, `run_total_steps`, and `run_status_code` (`0=running,1=completed,2=failed,3=cancelled`). Metric names are sanitized to the Prometheus `[a-zA-Z_:][a-zA-Z0-9_:]*` grammar; non-scalar values are skipped. This is a **file export** — a node-exporter `textfile_collector` or a sidecar ships it. A live scrape endpoint lives upstream in fusion-agent-studio (not in fusion-trainer, which is a pure computation layer with no HTTP server).
+
 #### GRPO backend (`grpo_backend`)
 
 `RLSLConfig.grpo_backend` selects the GRPO execution path:
