@@ -94,17 +94,42 @@ class TestSeatbeltBackendRun:
 
     @_seatbelt
     def test_network_denied(self, tmp_path):
+        import socket as _socket
+
+        listener = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
         b = isolation._SeatbeltBackend()
         code = (
             "import socket\n"
+            f"port = {port}\n"
             "try:\n"
-            "    socket.create_connection(('1.1.1.1', 53), timeout=2)\n"
+            "    socket.create_connection(('127.0.0.1', port), timeout=3)\n"
             "    raise SystemExit(7)\n"
             "except Exception:\n"
             "    raise SystemExit(0)\n"
         )
-        r = b.run(code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10)
+        try:
+            r = b.run(
+                code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
+            )
+        finally:
+            listener.close()
         assert r.returncode == 0, f"network should be denied: {r.stderr}"
+
+    @_seatbelt
+    def test_write_inside_tmpdir_allowed(self, tmp_path):
+        b = isolation._SeatbeltBackend()
+        code = (
+            "import os\n"
+            f"open(os.path.join({str(tmp_path)!r}, 'out.txt'), 'w').write('x')\n"
+            "raise SystemExit(0)\n"
+        )
+        r = b.run(
+            code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
+        )
+        assert r.returncode == 0, f"write inside tmpdir should be allowed: {r.stderr}"
 
     @_seatbelt
     def test_write_outside_tmpdir_denied(self, tmp_path):
@@ -162,3 +187,34 @@ class TestBackendSelection:
         monkeypatch.setattr(isolation, "_seatbelt_available", lambda: True)
         b = isolation.get_isolation_backend()
         assert isinstance(b, isolation._SeatbeltBackend)
+
+
+class TestRewardCodeSeatbeltContract:
+    from fusion_trainer.rlsl import sandbox
+
+    def setup_method(self):
+        os.environ["FUSION_CODE_SANDBOX_TRUSTED"] = "1"
+
+    def teardown_method(self):
+        os.environ.pop("FUSION_CODE_SANDBOX_TRUSTED", None)
+        isolation._reset_backend()
+
+    @_seatbelt
+    def test_passing_code_reward_1(self, monkeypatch):
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "seatbelt")
+        isolation._reset_backend()
+        from fusion_trainer.rlsl import sandbox
+
+        sample = {"tests": ""}
+        completion = "```python\nassert 1 == 1\n```"
+        assert sandbox.reward_code(sample, completion) == 1.0
+
+    @_seatbelt
+    def test_failing_code_reward_0(self, monkeypatch):
+        monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "seatbelt")
+        isolation._reset_backend()
+        from fusion_trainer.rlsl import sandbox
+
+        sample = {"tests": ""}
+        completion = "```python\nassert 1 == 2\n```"
+        assert sandbox.reward_code(sample, completion) == 0.0
