@@ -186,28 +186,16 @@ class SFTTrainer:
     def _build_mlx_config(self) -> dict[str, Any]:
         """Map SFTConfig → fusion-mlx FineTuneConfig dict.
 
-        fusion-mlx #402 已落地:fine_tune_type = lora | dora | full | qlora,
+        fusion-mlx #402/#425 已落地:fine_tune_type = lora | dora | full | qlora,
         FineTuneConfig 含 quantize_base / quant_bits / mxfp8 字段。
         - QLoRA:fine_tune_type="qlora" + quantize_base=True,真实量化基座。
-        - MXFP8:上游 service.py 仍 raise(字段已加但训练未实现)。本仓库同步
-          fail-visible,不静默降精度(Rule 12)。
+        - MXFP8:上游 service.py 路由到 8-bit QLoRA 路径(quantize_base=True,
+          quant_bits=8, fine_tune_type=qlora)。MLX 0.32 无原生 fp8 dtype,
+          语义=8-bit frozen base + LoRA 省显存,非 fp8 计算。mxfp8+full 矛盾
+          (full 解冻基座无物可量化),上游 fail-visible raise。本仓库透传 mxfp8
+          字段,由上游决定语义。
         """
         method = self.sft_cfg.method
-        upstream_issue = "https://github.com/dahai80/fusion-mlx/issues/402"
-
-        if self.sft_cfg.use_mxfp8:
-            # 上游 FineTuneConfig.mxfp8 字段已存在,但 service.py 仍 raise
-            # "mxfp8 mixed-precision training is not yet supported"。
-            # fail-not-downgrade (audit L2): explicit --mxfp8 expresses the
-            # user's intent to save memory; silently training at default
-            # precision swallows that intent and the preset's memory estimate
-            # becomes a lie. Refuse to start instead of silent downgrade.
-            raise MLXFineTuneError(
-                "MXFP8 mixed-precision training is not yet supported by fusion-mlx "
-                "(service.py still raises). Refusing to start rather than silently "
-                "downgrade precision. Set use_mxfp8=False to train at default "
-                f"precision. Tracked in {upstream_issue}."
-            )
 
         if method == "qlora":
             fine_tune_type = "qlora"
@@ -305,6 +293,22 @@ class SFTTrainer:
             cfg["quant_bits"] = qb
             logger.info(
                 "QLoRA: fine_tune_type=qlora quantize_base=True quant_bits=%d", qb
+            )
+        # #402/#425 已落地:透传 mxfp8。上游路由到 8-bit QLoRA(quantize_base=True,
+        # quant_bits=8, fine_tune_type=qlora),语义=8-bit frozen base LoRA 省显存,
+        # 非 fp8 计算。mxfp8+full 矛盾→上游 fail-visible raise。
+        if self.sft_cfg.use_mxfp8:
+            if fine_tune_type == "full":
+                raise MLXFineTuneError(
+                    "use_mxfp8 is incompatible with method='full' (full fine-tuning "
+                    "unfreezes the base, so there is no frozen base to quantize); "
+                    "use lora/dora/qlora with --mxfp8 (fusion-mlx #425)."
+                )
+            cfg["mxfp8"] = True
+            logger.info(
+                "MXFP8: passing mxfp8=True → fusion-mlx routes to 8-bit QLoRA "
+                "(8-bit frozen base + LoRA for memory saving, NOT fp8 compute, "
+                "MLX 0.32 has no fp8 dtype; fusion-mlx #425)."
             )
         return cfg
 

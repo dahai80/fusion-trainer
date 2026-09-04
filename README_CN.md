@@ -2,7 +2,7 @@
 
 **[English](README.md)** | **[中文](README_CN.md)**
 
-![version](https://img.shields.io/badge/version-1.0.0rc1-blue)
+![version](https://img.shields.io/badge/version-1.0.0rc2-blue)
 ![status](https://img.shields.io/badge/API-stable%20(SemVer)-green)
 
 **基于 Apple MLX 的轻量化强化 + 监督学习训练工作台，专为 Mac M5 统一内存设计。**
@@ -47,19 +47,20 @@ fusion-* 产品（消费层）
 ### 监督微调（SFT）
 - 7B 及以下模型全参数微调
 - 7B–32B 模型 LoRA 微调（rank 8–32）
-- QLoRA ⏳ — **上游阻塞**：fusion-mlx `FineTuneConfig` 无 `quantize_base`/`qlora`（见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)）。`_build_mlx_config` 在 `method=qlora` 时抛 `SFTUnsupportedError`，而非静默回退 lora —— 在上游落地前请用 `lora` 或 `full`。
+- QLoRA ✅ — 4-bit 量化基座 LoRA，经 fusion-mlx `FineTuneConfig`（`fine_tune_type=qlora`、`quantize_base=True`、`quant_bits=4`），见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)。`_build_mlx_config` 将 `method=qlora` 映射到这些字段。
 - 领域专属预设配置（代码、金融、科学）
-- MXFP8 混合精度 ⏳ — **上游阻塞**：fusion-mlx `FineTuneConfig` 无 `mxfp8` 字段（见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)）。当前以默认精度训练；`use_mxfp8=True` 会发出警告（峰值内存可能超过预设估算），而非静默丢弃该开关。
+- MXFP8 混合精度 ✅ — [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)/#425 已关闭：`use_mxfp8=True` 透传给 fusion-mlx，路由到 8-bit QLoRA 路径（`quantize_base=True`、`quant_bits=8`、`fine_tune_type=qlora`）—— 8-bit 冻结基座 + LoRA 省显存，非 fp8 计算（MLX 0.32 无 fp8 dtype）。`mxfp8+full` 矛盾（full 解冻基座），仍 fail-visible。`use_mxfp8` 默认 `False`。
 
 ### 强化监督学习（RLSL）
-- **GRPO** ✅ — 带沙盒奖励的组相对策略优化（数学 + 代码）。两种后端：`rft`（奖励过滤 SFT 近似，默认）与 `grpo`（经 fusion-mlx `/api/fine-tune/grpo/jobs` 的真实策略梯度，#363 Phase 2）。
-- **DPO** ⏳ — 直接偏好优化。**上游阻塞**：需要 fusion-mlx DPO 端点（见 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）。在此之前 `DPOTrainer.train` 抛 `RLSLUnsupportedError` —— 请改用 GRPO。
-- **ORPO** ⏳ — 胜率比偏好优化。**上游阻塞**（[fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）；`ORPOTrainer.train` 抛 `RLSLUnsupportedError`。
-- **RLSL** ⏳ — 完整 PPO-light 流水线（含奖励模型训练）。**上游阻塞**（[fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）；`RewardTrainer.train`/`predict` 抛 `RLSLUnsupportedError`。
-- **RLSL 预设** —— `RLSL_PRESETS`（`fusion_trainer.rlsl.presets`）提供命名 GRPO 超参束，含 `memory_estimate_gb` 供 M5 96GB 规划：`rlsl_grpo_7b`（~22 GB，`rft` 后端）、`rlsl_grpo_14b`（~62 GB，`rft` 后端）、`rlsl_grpo_14b_true`（~62 GB，`grpo` 后端，需 fusion-mlx #363 Phase 2）。DPO/ORPO/RLSL 预设因上游阻塞（#399）有意省略。CLI `--preset` 当前仅 SFT 支持；RLSL 预设供编程式使用与作为文档化参考配置。
+- **GRPO** ✅ — 带沙盒奖励的组相对策略优化（数学 + 代码）。两种后端：`rft`（奖励过滤 SFT 近似，默认）与 `grpo`（经 fusion-mlx `/api/fine-tune/grpo/jobs` 的真实策略梯度，#363 Phase 2）。两种后端均端到端可用（#751 已关闭，worker 重新绑定 `generation_stream`）。
+- **DPO** ✅ — 直接偏好优化，经 fusion-mlx `/admin/api/fine-tune/dpo/jobs`（落地于 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)，DPO-list bug 修复于 [#420](https://github.com/dahai80/fusion-mlx/issues/420)）。`DPOTrainer.train` 构建 `DPOConfig`（iters、beta、来自 SFT 配置的 lora 参数），提交偏好对并轮询至完成；adapter 写入 `output_dir`。
+- **ORPO** ✅ — 胜率比偏好优化，经 `/admin/api/fine-tune/orpo/jobs`（[fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399)）。与 DPO 同形，但用 `lambda_odrs`（映射自 `RLSLConfig.beta`）替代 DPO 温度；无参考模型。
+- **奖励模型** ✅ — Bradley-Terry value-head 训练，经 fusion-mlx `/admin/api/fine-tune/reward/jobs`（落地于 [fusion-mlx#424](https://github.com/dahai80/fusion-mlx/issues/424)）。`RewardTrainer.train` 构建 `RewardConfig`（iters 来自 `reward_num_epochs`，lora 参数来自 SFT 配置），提交偏好对并轮询至完成；adapter 以 `reward_model=true` 写入。`RewardTrainer.predict`（打分）委托给 reward/score 端点（[fusion-mlx#431](https://github.com/dahai80/fusion-mlx/issues/431)），加载训练好的 RM adapter 并返回标量奖励。
+- **RLSL** ✅ — 完整闭环流水线：Phase 1 训练奖励模型 ✅（#424）→ Phase 2 运行**真实策略梯度 GRPO** ✅（#363），其奖励信号经 reward/score 端点（#431）来自该 RM。`_run_rlsl` 托管一个本地 RM 奖励服务器（`rm_reward_server.py`），GRPO 回调它给补全打分；闭环为 `RM 训练 (#424) → reward/score (#431) → GRPO (#363, PPO 裁剪策略梯度)`。
+- **RLSL 预设** —— `RLSL_PRESETS`（`fusion_trainer.rlsl.presets`）提供命名 GRPO 超参束，含 `memory_estimate_gb` 供 M5 96GB 规划：`rlsl_grpo_7b`（~22 GB，`rft` 后端）、`rlsl_grpo_14b`（~62 GB，`rft` 后端）、`rlsl_grpo_14b_true`（~62 GB，`grpo` 后端，需 fusion-mlx #363 Phase 2）。DPO/ORPO 预设有意省略（超参映射自 SFT 配置）。CLI `--preset` 当前仅 SFT 支持；RLSL 预设供编程式使用与作为文档化参考配置。
 - 专为 M5 96GB 统一内存设计（14B–32B 模型）
 
-> **为何 DPO/ORPO/RLSL 抛错而非训练：** 按项目规则，fusion-trainer **只**通过 HTTP 对接 fusion-mlx，绝不直接 import `mlx-lm`。这些方法需要模型内 logprob + 梯度更新，必须由 fusion-mlx 承载。在 [fusion-mlx#399](https://github.com/dahai80/fusion-mlx/issues/399) 落地前，它们显式失败而非静默返回假 "completed"。GRPO 当前已完整可用。
+> **RLSL 闭环：** 按项目规则，fusion-trainer **只**通过 HTTP 对接 fusion-mlx，绝不直接 import `mlx-lm`。完整闭环现已真实落地 —— Phase 1 奖励模型训练经 [fusion-mlx#424](https://github.com/dahai80/fusion-mlx/issues/424)，reward/score 端点经 [#431](https://github.com/dahai80/fusion-mlx/issues/431)，Phase 2 PPO 裁剪策略梯度 GRPO 经 [#363](https://github.com/dahai80/fusion-mlx/issues/363)。`_run_rlsl` 托管一个本地 RM 奖励服务器供 GRPO 回调打分，闭环无任何假 "completed" 结果。DPO、ORPO、GRPO（独立）与奖励模型训练也全部可用。
 
 `reward_code` 在 macOS 上通过内置 seatbelt 沙箱（`sandbox-exec`）运行生成的代码：禁用网络、数据读取限定在解释器前缀 + 标准库 + tmpfs 工作区（元数据读取保持宽松以解析路径 —— 只泄露目录结构，不泄露文件内容）、超时即杀。读取 `~/.ssh`、`/etc` 及兄弟项目源码将被拒绝。用 `FUSION_CODE_SANDBOX_BACKEND` 覆盖后端（默认 `auto` | `seatbelt` | `rlimit`）；非 macOS 回退到 rlimit 并大声告警。无论何种后端，`FUSION_CODE_SANDBOX_TRUSTED=1` 显式开关仍然生效。详见 `fusion_trainer/rlsl/isolation.py`。
 
@@ -77,12 +78,12 @@ fusion-* 产品（消费层）
 |---|---|---|---|
 | 全量微调 | 7B | ~32 GB | M5 96GB ✓ |
 | LoRA | 7B | ~16 GB | M5 96GB ✓ |
-| QLoRA (4-bit) ⏳ | 14B | ~28 GB | M5 96GB ✓ |
-| QLoRA (4-bit) ⏳ | 32B | ~48 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ✅ | 14B | ~28 GB | M5 96GB ✓ |
+| QLoRA (4-bit) ✅ | 32B | ~48 GB | M5 96GB ✓ |
 | 奖励模型训练 | 14B | ~22 GB | M5 96GB ✓ |
 | RLSL (PPO-light) | 14B | ~62 GB | M5 96GB ✓ |
 
-以上估算基于 MXFP8 混合精度（⏳ = 上游阻塞，见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)；当前以默认精度训练，实际峰值内存可能更高）。
+以上估算基于 8-bit 量化基座 LoRA（MXFP8 路径）。QLoRA 已落地（[#402](https://github.com/dahai80/fusion-mlx/issues/402)）；RM 训练已落地（[#424](https://github.com/dahai80/fusion-mlx/issues/424)）；RLSL 闭环（Phase 2 GRPO）已落地（[#363](https://github.com/dahai80/fusion-mlx/issues/363)，经 [#431](https://github.com/dahai80/fusion-mlx/issues/431) 打分）。MXFP8 现路由到 8-bit QLoRA（[fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)/#425 已关闭）：`use_mxfp8=True` 透传并将冻结基座量化到 8-bit + LoRA。`use_mxfp8=False`（默认）时以默认精度训练，实际峰值内存可能高于表中数值。
 
 ---
 
@@ -191,7 +192,7 @@ fusion-trainer publish <run_id>
 | `hub_api_key` | `FUSION_MODEL_HUB_API_KEY` | `""`（无鉴权） |
 | `publish_adapter` | `FUSION_TRAINER_PUBLISH=1` | `False` |
 
-`FUSION_TRAINER_PUBLISH=1` 环境变量覆盖专为 **GUI 路径**存在：fusion-agent-studio `TrainingService._build_trainer_config` 当前会丢弃它构建的配置里的 `publish_adapter`/`hub_url`/`hub_api_key`（上游 [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268) 追踪），导致 GUI 触发的 run 即使操作者想发布也从不发布。在 #268 落地前，设置 `FUSION_TRAINER_PUBLISH=1`（配合 `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`）可强制 GUI run 发布。CLI `--publish` 路径不受影响。
+`FUSION_TRAINER_PUBLISH=1` 环境变量覆盖可无条件强制发布。**GUI 路径**现已原生转发发布字段（[fusion-agent-studio#277](https://github.com/dahai80/fusion-agent-studio/issues/277) + [fusion-studio#390](https://github.com/dahai80/fusion-studio/issues/390) 已关闭）：fusion-agent-studio `TrainingService._build_trainer_config` 透传 `publish_adapter`/`hub_url`/`hub_api_key`，训练面板也暴露了这些字段，GUI 触发的 run 可原生发布。环境变量覆盖保留为兜底。CLI `--publish` 路径不受影响。
 
 #### 审计日志与 api-key 网关（企业级）
 

@@ -67,17 +67,22 @@ class ModelHubClient:
         self,
         model_type: str = "",
         keyword: str = "",
+        name: str = "",
     ) -> list[dict[str, Any]]:
-        """List hub models, optionally filtered by model_type / keyword.
+        """List hub models, optionally filtered by model_type / keyword / name.
 
-        The hub supports keyword (fuzzy) + model_type filters but NOT an exact
-        name= filter (fusion-models-hub#51). Callers needing an exact match
-        must filter client-side over the returned list.
+        fusion-models-hub#51 CLOSED: the hub now supports an exact `name=`
+        filter (case-sensitive, tenant-scoped) — preferred over the fuzzy
+        `keyword=` for idempotency lookups, which cannot distinguish "my
+        adapter" from "another model sharing a token". `keyword=` remains a
+        fuzzy fallback for older hub versions that lack `name=`.
         """
         params: dict[str, str] = {}
         if model_type:
             params["model_type"] = model_type
-        if keyword:
+        if name:
+            params["name"] = name
+        elif keyword:
             params["keyword"] = keyword
         url = f"{self._base}{MODELS_PATH}"
         try:
@@ -110,9 +115,14 @@ class ModelHubClient:
         Returns the matching model dict or None. Used to make a 409 (name
         exists) idempotent: if the existing lora with this name points at the
         same base model, the publish already succeeded previously.
+
+        fusion-models-hub#51 CLOSED: uses the exact `name=` filter first
+        (tenant-scoped, case-sensitive — same lookup the 409 collision check
+        uses server-side), then verifies base_model_id client-side. Falls
+        back to fuzzy `keyword=` + client-side exact filter for older hubs.
         """
         try:
-            candidates = self.list_models(model_type="lora", keyword=name)
+            candidates = self.list_models(model_type="lora", name=name)
         except HubPublishError as exc:
             logger.warning("publish idempotency check failed (non-fatal): %s", exc)
             return None

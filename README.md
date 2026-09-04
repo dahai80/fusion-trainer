@@ -2,7 +2,7 @@
 
 **[English](README.md)** | **[中文](README_CN.md)**
 
-![version](https://img.shields.io/badge/version-1.0.0rc1-blue)
+![version](https://img.shields.io/badge/version-1.0.0rc2-blue)
 ![status](https://img.shields.io/badge/API-stable%20(SemVer)-green)
 
 **Lightweight supervised + reinforcement learning trainer on Apple MLX, purpose-built for Mac M5 unified memory.**
@@ -50,7 +50,7 @@ fusion-* products (consumption layer)
 - QLoRA ✅ — 4-bit quantized-base LoRA via fusion-mlx `FineTuneConfig` (`fine_tune_type=qlora`, `quantize_base=True`, `quant_bits=4`), landed in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402). `_build_mlx_config` maps `method=qlora` to these fields.
 - Domain-specific presets (code, finance, science)
 - **fusion-router-light presets** — 1.5B LoRA + 3B full, for the gateway intent classifier / spec-decoding draft model
-- MXFP8 mixed precision ⏳ — **Upstream-blocked**: fusion-mlx `FineTuneConfig` accepts `mxfp8` but the training loop still rejects it (service.py raises `ValueError`, tracked in [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)). `use_mxfp8` defaults to `False`; an explicit `True` **fail-stops** (raises `MLXFineTuneError` at job-build) rather than silently downgrading. Training runs at default precision today.
+- MXFP8 mixed precision ✅ — [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)/#425 CLOSED: `use_mxfp8=True` passes through to fusion-mlx, which routes to the 8-bit QLoRA path (`quantize_base=True`, `quant_bits=8`, `fine_tune_type=qlora`) — 8-bit frozen base + LoRA for memory saving, NOT fp8 compute (MLX 0.32 has no fp8 dtype). `mxfp8+full` is a contradiction (full unfreezes the base) and still fails visibly. `use_mxfp8` defaults to `False`.
 
 ### Reinforcement Learning from Supervised Learning (RLSL)
 - **GRPO** ✅ — Group Relative Policy Optimization with sandbox reward (math + code). Two backends: `rft` (reward-filtered SFT approximation, default) and `grpo` (true policy-gradient via fusion-mlx `/api/fine-tune/grpo/jobs`, #363 Phase 2). See [GRPO backend](#5-run-grpo-with-sandbox-reward).
@@ -82,7 +82,7 @@ fusion-* products (consumption layer)
 | RM Training ✅ | 14B | ~22 GB | M5 96GB ✓ |
 | RLSL (GRPO, closed loop) ✅ | 14B | ~62 GB | M5 96GB ✓ |
 
-Memory estimates assume MXFP8 mixed precision on Apple Silicon. QLoRA is now real ([#402](https://github.com/dahai80/fusion-mlx/issues/402)); RM Training is now real ([#424](https://github.com/dahai80/fusion-mlx/issues/424)); RLSL closed loop (Phase 2 GRPO) is now real ([#363](https://github.com/dahai80/fusion-mlx/issues/363), scored via [#431](https://github.com/dahai80/fusion-mlx/issues/431)). MXFP8 is still upstream-blocked (⏳, see [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)); `use_mxfp8` defaults `False` and explicit `True` fail-stops, so training runs at default precision today and actual peak memory may be higher than the table.
+Memory estimates assume 8-bit quantized-base LoRA (the MXFP8 path) on Apple Silicon. QLoRA is real ([#402](https://github.com/dahai80/fusion-mlx/issues/402)); RM Training is real ([#424](https://github.com/dahai80/fusion-mlx/issues/424)); RLSL closed loop (Phase 2 GRPO) is real ([#363](https://github.com/dahai80/fusion-mlx/issues/363), scored via [#431](https://github.com/dahai80/fusion-mlx/issues/431)). MXFP8 now routes to 8-bit QLoRA ([fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)/#425 CLOSED): `use_mxfp8=True` passes through and quantizes the frozen base to 8-bit + LoRA. With `use_mxfp8=False` (default) training runs at default precision, so actual peak memory may be higher than the table.
 
 ---
 
@@ -218,7 +218,7 @@ Under the hood this calls `POST /api/v1/models` with `model_type="lora"` + `base
 | `hub_api_key` | `FUSION_MODEL_HUB_API_KEY` | `""` (no auth) |
 | `publish_adapter` | `FUSION_TRAINER_PUBLISH=1` | `False` |
 
-The `FUSION_TRAINER_PUBLISH=1` env override exists for the **GUI path**: fusion-agent-studio `TrainingService._build_trainer_config` currently drops `publish_adapter`/`hub_url`/`hub_api_key` from the config it builds (tracked at [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268)), so a GUI-triggered run never published even when the operator wanted it to. Setting `FUSION_TRAINER_PUBLISH=1` (plus `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY`) forces publish on for GUI runs until #268 lands. The CLI `--publish` path is unaffected.
+The `FUSION_TRAINER_PUBLISH=1` env override forces publish on regardless of config. The **GUI path** now forwards publish fields natively ([fusion-agent-studio#277](https://github.com/dahai80/fusion-agent-studio/issues/277) + [fusion-studio#390](https://github.com/dahai80/fusion-studio/issues/390) CLOSED): fusion-agent-studio `TrainingService._build_trainer_config` passes `publish_adapter`/`hub_url`/`hub_api_key` and the Trainer panel exposes them, so GUI-triggered runs publish natively. The env override remains as a fallback. The CLI `--publish` path is unaffected.
 
 #### Audit log & api-key gate (enterprise)
 
