@@ -368,16 +368,36 @@ class TestRunTraining:
             assert calls[0]["config"]["quantize_base"] is True
             assert calls[0]["config"]["quant_bits"] == 4
 
-    def test_run_training_mxfp8_explicit_true_fail_stops(self, monkeypatch):
-        # L2: use_mxfp8 default False. Explicit True while upstream #402 is
-        # unresolved must fail-stop (raise MLXFineTuneError) rather than
-        # silently downgrade precision. A silent downgrade would make the
-        # preset memory estimates wrong and swallow the user's intent.
+    def test_run_training_mxfp8_explicit_true_passes_through(self, monkeypatch):
+        # #402/#425 已落地:upstream service.py now routes mxfp8=True to the
+        # 8-bit QLoRA path (quantize_base=True, quant_bits=8, fine_tune_type=
+        # qlora) rather than raising. MLX 0.32 has no native fp8 dtype, so
+        # semantics = 8-bit frozen base + LoRA for memory saving, NOT fp8
+        # compute. fusion-trainer passes the mxfp8 flag through verbatim; the
+        # upstream decides the routing (Rule 5). No fail-stop on the lora path.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(
+                method="lora", cache_path=tmpdir, num_epochs=1, use_mxfp8=True
+            )
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
+            calls = _patch_mlx_client(monkeypatch)
+            result = trainer._run_training(train_loader, [])
+            assert result["status"] == "completed"
+            assert calls[0]["config"]["mxfp8"] is True
+            assert calls[0]["config"]["fine_tune_type"] == "lora"
+
+    def test_run_training_mxfp8_with_full_fail_stops(self, monkeypatch):
+        # #425: mxfp8 + full is a contradiction (full unfreezes the base, so
+        # there is nothing to quantize). fusion-trainer fails visibly here
+        # before the job is submitted so the operator gets a clear message
+        # rather than an opaque upstream 400. Upstream also raises; this is
+        # the defense-in-depth client-side guard.
         from fusion_trainer.mlx_client import MLXFineTuneError
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(
-                method="lora", cache_path=tmpdir, num_epochs=1, use_mxfp8=True
+                method="full", cache_path=tmpdir, num_epochs=1, use_mxfp8=True
             )
             trainer = SFTTrainer(cfg)
             train_loader = [{"input": "Q", "output": "A"}]

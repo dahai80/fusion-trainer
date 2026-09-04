@@ -347,8 +347,8 @@ class RunManager:
         return [
             {
                 "id": "mxfp8",
-                "level": "warn",
-                "message": "MXFP8 mixed precision upstream-blocked; trains at default precision",
+                "level": "info",
+                "message": "MXFP8 routes to 8-bit QLoRA (8-bit frozen base + LoRA, not fp8 compute; MLX 0.32 has no fp8 dtype)",
                 "issue": _MXF8_ISSUE,
             }
         ]
