@@ -146,6 +146,57 @@ mock-based suite could not.
   staged datasets, and run artifacts written under `runtime_cache/` are now
   excluded from version control.
 
+## [1.0.0rc2] — 2026-09-05
+
+**Second release candidate.** All six former upstream blockers are now CLOSED;
+this RC removes the stale client-side guards that referenced them and consumes
+the newly-landed upstream features. No public API surface changes — the
+[API stability freeze](docs/API_STABILITY.md) from rc1 holds.
+
+- **Version bump** `1.0.0rc1` → `1.0.0rc2` (`fusion_trainer/_version.py`).
+
+### Fixed
+- **MXFP8 passthrough (fusion-mlx #402/#425 CLOSED)**: removed the stale
+  `MLXFineTuneError` fail-stop that refused all `use_mxfp8=True`. Upstream
+  `service.py` now routes `mxfp8=True` to the 8-bit QLoRA path
+  (`quantize_base=True`, `quant_bits=8`, `fine_tune_type=qlora`) — 8-bit frozen
+  base + LoRA for memory saving, NOT fp8 compute (MLX 0.32 has no fp8 dtype).
+  fusion-trainer now passes `mxfp8=True` through to the job config verbatim.
+  `mxfp8+full` remains a contradiction (full unfreezes the base, nothing to
+  quantize) and still fails visibly — now client-side at job-build with a clear
+  message before submission (defense-in-depth; upstream also raises). The
+  `run_manager.info()` mxfp8 warning drops from `warn` to `info` and reflects
+  the 8-bit QLoRA routing.
+- **GRPO true backend (fusion-mlx #751 CLOSED)**: the `There is no Stream(gpu,
+  N) in current thread` regression is fixed upstream — the worker rebinds
+  `_mlx_gen.generation_stream = mx.new_thread_local_stream(...)`. Verified
+  in-tree on fusion-mlx 0.8.79; the `/admin/api/fine-tune/grpo/jobs` endpoint
+  is live (admin-auth gated). Both `rft` and `grpo` backends run end-to-end.
+
+### Changed
+- **Hub idempotency uses exact `name=` filter (fusion-models-hub #51 CLOSED)**:
+  `ModelHubClient.list_models` gains a `name=` param (exact, tenant-scoped —
+  the same lookup the 409 collision check uses server-side).
+  `_find_existing_lora` now queries with `name=` instead of the fuzzy
+  `keyword=`, which could not distinguish "my adapter" from "another model
+  sharing a token". `keyword=` remains a fallback for older hub versions.
+- **GUI publish now native (fusion-studio #390 + fusion-agent-studio #277
+  CLOSED)**: the GUI path forwards `publish_adapter`/`hub_url`/`hub_api_key`
+  natively, so GUI-triggered runs publish without the env-var bypass. The
+  `FUSION_TRAINER_PUBLISH=1` / `FUSION_MODEL_HUB_URL` /
+  `FUSION_MODEL_HUB_API_KEY` env fallback remains as an override.
+
+### Docs
+- Updated CLAUDE.md (current state, publish flow, decisions 7 & 13), README.md
+  and README_CN.md (MXFP8 ✅, DPO/ORPO/RLSL ✅, GUI publish native, version
+  badge rc2) to reflect all six resolved upstream blockers.
+- README_CN DPO/ORPO/RLSL/QLoRA sections synced to the English README's
+  resolved state (were stale at "上游阻塞 ⏳").
+- fusion-trainer #55 (GUI-VL fine-tune) triaged: VL fine-tune is still an
+  upstream gap (no `mlx-vlm` training endpoint in fusion-mlx). Upstream
+  feature request filed as [fusion-mlx#797](https://github.com/dahai80/fusion-mlx/issues/797);
+  fusion-trainer #55 stays open as the landing tracker.
+
 ## [1.0.0rc1] — 2026-09-02
 
 **First release candidate.** The public API surface is now frozen under
