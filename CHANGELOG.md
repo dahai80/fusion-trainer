@@ -113,14 +113,17 @@ mock-based suite could not.
   `api_key` so a deployment can gate ops without sharing the hub secret).
 
 ### Changed
-- **soft #3 — GUI publish env-fallback**: the GUI path
-  (fusion-agent-studio `TrainingService._build_trainer_config`) drops
-  `publish_adapter`/`hub_url`/`hub_api_key` from the config it builds, so a
-  GUI-triggered run never published even when the operator wanted it to
-  (upstream [fusion-agent-studio#268](https://github.com/dahai80/fusion-agent-studio/issues/268)).
-  `publish_adapter_if_enabled` now honors `FUSION_TRAINER_PUBLISH=1` to force
-  publish on, and `FUSION_MODEL_HUB_URL`/`FUSION_MODEL_HUB_API_KEY` supply the
-  endpoint, so GUI runs can publish via env until #268 lands.
+- **soft #3 — GUI publish now native**: the GUI path
+  (fusion-agent-studio `TrainingService._build_trainer_config`) previously
+  dropped `publish_adapter`/`hub_url`/`hub_api_key` from the config it built,
+  so a GUI-triggered run never published even when the operator wanted it to.
+  Upstream [fusion-agent-studio#277](https://github.com/dahai80/fusion-agent-studio/issues/277)
+  now forwards these fields, and
+  [fusion-studio#390](https://github.com/dahai80/fusion-studio/issues/390)
+  exposes them in the Trainer panel — GUI-triggered publish fires natively
+  without the env bypass. The `FUSION_TRAINER_PUBLISH=1` /
+  `FUSION_MODEL_HUB_URL` / `FUSION_MODEL_HUB_API_KEY` env fallback remains as
+  an override.
 
 ### Tests
 - **soft #4 — real-model GUI end-to-end integration test**:
@@ -162,19 +165,23 @@ only when those land or are explicitly descoped.
 - **Release process** documented at `docs/RELEASE_PROCESS.md`: branch strategy,
   version-bump rules, release-cut steps, review checklist, hotfix flow,
   rollback policy.
-- **Upstream-bound surface** explicitly excluded from the freeze, and blocking
-  the `1.0.0` stable cut:
-  - **MXFP8 mixed precision** — fusion-mlx#402. `use_mxfp8` defaults `False`;
-    explicit `True` fail-stops. Training runs at default precision; peak
-    memory may exceed preset estimates on M5 96GB.
-  - **OS-level sandbox isolation** — fusion-mlx#743. The seatbelt backend
-    (`sandbox-exec`) narrows data reads and denies network, but is defense-in-
-    depth, not a true container; timing side-channels remain. Untrusted
-    model-generated code needs container/seccomp upstream.
-  - **GUI publish-to-hub** — fusion-studio#390. The Trainer panel does not
-    expose `publish_adapter`/`hub_url`/`hub_api_key`, so GUI-triggered runs
-    never publish natively (env-var bypass `FUSION_TRAINER_PUBLISH=1` works).
-    CLI `--publish` is unaffected.
+- **Upstream-bound surface** explicitly excluded from the freeze, and formerly
+  blocking the `1.0.0` stable cut — **all now resolved** as of `1.0.0rc2`:
+  - **MXFP8 mixed precision** — fusion-mlx#402/#425 CLOSED. `use_mxfp8=True`
+    now passes through and routes to 8-bit QLoRA (8-bit frozen base + LoRA,
+    not fp8 compute; MLX 0.32 has no fp8 dtype). `mxfp8+full` still fails
+    visibly. Resolved in `1.0.0rc2`.
+  - **GRPO true backend** — fusion-mlx#751 CLOSED. The worker rebinds
+    `generation_stream` to a thread-local stream; real policy-gradient GRPO
+    runs end-to-end. Resolved upstream, verified in-tree on 0.8.79.
+  - **OS-level sandbox isolation** — fusion-mlx#743 CLOSED. fusion-mlx shipped
+    server-side `code_sandbox.py`; fusion-trainer's seatbelt backend
+    (`isolation.py`) remains as client-side defense-in-depth.
+  - **GUI publish-to-hub** — fusion-studio#390 + fusion-agent-studio#277
+    CLOSED. The Trainer panel exposes `publish_adapter`/`hub_url`/
+    `hub_api_key` and the agent forwards them, so GUI-triggered runs publish
+    natively (env-var bypass still works as an override). CLI `--publish`
+    unaffected.
   - **Prometheus scrape endpoint** — lives upstream in fusion-agent-studio;
     this release exports `.prom` textfiles only.
 
@@ -193,18 +200,18 @@ during the mandatory real-machine smoke test.
   non-`completed` status, now the human-readable output matches. The
   `grpo`-backend return dict also carries the upstream `error` string.
 
-### Upstream-blocked
-- **GRPO true backend (regression of fusion-mlx #430)**: real policy-gradient
-  GRPO jobs (`grpo_backend="grpo"`, `/admin/api/fine-tune/grpo/jobs`) fail
-  within ~0.3s with `There is no Stream(gpu, N) in current thread`. Re-verified
-  on fusion-mlx 0.8.63 (dce6ff15): the `worker_stream` fix in
-  `grpo_service.py:250` is present but insufficient — `mlx_lm.generate` holds a
-  module-level thread-local `generation_stream` (created at import time in the
-  loader thread, not the `asyncio.to_thread` worker), so `generate_step`'s
-  `async_eval` still has no stream in the worker thread. Tracked at
-  [fusion-mlx#751](https://github.com/dahai80/fusion-mlx/issues/751)
-  (comment 5492669837). The `rft` backend (reward-filtered SFT via
-  `/admin/api/fine-tune/jobs`) is unaffected and runs end-to-end.
+### Upstream-resolved
+- **GRPO true backend (was fusion-mlx #751)**: real policy-gradient GRPO jobs
+  (`grpo_backend="grpo"`, `/admin/api/fine-tune/grpo/jobs`) are unblocked.
+  Root cause was `There is no Stream(gpu, N) in current thread` — `mlx_lm.generate`
+  holds a module-level thread-local `generation_stream` captured at import time
+  in the loader thread, not the `asyncio.to_thread` worker. Fixed in
+  `grpo_service.py` (fusion-mlx #751): the worker rebinds
+  `_mlx_gen.generation_stream = mx.new_thread_local_stream(mx.default_device())`
+  and runs `with mx.stream(worker_stream):`. Verified in-tree on fusion-mlx
+  0.8.79; the `/admin/api/fine-tune/grpo/jobs` endpoint is live (admin-auth
+  gated). Both `rft` (reward-filtered SFT) and `grpo` (real policy gradient)
+  backends now run end-to-end.
 
 ### Security
 - **P3-6 / S6**: Added `validate_service_url` scheme+host allow-list applied
@@ -267,9 +274,9 @@ validation, sandbox code-mode default-off + env gate, per-prompt top-k, mxfp8
 default-off + fail-stop, HTTP connection reuse + retry/backoff, RunManager
 singleton, atomic meta writes, publish 409 idempotency, and a contract
 integration test. Trained LoRA adapters publish to fusion-model-hub on
-completion (issue #49, PR #51). Only MXFP8 mixed precision remains
-upstream-blocked (fusion-mlx#402) — `use_mxfp8` defaults to `False`; an
-explicit `True` fail-stops.
+completion (issue #49, PR #51). (At this release MXFP8 mixed precision was
+upstream-blocked — fusion-mlx#402 — and `use_mxfp8` fail-stopped on `True`;
+#402/#425 later closed in `1.0.0rc2`, routing `use_mxfp8=True` to 8-bit QLoRA.)
 
 ## [0.1.10] — 2026-08
 
