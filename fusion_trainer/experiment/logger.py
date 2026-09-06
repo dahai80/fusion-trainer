@@ -262,7 +262,9 @@ class ExperimentLogger:
         ship. Fail-visible: logs on write error, never raises into a run.
         """
         return export_prometheus_snapshot(
-            path, self.latest_metrics(), run_id=run_id or self.run_name,
+            path,
+            self.latest_metrics(),
+            run_id=run_id or self.run_name,
             extra_series=extra_series,
         )
 
@@ -306,7 +308,9 @@ def export_prometheus_snapshot(
         with open(out_path, "w", encoding="utf-8") as fh:
             fh.write(text)
     except Exception as exc:
-        logger.warning("export_prometheus_snapshot write to %s failed: %s", out_path, exc)
+        logger.warning(
+            "export_prometheus_snapshot write to %s failed: %s", out_path, exc
+        )
     return out_path
 
 

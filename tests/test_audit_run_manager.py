@@ -64,14 +64,10 @@ class TestApiKeyGateWiring:
         res = rm.stop_run("nope_run", api_key="trainer-secret")
         assert res["status"] == "unknown"
 
-    def test_publish_run_trainer_key_distinct_from_hub_key(
-        self, tmp_path, monkeypatch
-    ):
+    def test_publish_run_trainer_key_distinct_from_hub_key(self, tmp_path, monkeypatch):
         monkeypatch.setenv("FUSION_TRAINER_CACHE", str(tmp_path))
         monkeypatch.setenv("FUSION_TRAINER_API_KEY", "trainer-secret")
         monkeypatch.delenv("FUSION_TRAINER_ACTOR", raising=False)
         rm = RunManager(cache_path=str(tmp_path))
         with pytest.raises(PermissionDeniedError):
-            rm.publish_run(
-                "nope_run", api_key="hub-secret", trainer_api_key="wrong"
-            )
+            rm.publish_run("nope_run", api_key="hub-secret", trainer_api_key="wrong")

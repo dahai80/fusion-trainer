@@ -251,14 +251,20 @@ class TestRlimitBackendRun:
 
     def test_failing_code(self, tmp_path):
         b = isolation._RlimitBackend()
-        r = b.run("assert 1 == 2", str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10)
+        r = b.run(
+            "assert 1 == 2", str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
+        )
         assert r.returncode != 0
         assert not r.timed_out
 
     def test_timeout(self, tmp_path):
         b = isolation._RlimitBackend()
-        r = b.run("while True:\n    pass", str(tmp_path),
-                  isolation._rlimit_env(str(tmp_path)), 1)
+        r = b.run(
+            "while True:\n    pass",
+            str(tmp_path),
+            isolation._rlimit_env(str(tmp_path)),
+            1,
+        )
         assert r.timed_out is True
         assert r.returncode != 0
 ```
@@ -310,7 +316,9 @@ Add module-level helper:
 ```python
 def _rlimit_env(tmpdir: str) -> dict[str, str]:
     mem_bytes = os.environ.get(_MEM_LIMIT_BYTES_ENV, "") or str(_DEFAULT_MEM_BYTES)
-    cpu_seconds = os.environ.get(_CPU_LIMIT_SECONDS_ENV, "") or str(_DEFAULT_CPU_SECONDS)
+    cpu_seconds = os.environ.get(_CPU_LIMIT_SECONDS_ENV, "") or str(
+        _DEFAULT_CPU_SECONDS
+    )
     return {
         "PATH": "/usr/bin:/bin:/usr/local/bin",
         "TMPDIR": tmpdir,
@@ -325,21 +333,22 @@ def _rlimit_env(tmpdir: str) -> dict[str, str]:
 In `fusion_trainer/rlsl/sandbox.py`, replace the `with tempfile.TemporaryDirectory(...)` exec block (lines ~181–213) with delegation. Keep the trusted-gate, code extraction, tests append, and no-code fallback. The new exec block:
 
 ```python
-    with tempfile.TemporaryDirectory(prefix="grpo_sandbox_") as td:
-        from fusion_trainer.rlsl.isolation import get_isolation_backend
-        backend = get_isolation_backend()
-        result = backend.run(user_code, td, _rlimit_env(td), 10)
-        if result.timed_out:
-            logger.warning("code sandbox timed out")
-            return 0.0 * scale
-        if result.returncode == 0:
-            return 1.0 * scale
-        logger.info(
-            "code sandbox exit=%d stderr=%s",
-            result.returncode,
-            result.stderr[:300],
-        )
+with tempfile.TemporaryDirectory(prefix="grpo_sandbox_") as td:
+    from fusion_trainer.rlsl.isolation import get_isolation_backend
+
+    backend = get_isolation_backend()
+    result = backend.run(user_code, td, _rlimit_env(td), 10)
+    if result.timed_out:
+        logger.warning("code sandbox timed out")
         return 0.0 * scale
+    if result.returncode == 0:
+        return 1.0 * scale
+    logger.info(
+        "code sandbox exit=%d stderr=%s",
+        result.returncode,
+        result.stderr[:300],
+    )
+    return 0.0 * scale
 ```
 
 Remove from `sandbox.py`: `_ISOLATION_PRELUDE`, `_build_prelude`, `_MEM_LIMIT_BYTES_ENV`, `_CPU_LIMIT_SECONDS_ENV`, `_DEFAULT_MEM_BYTES`, `_DEFAULT_CPU_SECONDS` (now in `isolation.py`). Re-export them from `sandbox.py` for the existing `test_grpo.py` references (`sandbox._CPU_LIMIT_SECONDS_ENV`, `sandbox._build_prelude`, `sandbox._MEM_LIMIT_BYTES_ENV`, `sandbox._DEFAULT_MEM_BYTES`):
@@ -392,7 +401,9 @@ Append to `tests/test_isolation.py`:
 import platform as _platform
 import shutil as _shutil
 
-_SEATBELT_OK = _platform.system() == "Darwin" and _shutil.which("sandbox-exec") is not None
+_SEATBELT_OK = (
+    _platform.system() == "Darwin" and _shutil.which("sandbox-exec") is not None
+)
 _seatbelt = pytest.mark.skipif(not _SEATBELT_OK, reason="seatbelt only on macOS")
 
 
@@ -406,8 +417,9 @@ class TestSeatbeltBackendRun:
     @_seatbelt
     def test_passing_code(self, tmp_path):
         b = isolation._SeatbeltBackend()
-        r = b.run("assert 1 == 1", str(tmp_path),
-                  isolation._rlimit_env(str(tmp_path)), 10)
+        r = b.run(
+            "assert 1 == 1", str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
+        )
         assert r.returncode == 0
         assert not r.timed_out
 
@@ -441,8 +453,12 @@ class TestSeatbeltBackendRun:
     @_seatbelt
     def test_timeout(self, tmp_path):
         b = isolation._SeatbeltBackend()
-        r = b.run("while True:\n    pass", str(tmp_path),
-                  isolation._rlimit_env(str(tmp_path)), 1)
+        r = b.run(
+            "while True:\n    pass",
+            str(tmp_path),
+            isolation._rlimit_env(str(tmp_path)),
+            1,
+        )
         assert r.timed_out is True
 ```
 
@@ -508,7 +524,9 @@ class _SeatbeltBackend(_IsolationBackend):
         except Exception as exc:
             logger.warning("seatbelt sandbox failed to run: %s", exc)
             return IsolationResult(1, "", str(exc), False)
-        return IsolationResult(proc.returncode, proc.stdout or "", proc.stderr or "", False)
+        return IsolationResult(
+            proc.returncode, proc.stdout or "", proc.stderr or "", False
+        )
 ```
 
 - [ ] **Step 4: Run the seatbelt tests**
@@ -566,7 +584,9 @@ class TestBackendSelection:
     def test_seatbelt_unavailable_raises_when_explicit(self, monkeypatch):
         monkeypatch.setenv("FUSION_CODE_SANDBOX_BACKEND", "seatbelt")
         monkeypatch.setattr(isolation, "_seatbelt_available", lambda: False)
-        with pytest.raises(isolation.SandboxIsolationError, match="refusing to silently downgrade"):
+        with pytest.raises(
+            isolation.SandboxIsolationError, match="refusing to silently downgrade"
+        ):
             isolation.get_isolation_backend()
 
     def test_auto_falls_back_to_rlimit_when_unavailable(self, monkeypatch):

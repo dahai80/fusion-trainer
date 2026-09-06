@@ -519,9 +519,7 @@ class RunManager:
             logger.error("list_adapters failed: %s", exc)
             return {"items": [], "error": f"fusion-mlx unreachable: {exc}"}
 
-    def delete_adapter(
-        self, name: str, api_key: str | None = None
-    ) -> dict[str, Any]:
+    def delete_adapter(self, name: str, api_key: str | None = None) -> dict[str, Any]:
         """Adapter deletion — upstream endpoint pending; fail-visible stub.
 
         fusion-mlx has no DELETE /adapters yet. Return explicit unsupported
@@ -955,7 +953,9 @@ class RunManager:
         RunManager api-key gate (item #2, FUSION_TRAINER_API_KEY) — distinct so
         a deployment can gate ops without sharing the hub secret.
         """
-        self._audit_op("publish_run", run_id, "publish requested", True, trainer_api_key)
+        self._audit_op(
+            "publish_run", run_id, "publish requested", True, trainer_api_key
+        )
         with self._lock:
             r = self._runs.get(run_id)
             if r is None:
@@ -1096,9 +1096,7 @@ class RunManager:
             extra = {
                 "run_steps_total": float(step),
                 "run_total_steps": float(total_steps),
-                "run_status_code": float(
-                    self._STATUS_CODE.get(final_status, 2)
-                ),
+                "run_status_code": float(self._STATUS_CODE.get(final_status, 2)),
             }
             export_prometheus_snapshot(
                 prom_path, metrics, run_id=run_id, extra_series=extra

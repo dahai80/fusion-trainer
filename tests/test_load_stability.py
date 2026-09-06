@@ -58,6 +58,7 @@ def _server_reachable() -> bool:
 
 pytestmark = [pytest.mark.integration, pytest.mark.load]
 
+
 # Default 3 rounds: enough to surface leaks without burning an hour. Override
 # with FUSION_TRAINER_LOAD_ROUNDS for a longer soak.
 def _rounds() -> int:

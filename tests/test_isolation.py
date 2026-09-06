@@ -111,9 +111,7 @@ class TestSeatbeltBackendRun:
             "    raise SystemExit(0)\n"
         )
         try:
-            r = b.run(
-                code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
-            )
+            r = b.run(code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10)
         finally:
             listener.close()
         assert r.returncode == 0, f"network should be denied: {r.stderr}"
@@ -126,9 +124,7 @@ class TestSeatbeltBackendRun:
             f"open(os.path.join({str(tmp_path)!r}, 'out.txt'), 'w').write('x')\n"
             "raise SystemExit(0)\n"
         )
-        r = b.run(
-            code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
-        )
+        r = b.run(code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10)
         assert r.returncode == 0, f"write inside tmpdir should be allowed: {r.stderr}"
 
     @_seatbelt
@@ -175,9 +171,7 @@ class TestSeatbeltBackendRun:
                 "except FileNotFoundError:\n"
                 "    raise SystemExit(0)\n"
             )
-            r = b.run(
-                code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
-            )
+            r = b.run(code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10)
             assert r.returncode == 0, (
                 f"reading user secret must be denied: rc={r.returncode} stderr={r.stderr}"
             )
@@ -196,9 +190,7 @@ class TestSeatbeltBackendRun:
             "except FileNotFoundError:\n"
             "    raise SystemExit(0)\n"
         )
-        r = b.run(
-            code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
-        )
+        r = b.run(code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10)
         assert r.returncode == 0, (
             f"reading /etc/hosts must be denied: rc={r.returncode} stderr={r.stderr}"
         )
@@ -207,9 +199,7 @@ class TestSeatbeltBackendRun:
     def test_stdlib_import_ok(self, tmp_path):
         b = isolation._SeatbeltBackend()
         code = "import json, math, collections\nraise SystemExit(0)"
-        r = b.run(
-            code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10
-        )
+        r = b.run(code, str(tmp_path), isolation._rlimit_env(str(tmp_path)), 10)
         assert r.returncode == 0, (
             f"stdlib import must work under narrowed profile: rc={r.returncode} stderr={r.stderr}"
         )
