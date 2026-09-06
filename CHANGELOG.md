@@ -7,6 +7,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc3] - 2026-09-06
+
+Vision-language (VLM) fine-tune wiring — closes [#55](https://github.com/dahai80/fusion-trainer/issues/55),
+consuming the upstream fusion-mlx VLM endpoint ([#797](https://github.com/dahai80/fusion-mlx/issues/797) → fixed in [#800](https://github.com/dahai80/fusion-mlx/pull/800), fusion-mlx v0.8.80).
+
+### Added
+- **VLM fine-tune pipeline (#55)**: `SFTTrainer` now routes `model_type=="vlm"`
+  to the new fusion-mlx VLM endpoint (`POST /admin/api/fine-tune/vlm/jobs`),
+  which drives `mlx_vlm.trainer` SFT/LoRA over HTTP. This is the same pure-
+  HTTP-delegation pattern as text SFT — fusion-trainer never imports
+  `mlx-vlm`; the real gradient loop runs inside fusion-mlx. The existing
+  `SFTConfig.model_type` field (a placeholder since it was introduced) and
+  the `sft_vlm_7b_qlora` preset are now actually wired.
+  - `MLXFineTuneClient` gained `create_vlm_job` / `get_vlm_job` /
+    `cancel_vlm_job` / `list_vlm_jobs` / `wait_for_vlm_job` mirroring the
+    text-SFT lifecycle on the VLM path (same `events[]` append-only +
+    terminal-status contract, so `wait_for_job`'s retry/cancel logic reuses).
+  - `SFTTrainer._build_vlm_config` maps `SFTConfig` → the upstream
+    `VLMFineTuneConfig` field set (`lora_rank`/`lora_alpha`/`lora_dropout`/
+    `lora_layers`/`full_finetune`/`train_vision`/`optimizer`/`learning_rate`/
+    `batch_size`/`iters`/`val_batches`/`steps_per_*`/`max_seq_length`/
+    `grad_checkpoint`/`grad_accumulation_steps`/`seed`/`num_processes`).
+    Only the declared fields are sent — the text-SFT-only keys
+    (`lr_schedule`, `mask_prompt`, `quant_bits`, `quantize_base`, `mxfp8`,
+    `lora_target_modules`) are NOT emitted (would 400 upstream:
+    `VLMFineTuneConfig(**body)` raises `TypeError` on unknown keys).
+  - `SFTTrainer._submit_vlm_job` does NOT call `stage_dataset` — mlx-vlm's
+    `load_dataset` consumes a HF dataset id or a local dir of images + jsonl
+    directly, not the staged chat-messages jsonl. The dataset reference is
+    resolved from `dataset.path` (HF id or local dir) or `dataset.hub_dataset`
+    (hub convention, same path-traversal guard as `DatasetLoader`).
+  - Result dict carries `model_type="vlm"` so the GUI / publish path can
+    distinguish a VLM adapter.
+
+### Changed
+- VLM QLoRA caveat: `VLMFineTuneConfig` has no quantize field, so a VLM run
+  with `method="qlora"` degrades to plain LoRA (`full_finetune=False`) with a
+  loud `logger.warning` (fail-visible) — no base quantization occurs. mlx-vlm
+  QLoRA semantics differ from mlx-lm and are not exposed upstream (#797).
+
 ## [Unreleased]
 
 Enterprise-readiness soft-issue remediation (soft #2–#5) plus a real-model

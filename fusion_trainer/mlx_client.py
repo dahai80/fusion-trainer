@@ -19,6 +19,8 @@ Affected API:
   POST   /admin/api/fine-tune/reward/jobs         — create reward-model job (#424)
   GET    /admin/api/fine-tune/reward/jobs/{id}    — poll reward job (#424)
   POST   /admin/api/fine-tune/reward/score        — score completions with RM adapter (#431)
+  POST   /admin/api/fine-tune/vlm/jobs            — create VLM (vision-lang) fine-tune job (#797/#800)
+  GET    /admin/api/fine-tune/vlm/jobs/{id}       — poll VLM job (#797/#800)
   GET    /admin/api/fine-tune/adapters            — list saved adapters
   POST   /admin/api/fine-tune/adapters/{model}/{name}/serve — serve adapter
 
@@ -48,6 +50,7 @@ DPO_JOBS_PATH = "/admin/api/fine-tune/dpo/jobs"
 ORPO_JOBS_PATH = "/admin/api/fine-tune/orpo/jobs"
 REWARD_JOBS_PATH = "/admin/api/fine-tune/reward/jobs"
 REWARD_SCORE_PATH = "/admin/api/fine-tune/reward/score"
+VLM_JOBS_PATH = "/admin/api/fine-tune/vlm/jobs"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
 
 
@@ -366,6 +369,93 @@ class MLXFineTuneClient:
                 raise MLXFineTuneError(f"job {job_id} cancelled by user")
             time.sleep(poll_interval)
         raise MLXFineTuneError(f"job {job_id} timed out after {timeout}s")
+
+    # ------------------------------------------------------------------
+    # VLM job lifecycle (fusion-mlx #797/#800: /admin/api/fine-tune/vlm/jobs —
+    # vision-language SFT/LoRA over HTTP, drives mlx_vlm.trainer. Parallel to
+    # the text SFT path; same job lifecycle, different config field names and
+    # a dataset that is a HF dataset id or local images+jsonl dir (NOT the
+    # staged chat-messages jsonl). Blocks fusion-trainer #55.)
+    # ------------------------------------------------------------------
+
+    def create_vlm_job(
+        self,
+        model_id: str,
+        dataset: str,
+        config: dict[str, Any] | None = None,
+        adapter_name: str = "",
+    ) -> dict[str, Any]:
+        body = {
+            "model_id": model_id,
+            "dataset": dataset,
+            "adapter_name": adapter_name,
+            "config": config or {},
+        }
+        logger.info(
+            "Creating VLM fine-tune job model=%s dataset=%s adapter=%s",
+            model_id,
+            dataset,
+            adapter_name or "(auto)",
+        )
+        result = self._request("POST", f"{self._base}{VLM_JOBS_PATH}", json_body=body)
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("create_vlm_job returned non-dict")
+
+    def get_vlm_job(self, job_id: str) -> dict[str, Any]:
+        return self._poll_get(f"{self._base}{VLM_JOBS_PATH}/{job_id}")
+
+    def cancel_vlm_job(self, job_id: str) -> dict[str, Any]:
+        # A8: tolerate 404 — job already gone (mirrors cancel_job).
+        result = self._request(
+            "POST",
+            f"{self._base}{VLM_JOBS_PATH}/{job_id}/cancel",
+            tolerate_status=(404,),
+        )
+        if isinstance(result, dict):
+            return result
+        return {}
+
+    def list_vlm_jobs(self) -> list[dict[str, Any]]:
+        result = self._request("GET", f"{self._base}{VLM_JOBS_PATH}")
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_vlm_jobs returned non-list")
+
+    def wait_for_vlm_job(
+        self,
+        job_id: str,
+        on_progress=None,
+        poll_interval: float = 2.0,
+        timeout: float = 86400.0,
+        is_canceled=None,
+    ) -> dict[str, Any]:
+        # Poll VLM job to terminal state. Same append-only events contract as
+        # text SFT (see wait_for_job). A1 retry-on-poll-failure + P1-3 cancel
+        # honored — only the poll path differs.
+        deadline = time.monotonic() + timeout
+        last_seen = 0
+        while time.monotonic() < deadline:
+            try:
+                job = self.get_vlm_job(job_id)
+            except MLXFineTuneError as exc:
+                logger.warning("wait_for_vlm_job poll failed, continuing: %s", exc)
+                time.sleep(poll_interval)
+                continue
+            events = job.get("events", [])
+            if len(events) > last_seen:
+                new_events = events[last_seen:]
+                last_seen = len(events)
+                if on_progress is not None:
+                    on_progress(job, new_events)
+            status = job.get("status", "")
+            if status in ("completed", "failed", "cancelled"):
+                return job
+            if is_canceled is not None and is_canceled():
+                logger.info("wait_for_vlm_job %s interrupted by cancel", job_id)
+                raise MLXFineTuneError(f"vlm job {job_id} cancelled by user")
+            time.sleep(poll_interval)
+        raise MLXFineTuneError(f"vlm job {job_id} timed out after {timeout}s")
 
     # ------------------------------------------------------------------
     # GRPO job lifecycle (fusion-mlx #363 Phase 2: /api/fine-tune/grpo/jobs)

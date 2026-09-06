@@ -50,6 +50,7 @@ fusion-* 产品（消费层）
 - QLoRA ✅ — 4-bit 量化基座 LoRA，经 fusion-mlx `FineTuneConfig`（`fine_tune_type=qlora`、`quantize_base=True`、`quant_bits=4`），见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)。`_build_mlx_config` 将 `method=qlora` 映射到这些字段。
 - 领域专属预设配置（代码、金融、科学）
 - MXFP8 混合精度 ✅ — [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)/#425 已关闭：`use_mxfp8=True` 透传给 fusion-mlx，路由到 8-bit QLoRA 路径（`quantize_base=True`、`quant_bits=8`、`fine_tune_type=qlora`）—— 8-bit 冻结基座 + LoRA 省显存，非 fp8 计算（MLX 0.32 无 fp8 dtype）。`mxfp8+full` 矛盾（full 解冻基座），仍 fail-visible。`use_mxfp8` 默认 `False`。
+- **VLM 视觉语言微调 ✅** — [#55](https://github.com/dahai80/fusion-trainer/issues/55) 已关闭，消费上游 VLM 端点（[fusion-mlx#797](https://github.com/dahai80/fusion-mlx/issues/797)→[#800](https://github.com/dahai80/fusion-mlx/pull/800)，v0.8.80）。设置 `model_type="vlm"`（或使用 `sft_vlm_7b_qlora` 预设），`SFTTrainer` 即路由到 `POST /admin/api/fine-tune/vlm/jobs`，该端点在 fusion-mlx 内经 HTTP 驱动 `mlx_vlm.trainer` SFT/LoRA —— 同样的纯 HTTP 委托规则，fusion-trainer 不导入 `mlx-vlm`。VLM 路径**不**暂存 chat-messages jsonl：`mlx_vlm.lora.load_dataset` 直接消费 HF 数据集 id 或本地图片+jsonl 目录，因此通过 `dataset.path`（HF id 或本地目录）或 `dataset.hub_dataset` 传递数据集引用。**VLM QLoRA 注意：** `VLMFineTuneConfig` 无量化字段，故 VLM 运行中 `method="qlora"` 会降级为普通 LoRA 并发出明显告警 —— 不进行基座量化（mlx-vlm 的 QLoRA 语义与 mlx-lm 不同，上游未暴露，#797）。
 
 ### 强化监督学习（RLSL）
 - **GRPO** ✅ — 带沙盒奖励的组相对策略优化（数学 + 代码）。两种后端：`rft`（奖励过滤 SFT 近似，默认）与 `grpo`（经 fusion-mlx `/api/fine-tune/grpo/jobs` 的真实策略梯度，#363 Phase 2）。两种后端均端到端可用（#751 已关闭，worker 重新绑定 `generation_stream`）。

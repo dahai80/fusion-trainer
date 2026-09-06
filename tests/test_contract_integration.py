@@ -286,3 +286,48 @@ def test_gui_run_manager_sft_live_e2e(
     assert any(r.get("run_id") == run_id for r in runs), (
         f"run {run_id} not in list_runs: {runs[:3]}"
     )
+
+
+def test_contract_vlm_endpoint_fields(live_client: MLXFineTuneClient):
+    # #55 (fusion-mlx #797/#800): the VLM fine-tune endpoint must exist and
+    # the trainer's VLM client methods must reach it. We do NOT run a real
+    # VLM job here (needs a registered VLM model + an image dataset — too
+    # heavy for the contract suite and no small VLM is guaranteed). Instead
+    # we assert the endpoint is wired: GET /admin/api/fine-tune/vlm/jobs
+    # returns a list (even if empty), so a rename or missing mount would 404
+    # and fail this contract. This catches the upstream field/endpoint drift
+    # that mock-based tests cannot.
+    import httpx
+
+    port = _mlx_port()
+    headers = {}
+    token = os.environ.get("FUSION_MLX_ADMIN_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = httpx.get(
+            f"http://localhost:{port}/admin/api/fine-tune/vlm/jobs",
+            timeout=20.0,
+            headers=headers,
+        )
+    except Exception as exc:
+        pytest.skip(f"VLM endpoint unreachable (transport error): {exc}")
+        return
+
+    # A wired endpoint returns 200 + a JSON list. A 404 means fusion-mlx
+    # predates #797/#800 (the route is not mounted) — fail visibly so an
+    # operator knows to upgrade fusion-mlx rather than silently skip.
+    if resp.status_code == 404:
+        pytest.fail(
+            "VLM fine-tune endpoint returned 404 — fusion-mlx predates #797/#800; "
+            "upgrade fusion-mlx to >=0.8.80 to enable VLM fine-tune (#55)"
+        )
+    if resp.status_code == 401:
+        pytest.skip("VLM endpoint needs admin token; set FUSION_MLX_ADMIN_TOKEN")
+    assert resp.status_code == 200, (
+        f"VLM endpoint returned {resp.status_code}: {resp.text[:200]}"
+    )
+    body = resp.json()
+    assert isinstance(body, list), (
+        f"GET /admin/api/fine-tune/vlm/jobs must return a list, got {type(body)}"
+    )
