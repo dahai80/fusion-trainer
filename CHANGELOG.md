@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc4] - 2026-09-06
+
+Patch release — code-formatting only, no behavior change.
+
+### Changed
+- Applied `ruff format` to `experiment/logger.py`, `run_manager.py`, and the
+  `test_audit_run_manager`/`test_isolation`/`test_load_stability` tests
+  (line-wrapping only). Re-formatted the seatbelt-isolation plan doc.
+
 ## [1.0.0rc3] - 2026-09-06
 
 Vision-language (VLM) fine-tune wiring — closes [#55](https://github.com/dahai80/fusion-trainer/issues/55),
