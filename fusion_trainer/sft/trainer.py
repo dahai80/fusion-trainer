@@ -360,6 +360,214 @@ class SFTTrainer:
         )
         return None
 
+    def _build_vlm_config(self) -> dict[str, Any]:
+        """Map SFTConfig → fusion-mlx VLMFineTuneConfig dict (#55, #797/#800).
+
+        VLMFineTuneConfig (fusion_mlx/training/vlm_service.py) drives
+        mlx_vlm.trainer SFT/LoRA. Its field set is DIFFERENT from the text
+        FineTuneConfig — it has no lr_schedule, mask_prompt, quant_bits,
+        quantize_base, mxfp8, or lora_target_modules. Sending any of those
+        = upstream 400 (TypeError on VLMFineTuneConfig(**body)). Only the
+        declared fields are emitted here.
+        """
+        total_samples = max(1, len(self._train_samples))
+        steps_per_epoch = max(1, total_samples // max(1, self.sft_cfg.batch_size))
+        iters = self.sft_cfg.max_steps or (steps_per_epoch * self.sft_cfg.num_epochs)
+
+        method = self.sft_cfg.method
+        if method == "qlora":
+            # VLMFineTuneConfig has NO quantize field — mlx-vlm QLoRA
+            # semantics differ from mlx-lm and are not exposed upstream
+            # (#797). Degrade to plain LoRA + fail-visible warning so the
+            # user knows VLM QLoRA did not happen.
+            logger.warning(
+                "VLM method='qlora' is not supported by fusion-mlx's VLM "
+                "endpoint (VLMFineTuneConfig has no quantize field, #797); "
+                "falling back to plain LoRA (full_finetune=False). "
+                "No base quantization will occur."
+            )
+            full_finetune = False
+        elif method == "full":
+            full_finetune = True
+        else:
+            full_finetune = False
+
+        cfg: dict[str, Any] = {
+            "lora_rank": self._lora_cfg.rank,
+            "lora_alpha": self._lora_cfg.alpha,
+            "lora_dropout": self._lora_cfg.dropout,
+            "lora_layers": 16,
+            "full_finetune": full_finetune,
+            "train_vision": False,
+            "optimizer": "adamw",
+            "learning_rate": self.sft_cfg.learning_rate,
+            "batch_size": self.sft_cfg.batch_size,
+            "iters": iters,
+            "val_batches": 5,
+            "steps_per_report": self.sft_cfg.log_every,
+            "steps_per_eval": max(self.sft_cfg.log_every * 5, 50),
+            "steps_per_save": self.sft_cfg.save_every,
+            "max_seq_length": self.dataset_cfg.max_seq_length,
+            "grad_checkpoint": False,
+            "grad_accumulation_steps": self.sft_cfg.gradient_accumulation_steps,
+            "seed": self.config.seed,
+            "num_processes": 1,
+        }
+        logger.info(
+            "VLM config built: full_finetune=%s lora_rank=%d iters=%d "
+            "batch_size=%d lr=%s (no lr_schedule/mask_prompt/quant fields — "
+            "VLMFineTuneConfig does not accept them)",
+            full_finetune,
+            self._lora_cfg.rank,
+            iters,
+            self.sft_cfg.batch_size,
+            self.sft_cfg.learning_rate,
+        )
+        return cfg
+
+    def _resolve_vlm_dataset_ref(self) -> str:
+        """Resolve the dataset reference for the VLM endpoint.
+
+        mlx_vlm.lora.load_dataset accepts a HF dataset id string OR a local
+        dir (images + jsonl). Unlike text SFT, the VLM endpoint consumes the
+        raw reference directly — NOT the staged chat-messages jsonl that
+        stage_dataset produces. Resolve from dataset_cfg: a direct path wins
+        (local dir or HF id passed as path); else the hub convention
+        ({model_hub_path}/datasets/{hub_dataset}) as a directory reference.
+        """
+        if self.dataset_cfg.path:
+            return self.dataset_cfg.path
+        if self.dataset_cfg.hub_dataset:
+            hub = self.config.model_hub_path
+            if not hub:
+                raise ValueError(
+                    "hub_dataset requires model_hub_path to be set for VLM "
+                    "(set FUSION_MODEL_HUB or pass model_hub_path)."
+                )
+            # Reuse the same path-traversal guard as DatasetLoader._resolve_path.
+            import os
+            from pathlib import Path as _Path
+
+            if os.path.isabs(self.dataset_cfg.hub_dataset):
+                raise ValueError(
+                    f"hub_dataset must be a relative name, got absolute: "
+                    f"{self.dataset_cfg.hub_dataset!r}"
+                )
+            if any(p == ".." for p in _Path(self.dataset_cfg.hub_dataset).parts):
+                raise ValueError(
+                    f"hub_dataset must not contain '..' segments: "
+                    f"{self.dataset_cfg.hub_dataset!r}"
+                )
+            hub_root = _Path(hub).resolve()
+            datasets_dir = (hub_root / "datasets").resolve()
+            candidate = (datasets_dir / self.dataset_cfg.hub_dataset).resolve()
+            try:
+                candidate.relative_to(datasets_dir)
+            except ValueError:
+                raise ValueError(
+                    f"hub_dataset {self.dataset_cfg.hub_dataset!r} resolves "
+                    f"outside the hub datasets directory — path traversal blocked"
+                )
+            if not candidate.exists():
+                raise FileNotFoundError(
+                    f"VLM dataset '{self.dataset_cfg.hub_dataset}' not found "
+                    f"in hub at {hub}/datasets/"
+                )
+            return str(candidate)
+        raise ValueError(
+            "VLM training requires a dataset: set dataset.path (HF id or local "
+            "dir) or dataset.hub_dataset."
+        )
+
+    def _submit_vlm_job(self, exp_logger: ExperimentLogger) -> dict[str, Any]:
+        """Submit + poll a VLM fine-tune job (#55, fusion-mlx #797/#800).
+
+        Pure HTTP delegation to /admin/api/fine-tune/vlm/jobs. Does NOT call
+        stage_dataset (mlx_vlm consumes the raw dataset ref). Shares the
+        _ingest_progress event path with text SFT so the ExperimentLogger +
+        GUI sink see the same loss/val curves.
+        """
+        from ..mlx_client import MLXFineTuneClient
+
+        mlx_cfg = self._build_vlm_config()
+        adapter_name = self.sft_cfg.run_name or "vlm_run"
+        dataset_ref = self._resolve_vlm_dataset_ref()
+
+        client = MLXFineTuneClient(port=self.config.mlx_port)
+        job = client.create_vlm_job(
+            model_id=self.sft_cfg.model,
+            dataset=dataset_ref,
+            config=mlx_cfg,
+            adapter_name=adapter_name,
+        )
+        job_id = job.get("job_id", "")
+        print(f"      Submitted VLM fine-tune job: {job_id}")
+        print(
+            f"      iters={mlx_cfg['iters']} batch_size={mlx_cfg['batch_size']} "
+            f"lr={mlx_cfg['learning_rate']} full_finetune="
+            f"{mlx_cfg['full_finetune']}"
+        )
+        print(f"      dataset_ref={dataset_ref}")
+        print(f"      {'=' * 50}")
+
+        if self.on_event is not None:
+            self.on_event(
+                {
+                    "type": "job",
+                    "job_id": job_id,
+                    "kind": "vlm",
+                    "iters": mlx_cfg["iters"],
+                }
+            )
+
+        self._global_step = 0
+        try:
+            final_job = client.wait_for_vlm_job(
+                job_id,
+                on_progress=lambda j, ev: self._ingest_progress(j, ev, exp_logger),
+                poll_interval=2.0,
+                is_canceled=getattr(self, "is_canceled", None),
+            )
+        except MLXFineTuneError as exc:
+            print(f"      ✗ VLM training failed: {exc}")
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "output_dir": str(self._output_dir),
+                "method": self.sft_cfg.method,
+                "model_type": "vlm",
+            }
+
+        status = final_job.get("status", "")
+        if status != "completed":
+            print(f"      ✗ VLM job ended with status: {status}")
+            return {
+                "status": status,
+                "error": final_job.get("error", ""),
+                "output_dir": str(self._output_dir),
+                "method": self.sft_cfg.method,
+                "model_type": "vlm",
+            }
+
+        adapter_path = final_job.get("adapter_path", "")
+        self._adapter_path = adapter_path
+        self._save_final(adapter_path=adapter_path)
+
+        result = {
+            "status": "completed",
+            "total_steps": self._global_step,
+            "output_dir": str(self._output_dir),
+            "final_model_path": adapter_path,
+            "adapter_name": adapter_name,
+            "method": self.sft_cfg.method,
+            "model_type": "vlm",
+            "lora_rank": self._lora_cfg.rank if self.sft_cfg.method != "full" else 0,
+            "job_id": job_id,
+        }
+        print("\n      ✓ VLM training complete!")
+        print(f"      Adapter: {adapter_path}")
+        return result
+
     def _run_training(
         self,
         train_loader: list[dict[str, Any]],
@@ -368,9 +576,12 @@ class SFTTrainer:
         """Execute training by delegating to fusion-mlx via HTTP.
 
         Real gradient computation happens inside fusion-mlx's
-        FineTuneService (which wraps mlx_lm.tuner). This method:
-          1. Stages the dataset to a local jsonl
-          2. Submits a fine-tune job to /admin/api/fine-tune/jobs
+        FineTuneService (which wraps mlx_lm.tuner) for text LM models, or
+        VLMFineTuneService (which wraps mlx_vlm.trainer) for vision-language
+        models. This method:
+          1. Stages the dataset to a local jsonl (text LM only)
+          2. Submits a fine-tune job to /admin/api/fine-tune/jobs (text LM)
+             or /admin/api/fine-tune/vlm/jobs (VLM)
           3. Polls job status, streaming real loss into ExperimentLogger
           4. Records the adapter path returned by fusion-mlx
         """
@@ -390,6 +601,15 @@ class SFTTrainer:
         # MLXFineTuneError was caught before, so other exceptions leaked fds.
         client = None
         try:
+            # #55 (fusion-mlx #797/#800): model_type=="vlm" drives the VLM
+            # fine-tune endpoint (mlx_vlm SFT/LoRA over HTTP). The VLM path
+            # does NOT stage a chat-messages jsonl — mlx_vlm.lora.load_dataset
+            # consumes a HF dataset id or a local dir of images + jsonl
+            # directly. Branch early, keep one try/finally.
+            if self.sft_cfg.model_type == "vlm":
+                result = self._submit_vlm_job(exp_logger)
+                return result
+
             staged_dir = self._output_dir / "staged_data"
             dataset_path = MLXFineTuneClient.stage_dataset(
                 train_loader, staged_dir, filename="train.jsonl"

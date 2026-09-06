@@ -452,6 +452,196 @@ class TestRunTraining:
 
 
 # ===========================================================================
+# VLM fine-tune (model_type=="vlm", #55, fusion-mlx #797/#800)
+# ===========================================================================
+
+
+def _patch_mlx_client_vlm(
+    monkeypatch,
+    events: list[dict] | None = None,
+    final_status: str = "completed",
+    adapter_path: str = "/fake/adapters/m/vlm_adapter",
+):
+    """Patch MLXFineTuneClient for the VLM path.
+
+    Records create_vlm_job calls (NOT create_job) and ensures stage_dataset
+    is never invoked. Returns the call list.
+    """
+    calls: list[dict] = []
+    staged_invocations: list[str] = []
+
+    class _FakeVLMClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def close(self):
+            pass
+
+        def health(self):
+            return {"data": [{"id": "test-vlm"}]}
+
+        def create_vlm_job(self, model_id, dataset, config=None, adapter_name=""):
+            calls.append(
+                {
+                    "model_id": model_id,
+                    "dataset": dataset,
+                    "config": config,
+                    "adapter_name": adapter_name,
+                }
+            )
+            return {"job_id": "fake-vlm-job-1", "status": "queued"}
+
+        def wait_for_vlm_job(self, job_id, on_progress=None, **kw):
+            for ev in events or [
+                {
+                    "type": "train_loss",
+                    "step": 1,
+                    "train_loss": 3.1,
+                    "learning_rate": 1e-4,
+                    "it_sec": 0.5,
+                },
+            ]:
+                if on_progress is not None:
+                    on_progress({"status": "running", "events": [ev]}, [ev])
+            return {
+                "status": final_status,
+                "adapter_path": adapter_path,
+                "events": events or [],
+                "error": "" if final_status == "completed" else "boom",
+            }
+
+    import fusion_trainer.mlx_client as mlx_mod
+    import fusion_trainer.sft.trainer as tr_mod
+
+    # Capture stage_dataset so we can assert the VLM path never calls it.
+    _real_stage = mlx_mod.MLXFineTuneClient.stage_dataset
+
+    def _spy_stage(*a, **kw):
+        staged_invocations.append("stage_dataset was called!")
+        return _real_stage(*a, **kw)
+
+    monkeypatch.setattr(mlx_mod, "MLXFineTuneClient", _FakeVLMClient)
+    monkeypatch.setattr(tr_mod, "MLXFineTuneClient", _FakeVLMClient, raising=False)
+    _FakeVLMClient.stage_dataset = staticmethod(_spy_stage)
+    return calls, staged_invocations
+
+
+def _make_vlm_config(
+    method: str = "lora",
+    cache_path: str = "",
+    dataset_path: str = "/tmp/vlm_dataset",
+    **kwargs,
+) -> TrainerConfig:
+    return TrainerConfig(
+        dataset=DatasetConfig(path=dataset_path, max_seq_length=512),
+        sft=SFTConfig(
+            model="test-vlm",
+            method=method,  # type: ignore[arg-type]
+            model_type="vlm",
+            lora_rank=16,
+            lora_alpha=32.0,
+            **kwargs,
+        ),
+        cache_path=cache_path or "/tmp",
+    )
+
+
+class TestVLMTraining:
+    def test_run_training_vlm_submits_to_vlm_endpoint(self, monkeypatch):
+        # #55: model_type=="vlm" routes to create_vlm_job (NOT create_job),
+        # does NOT stage a chat-messages jsonl, returns model_type=="vlm".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_vlm_config(
+                method="lora", cache_path=tmpdir, dataset_path="/tmp/vlm_ds"
+            )
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": f"Q{i}", "output": f"A{i}"} for i in range(8)]
+            calls, staged = _patch_mlx_client_vlm(monkeypatch)
+            result = trainer._run_training(train_loader, [])
+
+            assert result["status"] == "completed"
+            assert result["model_type"] == "vlm"
+            assert result["job_id"] == "fake-vlm-job-1"
+            assert len(calls) == 1
+            assert calls[0]["model_id"] == "test-vlm"
+            assert calls[0]["dataset"] == "/tmp/vlm_ds"
+            cfg_sent = calls[0]["config"]
+            assert cfg_sent["lora_layers"] == 16
+            assert cfg_sent["full_finetune"] is False
+            assert cfg_sent["train_vision"] is False
+            assert "mask_prompt" not in cfg_sent
+            assert "lr_schedule" not in cfg_sent
+            assert "quant_bits" not in cfg_sent
+            assert "quantize_base" not in cfg_sent
+            assert "mxfp8" not in cfg_sent
+            assert staged == []  # VLM path must NOT stage a chat-messages jsonl
+
+    def test_run_training_vlm_qlora_warns_no_quantize(self, monkeypatch, caplog):
+        # VLMFineTuneConfig has no quantize field; method="qlora" on a VLM
+        # run degrades to plain LoRA with a loud warning (fail-visible), and
+        # no quantize_base/quant_bits are sent upstream.
+        import logging
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_vlm_config(
+                method="qlora", cache_path=tmpdir, dataset_path="/tmp/vlm_ds"
+            )
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
+            calls, _ = _patch_mlx_client_vlm(monkeypatch)
+            with caplog.at_level(logging.WARNING, logger="fusion_trainer.sft.trainer"):
+                result = trainer._run_training(train_loader, [])
+
+            assert result["status"] == "completed"
+            cfg_sent = calls[0]["config"]
+            assert cfg_sent["full_finetune"] is False
+            assert "quantize_base" not in cfg_sent
+            assert "quant_bits" not in cfg_sent
+            assert any(
+                "qlora" in rec.message.lower() and "vlm" in rec.message.lower()
+                for rec in caplog.records
+            )
+
+    def test_build_vlm_config_field_names(self):
+        # Assert the exact VLM field set — no text-SFT-only keys leak
+        # (would 400 upstream: VLMFineTuneConfig(**body) TypeError on unknown).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_vlm_config(
+                method="lora", cache_path=tmpdir, dataset_path="/tmp/vlm_ds"
+            )
+            trainer = SFTTrainer(cfg)
+            trainer._train_samples = [
+                {"input": f"Q{i}", "output": f"A{i}"} for i in range(8)
+            ]
+            built = trainer._build_vlm_config()
+
+            expected_keys = {
+                "lora_rank",
+                "lora_alpha",
+                "lora_dropout",
+                "lora_layers",
+                "full_finetune",
+                "train_vision",
+                "optimizer",
+                "learning_rate",
+                "batch_size",
+                "iters",
+                "val_batches",
+                "steps_per_report",
+                "steps_per_eval",
+                "steps_per_save",
+                "max_seq_length",
+                "grad_checkpoint",
+                "grad_accumulation_steps",
+                "seed",
+                "num_processes",
+            }
+            assert set(built.keys()) == expected_keys
+            assert built["iters"] > 0
+            assert built["batch_size"] > 0
+
+
+# ===========================================================================
 # train() — full pipeline
 # ===========================================================================
 
