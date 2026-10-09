@@ -369,8 +369,9 @@ def test_contract_merge_adapter_route(live_client: MLXFineTuneClient):
             "merge-adapter route returned 404 — fusion-mlx predates the "
             "convert/merge-adapter route; upgrade fusion-mlx (#58)"
         )
-    # 400/404/422 for a bad model/adapter is expected — we just need the
-    # route to exist and validate the body, not succeed.
-    assert resp.status_code in (400, 422, 404, 500), (
+    # 400/422 for a bad model/adapter, 403 for missing X-Fusion-Source header
+    # (require_model_hub_source), 500 for a real merge attempt on a bad path —
+    # all prove the route exists and validates the body. We don't need success.
+    assert resp.status_code in (400, 403, 422, 500), (
         f"merge-adapter returned unexpected {resp.status_code}: {resp.text[:200]}"
     )
