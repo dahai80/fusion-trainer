@@ -28,6 +28,10 @@ classifiers = [
 dependencies = [
     # fusion-mlx HTTP client (talks to localhost:11434, no in-process MLX)
     "httpx>=0.27.0",
+    # fusion-core (shared library: DSL schema validation for bnup_prep, #56)
+    "fusion-core",
+    # JSON schema validation (fusion-core dsl_schema dep)
+    "jsonschema>=4.0.0",
     # Data processing
     "numpy>=1.24.0",
     "pyyaml>=6.0",

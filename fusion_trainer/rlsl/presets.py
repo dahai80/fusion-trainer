@@ -71,4 +71,16 @@ RLSL_PRESETS: dict[str, dict] = {
         "save_every": 200,
         "memory_estimate_gb": 62,
     },
+    "bnup_dpo_32b": {
+        "description": "BNUP DPO preference alignment for Qwen2.5-32B (北师大版, beta=0.1, issue #59)",
+        "method": "dpo",
+        "beta": 0.1,
+        "batch_size": 1,
+        "gradient_accumulation_steps": 16,
+        "learning_rate": 5e-6,
+        "num_epochs": 2,
+        "log_every": 5,
+        "save_every": 50,
+        "memory_estimate_gb": 96,
+    },
 }

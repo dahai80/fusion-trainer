@@ -7,6 +7,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc5] - 2026-10-10
+
+BNUP two-stage training pipeline — data prep (#56), DPO negative factory
+(#57), model merge/export (#58), and BNUP SFT+DPO config + pipeline
+orchestration (#59).
+
+### Added
+- **BNUP data preparation (#56):** `dataset/bnup_prep.py`
+  (`validate_dsl_json` via fusion-core, `build_sft_sample`, `process_raw_sft`)
+  + `dataset/bnup_dpo_prep.py` (`create_dpo_pairs`, `normalize_for_trainer`).
+  CLI: `ft bnup-prep --stage sft|dpo`.
+- **DPO negative sample factory (#57):** `dataset/bnup_negatives.py` — 5
+  generators (`make_broken_json`, `make_direct_answer`,
+  `make_wrong_visual_type`, `make_missing_tag`, `make_format_drift`) +
+  `generate_negatives` (configurable ratio, max 5 distinct per sample).
+- **Model merge + export (#58):** `merge.py` (`merge_adapter`,
+  `export_merged_model`, `validate_merged_model`, `merge_and_export`) +
+  `MLXFineTuneClient.merge_adapter` (POST /v1/merge-adapter). CLI: `ft merge`.
+- **BNUP two-stage config (#59):** `configs/bnup_sft_32b.yaml` (8-bit QLoRA,
+  cutoff 4096) + `configs/bnup_dpo_32b.yaml` (beta=0.1, sigmoid). Presets
+  `bnup_sft_32b` / `bnup_dpo_32b`. CLI: `ft bnup-train --stage sft|dpo|pipeline`.
+- **fusion-core dependency:** `validate_dsl_str` used for DSL schema validation
+  (no duplicated schema). `jsonschema` added as explicit dep.
+- **Contract test:** `test_contract_merge_adapter_route` verifies the
+  merge-adapter route exists on live fusion-mlx.
+
+### Upstream
+- Filed [fusion-mlx#1149](https://github.com/dahai80/fusion-mlx/issues/1149):
+  DPO training does not support loading a pre-trained adapter
+  (`init_adapter_path`). Until it lands, the BNUP pipeline runs DPO as a
+  fresh adapter (not chained on SFT output) and merges the DPO adapter with
+  the base. The DPO config documents this gap.
+
 ## [1.0.0rc4] - 2026-09-06
 
 Patch release — code-formatting only, no behavior change.

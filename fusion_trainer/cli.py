@@ -833,6 +833,417 @@ def _load_yaml_config(path: str, section: str) -> dict:
     return section_data
 
 
+# ---------------------------------------------------------------------------
+# BNUP data prep (issue #56)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="bnup-prep")
+def bnup_prep(
+    stage: str = typer.Option(
+        ...,
+        "--stage",
+        help="sft or dpo — prepare SFT JSONL or DPO preference pairs",
+    ),
+    input_file: str = typer.Option(
+        ..., "--input", "-i", help="Input file (raw JSON for sft, SFT JSONL for dpo)"
+    ),
+    output_file: str = typer.Option(
+        ..., "--output", "-o", help="Output JSONL path"
+    ),
+    system_prompt: str = typer.Option(
+        "", "--system-prompt", help="System prompt (default: BNUP Socratic lecturer)"
+    ),
+    neg_ratio: int = typer.Option(
+        3, "--neg-ratio", help="DPO negatives per sample (stage=dpo only)"
+    ),
+):
+    """Prepare BNUP training data (SFT validation or DPO pair generation).
+
+    Stage sft: reads raw {question, thinking, dsl} JSON, validates DSL
+    via fusion-core, outputs <thinking>+<dsl> ShareGPT JSONL.
+
+    Stage dpo: reads SFT JSONL, generates neg_ratio negative variants
+    per sample, outputs ShareGPT preference-pair JSONL.
+    """
+    if stage not in ("sft", "dpo"):
+        typer.echo(f"Error: --stage must be 'sft' or 'dpo', got: {stage}", err=True)
+        raise typer.Exit(1)
+
+    if stage == "sft":
+        from fusion_trainer.dataset.bnup_prep import (
+            DEFAULT_SYSTEM_PROMPT,
+            process_raw_sft,
+        )
+
+        prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        result = process_raw_sft(input_file, output_file, system_prompt=prompt)
+        typer.echo(
+            f"SFT: valid={result['valid']} skipped={result['skipped']} "
+            f"total={result['total']}"
+        )
+    else:
+        from fusion_trainer.dataset.bnup_dpo_prep import create_dpo_pairs
+
+        result = create_dpo_pairs(input_file, output_file, neg_ratio=neg_ratio)
+        typer.echo(
+            f"DPO: pairs={result['pairs']} samples={result['samples']} "
+            f"neg_ratio={result['neg_ratio']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Model merge + export (issue #58)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="merge")
+def merge(
+    base_model: str = typer.Option(
+        ..., "--base", help="Base model name/alias (fusion-mlx model id)"
+    ),
+    adapter_path: str = typer.Option(
+        ..., "--adapter", help="Local path to trained LoRA/DoRA adapter"
+    ),
+    output_dir: str = typer.Option(
+        "", "--output", "-o", help="Output dir for merged SafeTensors (auto if empty)"
+    ),
+    quantize: str = typer.Option(
+        "", "--quantize", help="Post-merge quantization: 4bit or 8bit (none if empty)"
+    ),
+    dequantize: bool = typer.Option(
+        False, "--dequantize", help="Dequantize frozen base to float during merge"
+    ),
+    publish: bool = typer.Option(
+        False, "--publish", help="Register merged model in fusion-model-hub after merge"
+    ),
+):
+    """Merge a trained adapter into the base model via fusion-mlx.
+
+    Calls fusion-mlx POST /v1/merge-adapter, optionally quantizes for
+    Apple Silicon deployment, and (with --publish) registers the result
+    in fusion-model-hub.
+    """
+    import logging
+
+    from fusion_trainer.merge import merge_and_export
+    from fusion_trainer.mlx_client import MLXFineTuneClient, MLXFineTuneError
+
+    logger = logging.getLogger("fusion_trainer")
+    mlx_port = _default_mlx_port_safe()
+    client = MLXFineTuneClient(port=mlx_port)
+    try:
+        result = merge_and_export(
+            client=client,
+            base_model=base_model,
+            adapter_path=adapter_path,
+            output_dir=output_dir,
+            quantize=quantize,
+            dequantize=dequantize,
+        )
+        merge_res = result.get("merge", {})
+        quant_res = result.get("quantize", {})
+        final_path = result.get("final_model_path", "")
+        typer.echo(f"✅ Merge complete: {final_path}")
+        typer.echo(f"   Status: {merge_res.get('status', '?')}")
+        if quant_res.get("status") != "skipped":
+            typer.echo(f"   Quantize: {quant_res}")
+
+        if publish:
+            from fusion_trainer.hub_client import publish_adapter_if_enabled
+
+            publish_adapter_if_enabled(
+                adapter_name=Path(output_dir).name if output_dir else "",
+                adapter_path=final_path,
+                base_model=base_model,
+                logger=logger,
+            )
+    except MLXFineTuneError as exc:
+        typer.echo(f"Error: merge failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    finally:
+        client.close()
+
+
+# ---------------------------------------------------------------------------
+# BNUP two-stage pipeline (issue #59)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="bnup-train")
+def bnup_train(
+    stage: str = typer.Option(
+        "sft",
+        "--stage",
+        help="sft | dpo | pipeline (pipeline = SFT → DPO → merge)",
+    ),
+    model: str = typer.Option(
+        ..., "--model", "-m", help="Base model (fusion-mlx alias, e.g. Qwen2.5-32B-Instruct)"
+    ),
+    sft_config: str = typer.Option(
+        "configs/bnup_sft_32b.yaml", "--sft-config", help="SFT config YAML"
+    ),
+    dpo_config: str = typer.Option(
+        "configs/bnup_dpo_32b.yaml", "--dpo-config", help="DPO config YAML"
+    ),
+    sft_dataset: str = typer.Option(
+        ..., "--sft-data", help="SFT dataset (hub:sft/xxx or /path/to/sft.jsonl)"
+    ),
+    dpo_dataset: str = typer.Option(
+        "", "--dpo-data", help="DPO dataset (required for dpo/pipeline stages)"
+    ),
+    merge_output: str = typer.Option(
+        "", "--merge-output", help="Merged model output dir (pipeline stage)"
+    ),
+    preset: str = typer.Option("", "--preset", help="Override preset (bnup_sft_32b / bnup_dpo_32b)"),
+):
+    """Run BNUP two-stage training (SFT → DPO → merge).
+
+    Stage sft: run BNUP SFT (8-bit QLoRA, <thinking>+<dsl> format).
+    Stage dpo: run BNUP DPO preference alignment (beta=0.1).
+    Stage pipeline: SFT → DPO → merge sequentially.
+
+    NOTE: DPO adapter chaining on SFT output requires upstream fusion-mlx
+    support (dpo_service adapter_path). Until then, DPO trains a fresh
+    adapter; the pipeline merges the DPO adapter with the base.
+    """
+    if stage not in ("sft", "dpo", "pipeline"):
+        typer.echo(f"Error: --stage must be sft/dpo/pipeline, got: {stage}", err=True)
+        raise typer.Exit(1)
+
+    if stage in ("dpo", "pipeline") and not dpo_dataset:
+        typer.echo("Error: --dpo-data required for dpo/pipeline stage", err=True)
+        raise typer.Exit(1)
+
+    import logging
+
+    logger = logging.getLogger("fusion_trainer")
+
+    def _run_sft_stage() -> dict:
+        typer.echo("─" * 50)
+        typer.echo("BNUP Stage 1: SFT (8-bit QLoRA)")
+        typer.echo("─" * 50)
+        sft_preset = preset or "bnup_sft_32b"
+        _invoke_sft(
+            config=sft_config,
+            model=model,
+            dataset=sft_dataset,
+            preset=sft_preset,
+            logger=logger,
+        )
+        return {"stage": "sft", "status": "completed"}
+
+    def _run_dpo_stage() -> dict:
+        typer.echo("─" * 50)
+        typer.echo("BNUP Stage 2: DPO preference alignment")
+        typer.echo("─" * 50)
+        dpo_preset = preset or "bnup_dpo_32b"
+        _invoke_rlsl(
+            config=dpo_config,
+            model=model,
+            dataset=dpo_dataset,
+            preset=dpo_preset,
+            method="dpo",
+            logger=logger,
+        )
+        return {"stage": "dpo", "status": "completed"}
+
+    if stage == "sft":
+        _run_sft_stage()
+    elif stage == "dpo":
+        _run_dpo_stage()
+    else:
+        _run_sft_stage()
+        _run_dpo_stage()
+        if merge_output:
+            typer.echo("─" * 50)
+            typer.echo("BNUP Stage 3: Merge adapter → base model")
+            typer.echo("─" * 50)
+            from fusion_trainer.merge import merge_adapter
+            from fusion_trainer.mlx_client import MLXFineTuneClient, MLXFineTuneError
+
+            client = MLXFineTuneClient(port=_default_mlx_port_safe())
+            try:
+                result = merge_adapter(
+                    client=client,
+                    base_model=model,
+                    adapter_path=merge_output,
+                    output_dir=merge_output,
+                )
+                typer.echo(f"✅ Merge: {result.get('output_path', '?')}")
+            except MLXFineTuneError as exc:
+                typer.echo(f"Error: merge failed: {exc}", err=True)
+                raise typer.Exit(1) from exc
+            finally:
+                client.close()
+
+    typer.echo("✅ BNUP training complete.")
+
+
+def _default_mlx_port_safe() -> int:
+    try:
+        from .config import _default_mlx_port
+
+        return _default_mlx_port()
+    except Exception:
+        return 11434
+
+
+def _invoke_sft(
+    config: str,
+    model: str,
+    dataset: str,
+    preset: str,
+    logger: Any,
+) -> None:
+    """Invoke the SFT training path (reuses SFTTrainer)."""
+    from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
+    from fusion_trainer.sft.presets import SFT_PRESETS
+    from fusion_trainer.sft.trainer import SFTTrainer
+
+    yaml_sft = _load_yaml_config(config, section="sft")
+    yaml_dataset = _load_yaml_config(config, section="dataset")
+
+    preset_vals: dict = {}
+    if preset:
+        if preset not in SFT_PRESETS:
+            raise typer.BadParameter(
+                f"Unknown preset '{preset}'. Available: {', '.join(sorted(SFT_PRESETS))}"
+            )
+        preset_vals = SFT_PRESETS[preset]
+        logger.info("Loaded preset '%s' (%s)", preset, preset_vals.get("description", ""))
+
+    def _pick(key: str, default: Any = None) -> Any:
+        if key in preset_vals:
+            return preset_vals[key]
+        if key in yaml_sft:
+            return yaml_sft[key]
+        return default
+
+    sft_cfg = SFTConfig(
+        model=model or str(_pick("model", "")),
+        model_type=str(_pick("model_type", "lm")),  # type: ignore[arg-type]
+        method=str(_pick("method", "lora")),  # type: ignore[arg-type]
+        lora_rank=int(_pick("lora_rank", 16)),
+        lora_alpha=float(_pick("lora_alpha", 32.0)),
+        lora_dropout=float(_pick("lora_dropout", 0.05)),
+        quant_bits=int(_pick("quant_bits", 4)),
+        batch_size=int(_pick("batch_size", 1)),
+        gradient_accumulation_steps=int(_pick("gradient_accumulation_steps", 4)),
+        learning_rate=float(_pick("learning_rate", 2e-5)),
+        lr_scheduler=str(_pick("lr_scheduler", "cosine")),
+        warmup_steps=int(_pick("warmup_steps", 100)),
+        num_epochs=int(_pick("num_epochs", 3)),
+        weight_decay=float(_pick("weight_decay", 0.01)),
+        max_grad_norm=float(_pick("max_grad_norm", 1.0)),
+        use_mxfp8=bool(_pick("use_mxfp8", False)),
+        save_every=int(_pick("save_every", 500)),
+        log_every=int(_pick("log_every", 10)),
+        run_name=str(_pick("run_name", "")),
+        output_dir=str(_pick("output_dir", "")),
+    )
+
+    _path, _hub_dataset = _parse_dataset_arg(dataset)
+    if not _path and not _hub_dataset and yaml_dataset.get("hub_dataset"):
+        _hub_dataset = str(yaml_dataset["hub_dataset"])
+
+    cfg = TrainerConfig(
+        dataset=DatasetConfig(
+            path=_path,
+            hub_dataset=_hub_dataset,
+            max_seq_length=int(yaml_dataset.get("max_seq_length", 4096)),
+        ),
+        sft=sft_cfg,
+    )
+
+    trainer = SFTTrainer(cfg)
+    result = trainer.train()
+    if not result or result.get("status") not in ("completed", "succeeded", "ok"):
+        err = (result or {}).get("error", "training failed")
+        typer.echo(f"✗ BNUP SFT failed: {err}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ BNUP SFT done: {result.get('adapter_name', '')}")
+
+
+def _invoke_rlsl(
+    config: str,
+    model: str,
+    dataset: str,
+    preset: str,
+    method: str,
+    logger: Any,
+) -> None:
+    """Invoke the RLSL/DPO training path (reuses RLSLEngine)."""
+    from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
+    from fusion_trainer.rlsl.pipeline import RLSLEngine
+    from fusion_trainer.rlsl.presets import RLSL_PRESETS
+
+    yaml_rlsl = _load_yaml_config(config, section="rlsl")
+    yaml_sft = _load_yaml_config(config, section="sft")
+    yaml_dataset = _load_yaml_config(config, section="dataset")
+
+    preset_vals: dict = {}
+    if preset:
+        if preset not in RLSL_PRESETS:
+            raise typer.BadParameter(
+                f"Unknown preset '{preset}'. Available: {', '.join(sorted(RLSL_PRESETS))}"
+            )
+        preset_vals = RLSL_PRESETS[preset]
+        logger.info("Loaded preset '%s' (%s)", preset, preset_vals.get("description", ""))
+
+    def _pick(key: str, default: Any = None) -> Any:
+        if key in preset_vals:
+            return preset_vals[key]
+        if key in yaml_rlsl:
+            return yaml_rlsl[key]
+        return default
+
+    rlsl_kwargs: dict[str, Any] = {
+        "method": method,
+        "beta": float(_pick("beta", 0.1)),
+        "batch_size": int(_pick("batch_size", 1)),
+        "learning_rate": float(_pick("learning_rate", 5e-6)),
+        "num_epochs": int(_pick("num_epochs", 1)),
+        "log_every": int(_pick("log_every", 10)),
+        "save_every": int(_pick("save_every", 200)),
+        "run_name": str(_pick("run_name", "")),
+        "output_dir": str(_pick("output_dir", "")),
+    }
+
+    from fusion_trainer.config import RLSLConfig
+
+    rlsl_cfg = RLSLConfig(**rlsl_kwargs)
+
+    sft_cfg = SFTConfig(
+        model=model or str(yaml_sft.get("model", "")),
+        lora_rank=int(yaml_sft.get("lora_rank", 16)),
+        lora_alpha=float(yaml_sft.get("lora_alpha", 32.0)),
+        lora_dropout=float(yaml_sft.get("lora_dropout", 0.05)),
+    )
+
+    _path, _hub_dataset = _parse_dataset_arg(dataset)
+    if not _path and not _hub_dataset and yaml_dataset.get("hub_dataset"):
+        _hub_dataset = str(yaml_dataset["hub_dataset"])
+
+    cfg = TrainerConfig(
+        dataset=DatasetConfig(
+            path=_path,
+            hub_dataset=_hub_dataset,
+            max_seq_length=int(yaml_dataset.get("max_seq_length", 4096)),
+        ),
+        sft=sft_cfg,
+        rlsl=rlsl_cfg,
+    )
+
+    engine = RLSLEngine(cfg)
+    result = engine.run()
+    if not result or result.get("status") not in ("completed", "succeeded", "ok"):
+        err = (result or {}).get("error", "training failed")
+        typer.echo(f"✗ BNUP {method} failed: {err}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ BNUP {method} done: {result.get('adapter_name', '')}")
+
+
 def _parse_dataset_arg(arg: str) -> tuple[str, str]:
     """Parse a --dataset argument.
 
