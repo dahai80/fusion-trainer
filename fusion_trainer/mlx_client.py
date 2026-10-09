@@ -52,6 +52,7 @@ REWARD_JOBS_PATH = "/admin/api/fine-tune/reward/jobs"
 REWARD_SCORE_PATH = "/admin/api/fine-tune/reward/score"
 VLM_JOBS_PATH = "/admin/api/fine-tune/vlm/jobs"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
+MERGE_ADAPTER_PATH = "/v1/merge-adapter"
 
 
 class MLXFineTuneError(RuntimeError):
@@ -767,6 +768,47 @@ class MLXFineTuneClient:
     # ------------------------------------------------------------------
     # Adapter management
     # ------------------------------------------------------------------
+
+    def merge_adapter(
+        self,
+        model: str,
+        adapter_path: str,
+        output_path: str = "",
+        dequantize: bool = False,
+        upload_repo: str = "",
+    ) -> dict[str, Any]:
+        """Merge a trained LoRA/DoRA adapter into the base model via fusion-mlx.
+
+        POST /v1/merge-adapter (convert router, admin-gated). fusion-mlx
+        loads base+adapter, fuses LoRA/DoRA layers, optionally dequantizes,
+        and writes SafeTensors to output_path. Returns {status, model,
+        output_path}. This is a synchronous call (blocks until merge done).
+        """
+        body: dict[str, Any] = {
+            "model": model,
+            "adapter_path": adapter_path,
+            "dequantize": dequantize,
+        }
+        if output_path:
+            body["output_path"] = output_path
+        if upload_repo:
+            body["upload_repo"] = upload_repo
+        logger.info(
+            "merge_adapter: model=%s adapter=%s -> %s (dequantize=%s)",
+            model,
+            adapter_path,
+            output_path or "(auto)",
+            dequantize,
+        )
+        result = self._request(
+            "POST",
+            f"{self._base}{MERGE_ADAPTER_PATH}",
+            json_body=body,
+            max_retries=1,
+        )
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("merge_adapter returned non-dict")
 
     def list_adapters(self, model_id: str = "") -> list[dict[str, Any]]:
         # A8 note: a read/list probe for GUI refresh + publish precheck — fail

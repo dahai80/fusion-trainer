@@ -331,3 +331,46 @@ def test_contract_vlm_endpoint_fields(live_client: MLXFineTuneClient):
     assert isinstance(body, list), (
         f"GET /admin/api/fine-tune/vlm/jobs must return a list, got {type(body)}"
     )
+
+
+@pytest.mark.integration
+def test_contract_merge_adapter_route(live_client: MLXFineTuneClient):
+    """Verify the merge-adapter route exists and accepts the expected body shape.
+
+    POST /v1/merge-adapter (issue #58). We don't run a real merge (needs a
+    trained adapter), just verify the route responds to a well-formed request
+    with the expected error class (400 for missing adapter, NOT 404).
+    """
+    import httpx
+
+    port = _mlx_port()
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("FUSION_MLX_ADMIN_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = httpx.post(
+            f"http://localhost:{port}/v1/merge-adapter",
+            json={
+                "model": "__contract_probe__",
+                "adapter_path": "/nonexistent/adapter",
+                "dequantize": False,
+            },
+            timeout=20.0,
+            headers=headers,
+        )
+    except Exception as exc:
+        pytest.skip(f"merge-adapter route unreachable (transport error): {exc}")
+        return
+
+    # A 404 means the route isn't mounted (fusion-mlx too old for #58).
+    if resp.status_code == 404:
+        pytest.fail(
+            "merge-adapter route returned 404 — fusion-mlx predates the "
+            "convert/merge-adapter route; upgrade fusion-mlx (#58)"
+        )
+    # 400/404/422 for a bad model/adapter is expected — we just need the
+    # route to exist and validate the body, not succeed.
+    assert resp.status_code in (400, 422, 404, 500), (
+        f"merge-adapter returned unexpected {resp.status_code}: {resp.text[:200]}"
+    )

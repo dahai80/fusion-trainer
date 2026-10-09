@@ -160,6 +160,9 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 | `fusion-trainer sft` | 运行监督微调 |
 | `fusion-trainer rlsl` | 运行 DPO/ORPO/RLSL/GRPO 对齐 |
 | `fusion-trainer publish <run_id>` | 发布已完成 run 的 LoRA 适配器到 Hub |
+| `fusion-trainer bnup-prep --stage sft\|dpo` | BNUP 数据准备（SFT 校验 / DPO 负样本生成，#56/#57） |
+| `fusion-trainer bnup-train --stage sft\|dpo\|pipeline` | BNUP 两阶段训练（SFT → DPO → 合并，#59） |
+| `fusion-trainer merge --base <模型> --adapter <路径>` | 合并适配器到基座模型（#58） |
 | `fusion-trainer info` | 查看系统信息与硬件检查 |
 | `fusion-trainer --help` | 查看完整帮助 |
 
