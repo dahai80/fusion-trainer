@@ -951,21 +951,43 @@ def merge(
         )
         merge_res = result.get("merge", {})
         quant_res = result.get("quantize", {})
+        val_res = result.get("validation", {})
         final_path = result.get("final_model_path", "")
         typer.echo(f"✅ Merge complete: {final_path}")
         typer.echo(f"   Status: {merge_res.get('status', '?')}")
         if quant_res.get("status") != "skipped":
             typer.echo(f"   Quantize: {quant_res}")
+        if val_res.get("status") == "completed":
+            tag = "✓" if val_res.get("valid") else "⚠"
+            typer.echo(
+                f"   {tag} Validation: thinking={val_res.get('has_thinking')} "
+                f"dsl={val_res.get('has_dsl')} json={val_res.get('dsl_valid_json')}"
+            )
+        elif val_res.get("status") == "failed":
+            typer.echo(f"   ⚠ Validation: {val_res.get('reason', 'failed')}")
 
         if publish:
-            from fusion_trainer.hub_client import publish_adapter_if_enabled
+            from fusion_trainer.config import _default_hub_api_key, _default_hub_url
+            from fusion_trainer.hub_client import HubPublishError, ModelHubClient
 
-            publish_adapter_if_enabled(
-                adapter_name=Path(output_dir).name if output_dir else "",
-                adapter_path=final_path,
-                base_model=base_model,
-                logger=logger,
+            merged_name = (
+                Path(output_dir).name if output_dir else f"{base_model}-merged"
             )
+            hub_url = _default_hub_url()
+            api_key = _default_hub_api_key()
+            try:
+                hub = ModelHubClient(base_url=hub_url, api_key=api_key)
+                pub = hub.publish_merged_model(
+                    name=merged_name,
+                    base_model=base_model,
+                )
+                if pub.get("published"):
+                    typer.echo(
+                        f"✓ Merged model published to hub: "
+                        f"{pub.get('model', {}).get('id', '')}"
+                    )
+            except HubPublishError as exc:
+                typer.echo(f"⚠ Merged model publish failed (non-blocking): {exc}")
     except MLXFineTuneError as exc:
         typer.echo(f"Error: merge failed: {exc}", err=True)
         raise typer.Exit(1) from exc

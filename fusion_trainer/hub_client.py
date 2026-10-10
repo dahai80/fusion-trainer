@@ -226,6 +226,94 @@ class ModelHubClient:
             detail = resp.text
         raise HubPublishError(f"hub POST {url} failed: {resp.status_code} {detail}")
 
+    def publish_merged_model(
+        self,
+        name: str,
+        base_model: str = "",
+        description: str = "",
+        architecture: str = "",
+        params_size: str = "",
+    ) -> dict[str, Any]:
+        """Register a merged (full) model as model_type=mlx in the hub.
+
+        Unlike publish_adapter (model_type=lora + base_model_id FK), a merged
+        model is a standalone MLX model — no base_model_id. Used by the merge
+        CLI --publish path (issue #58). Idempotent on 409 via the same
+        _find_existing_lora pattern (adapted for model_type=mlx).
+        """
+        if not name or len(name) < 3:
+            raise HubPublishError(f"model name too short (min 3): {name!r}")
+        payload: dict[str, Any] = {
+            "name": name,
+            "model_type": "mlx",
+            "description": description
+            or f"Merged model from fusion-trainer (base: {base_model})",
+        }
+        if architecture:
+            payload["architecture"] = architecture
+        if params_size:
+            payload["params_size"] = params_size
+        url = f"{self._base}{MODELS_PATH}"
+        logger.info("publish_merged_model: POST %s name=%s", url, name)
+        try:
+            resp = httpx.post(
+                url, json=payload, headers=self._headers, timeout=self._timeout
+            )
+        except httpx.HTTPError as exc:
+            raise HubPublishError(f"hub POST transport error: {exc}") from exc
+        if resp.status_code == 201:
+            body: dict[str, Any] = {}
+            if resp.content:
+                try:
+                    parsed = resp.json()
+                    body = parsed if isinstance(parsed, dict) else {}
+                except ValueError:
+                    logger.warning(
+                        "publish_merged_model: 201 with non-JSON body: %s",
+                        resp.text[:200],
+                    )
+            if not body.get("id"):
+                raise HubPublishError(
+                    f"hub POST {url} returned 201 but no model id for name={name}"
+                )
+            logger.info(
+                "publish_merged_model: created model_id=%s name=%s",
+                body.get("id"),
+                name,
+            )
+            return {"published": True, "model": body, "status_code": 201}
+        if resp.status_code == 409:
+            existing = self._find_existing_model(name, "mlx")
+            if existing is not None:
+                logger.info(
+                    "publish_merged_model: name=%s already published (idempotent)",
+                    name,
+                )
+                return {
+                    "published": True,
+                    "model": existing,
+                    "status_code": 409,
+                    "idempotent": True,
+                }
+        detail = ""
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HubPublishError(f"hub POST {url} failed: {resp.status_code} {detail}")
+
+    def _find_existing_model(self, name: str, model_type: str) -> dict[str, Any] | None:
+        """Best-effort exact-name match among hub models of a given type (L4)."""
+        try:
+            candidates = self.list_models(model_type=model_type, name=name)
+        except HubPublishError as exc:
+            logger.warning("publish idempotency check failed (non-fatal): %s", exc)
+            return None
+        for m in candidates:
+            if str(m.get("name", "")) == name:
+                return m
+        return None
+
 
 def _extract_adapter_name(result: dict[str, Any]) -> str:
     # SFT + RLSL dpo/orpo/grpo return adapter_name at top level.
