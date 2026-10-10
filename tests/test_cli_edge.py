@@ -417,3 +417,64 @@ class TestCLIEdgeCases:
                 assert tmpdir in result.stdout
             finally:
                 del os.environ["FUSION_MODEL_HUB"]
+
+
+# ===========================================================================
+# DPO adapter chaining (fusion-mlx #1149)
+# ===========================================================================
+
+
+class TestDPOAdapterChaining:
+    def test_rlsl_has_init_adapter_path_flag(self):
+        assert "init_adapter_path" in _cli_params("rlsl")
+
+    def test_bnup_train_has_init_adapter_path_flag(self):
+        assert "init_adapter_path" in _cli_params("bnup-train")
+
+    def test_rlsl_init_adapter_path_flows_to_config(self, monkeypatch, tmp_path):
+        # --init-adapter-path reaches RLSLConfig.init_adapter_path.
+        captured: dict = {}
+
+        class FakeEngine:
+            def __init__(self, cfg):
+                captured["rlsl"] = cfg.rlsl
+
+            def run(self):
+                return {"status": "completed", "adapter_name": "x"}
+
+        monkeypatch.setattr("fusion_trainer.rlsl.pipeline.RLSLEngine", FakeEngine)
+        result = runner.invoke(
+            app,
+            [
+                "rlsl",
+                "--model",
+                "m",
+                "--dataset",
+                "/x.jsonl",
+                "--method",
+                "dpo",
+                "--init-adapter-path",
+                "/sft/adapter",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["rlsl"].init_adapter_path == "/sft/adapter"
+
+    def test_rlsl_empty_init_adapter_path_omitted(self, monkeypatch, tmp_path):
+        # No flag → init_adapter_path empty (backward compat, fresh LoRA).
+        captured: dict = {}
+
+        class FakeEngine:
+            def __init__(self, cfg):
+                captured["rlsl"] = cfg.rlsl
+
+            def run(self):
+                return {"status": "completed", "adapter_name": "x"}
+
+        monkeypatch.setattr("fusion_trainer.rlsl.pipeline.RLSLEngine", FakeEngine)
+        result = runner.invoke(
+            app,
+            ["rlsl", "--model", "m", "--dataset", "/x.jsonl", "--method", "dpo"],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["rlsl"].init_adapter_path == ""

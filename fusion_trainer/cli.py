@@ -403,6 +403,13 @@ def rlsl(
         "--publish",
         help="Publish the trained LoRA adapter to fusion-model-hub on completion (issue #49). Failures warn but do not block the run.",
     ),
+    init_adapter_path: str = typer.Option(
+        "",
+        "--init-adapter-path",
+        help="SFT adapter path to chain DPO/ORPO on (fusion-mlx #1149). The "
+        "policy model loads with this adapter before alignment training; "
+        "reference model stays base-only. Empty = fresh LoRA.",
+    ),
 ):
     """Run RLSL / DPO / ORPO alignment.
 
@@ -517,6 +524,9 @@ def rlsl(
         rlsl_kwargs["reward_batch_size"] = reward_batch_size
     if reward_num_epochs > 0:
         rlsl_kwargs["reward_num_epochs"] = reward_num_epochs
+    # #1149: DPO/ORPO adapter chaining on a prior SFT adapter.
+    if init_adapter_path:
+        rlsl_kwargs["init_adapter_path"] = init_adapter_path
 
     cfg = TrainerConfig(
         seed=seed,
@@ -848,9 +858,7 @@ def bnup_prep(
     input_file: str = typer.Option(
         ..., "--input", "-i", help="Input file (raw JSON for sft, SFT JSONL for dpo)"
     ),
-    output_file: str = typer.Option(
-        ..., "--output", "-o", help="Output JSONL path"
-    ),
+    output_file: str = typer.Option(..., "--output", "-o", help="Output JSONL path"),
     system_prompt: str = typer.Option(
         "", "--system-prompt", help="System prompt (default: BNUP Socratic lecturer)"
     ),
@@ -978,7 +986,10 @@ def bnup_train(
         help="sft | dpo | pipeline (pipeline = SFT → DPO → merge)",
     ),
     model: str = typer.Option(
-        ..., "--model", "-m", help="Base model (fusion-mlx alias, e.g. Qwen2.5-32B-Instruct)"
+        ...,
+        "--model",
+        "-m",
+        help="Base model (fusion-mlx alias, e.g. Qwen2.5-32B-Instruct)",
     ),
     sft_config: str = typer.Option(
         "configs/bnup_sft_32b.yaml", "--sft-config", help="SFT config YAML"
@@ -995,7 +1006,15 @@ def bnup_train(
     merge_output: str = typer.Option(
         "", "--merge-output", help="Merged model output dir (pipeline stage)"
     ),
-    preset: str = typer.Option("", "--preset", help="Override preset (bnup_sft_32b / bnup_dpo_32b)"),
+    preset: str = typer.Option(
+        "", "--preset", help="Override preset (bnup_sft_32b / bnup_dpo_32b)"
+    ),
+    init_adapter_path: str = typer.Option(
+        "",
+        "--init-adapter-path",
+        help="SFT adapter path to chain DPO on (dpo stage; fusion-mlx #1149). "
+        "Pipeline stage auto-fills this from SFT output.",
+    ),
 ):
     """Run BNUP two-stage training (SFT → DPO → merge).
 
@@ -1003,9 +1022,11 @@ def bnup_train(
     Stage dpo: run BNUP DPO preference alignment (beta=0.1).
     Stage pipeline: SFT → DPO → merge sequentially.
 
-    NOTE: DPO adapter chaining on SFT output requires upstream fusion-mlx
-    support (dpo_service adapter_path). Until then, DPO trains a fresh
-    adapter; the pipeline merges the DPO adapter with the base.
+    DPO adapter chaining (fusion-mlx #1149, closed via PR #1152): the SFT
+    adapter path flows into DPO's init_adapter_path, so the policy model
+    loads with the SFT adapter before DPO training. The reference model
+    stays base-only (DPO theory). The pipeline then merges the DPO adapter
+    (which carries the SFT-then-DPO signal) with the base model.
     """
     if stage not in ("sft", "dpo", "pipeline"):
         typer.echo(f"Error: --stage must be sft/dpo/pipeline, got: {stage}", err=True)
@@ -1024,37 +1045,46 @@ def bnup_train(
         typer.echo("BNUP Stage 1: SFT (8-bit QLoRA)")
         typer.echo("─" * 50)
         sft_preset = preset or "bnup_sft_32b"
-        _invoke_sft(
+        result = _invoke_sft(
             config=sft_config,
             model=model,
             dataset=sft_dataset,
             preset=sft_preset,
             logger=logger,
         )
-        return {"stage": "sft", "status": "completed"}
+        return {"stage": "sft", "status": "completed", "result": result}
 
-    def _run_dpo_stage() -> dict:
+    def _run_dpo_stage(init_adapter_path: str = "") -> dict:
         typer.echo("─" * 50)
         typer.echo("BNUP Stage 2: DPO preference alignment")
         typer.echo("─" * 50)
+        if init_adapter_path:
+            typer.echo(f"       Chaining on SFT adapter: {init_adapter_path}")
         dpo_preset = preset or "bnup_dpo_32b"
-        _invoke_rlsl(
+        result = _invoke_rlsl(
             config=dpo_config,
             model=model,
             dataset=dpo_dataset,
             preset=dpo_preset,
             method="dpo",
             logger=logger,
+            init_adapter_path=init_adapter_path,
         )
-        return {"stage": "dpo", "status": "completed"}
+        return {"stage": "dpo", "status": "completed", "result": result}
 
     if stage == "sft":
         _run_sft_stage()
     elif stage == "dpo":
-        _run_dpo_stage()
+        _run_dpo_stage(init_adapter_path=init_adapter_path)
     else:
-        _run_sft_stage()
-        _run_dpo_stage()
+        sft_outcome = _run_sft_stage()
+        sft_adapter = (sft_outcome.get("result") or {}).get("final_model_path", "")
+        if not sft_adapter:
+            logger.warning(
+                "BNUP pipeline: SFT produced no adapter_path — DPO will train "
+                "a fresh LoRA (no chaining). Check SFT logs."
+            )
+        dpo_outcome = _run_dpo_stage(init_adapter_path=sft_adapter)
         if merge_output:
             typer.echo("─" * 50)
             typer.echo("BNUP Stage 3: Merge adapter → base model")
@@ -1062,12 +1092,21 @@ def bnup_train(
             from fusion_trainer.merge import merge_adapter
             from fusion_trainer.mlx_client import MLXFineTuneClient, MLXFineTuneError
 
+            dpo_adapter = (dpo_outcome.get("result") or {}).get("adapter_path", "")
+            merge_adapter_path = dpo_adapter or sft_adapter
+            if not merge_adapter_path:
+                typer.echo(
+                    "Error: no adapter path to merge (both SFT and DPO empty)",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            typer.echo(f"       Merging adapter: {merge_adapter_path}")
             client = MLXFineTuneClient(port=_default_mlx_port_safe())
             try:
                 result = merge_adapter(
                     client=client,
                     base_model=model,
-                    adapter_path=merge_output,
+                    adapter_path=merge_adapter_path,
                     output_dir=merge_output,
                 )
                 typer.echo(f"✅ Merge: {result.get('output_path', '?')}")
@@ -1095,8 +1134,11 @@ def _invoke_sft(
     dataset: str,
     preset: str,
     logger: Any,
-) -> None:
-    """Invoke the SFT training path (reuses SFTTrainer)."""
+) -> dict:
+    """Invoke the SFT training path (reuses SFTTrainer).
+
+    Returns the SFTTrainer result dict (carries adapter_path for DPO chaining).
+    """
     from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
     from fusion_trainer.sft.presets import SFT_PRESETS
     from fusion_trainer.sft.trainer import SFTTrainer
@@ -1111,7 +1153,9 @@ def _invoke_sft(
                 f"Unknown preset '{preset}'. Available: {', '.join(sorted(SFT_PRESETS))}"
             )
         preset_vals = SFT_PRESETS[preset]
-        logger.info("Loaded preset '%s' (%s)", preset, preset_vals.get("description", ""))
+        logger.info(
+            "Loaded preset '%s' (%s)", preset, preset_vals.get("description", "")
+        )
 
     def _pick(key: str, default: Any = None) -> Any:
         if key in preset_vals:
@@ -1163,6 +1207,7 @@ def _invoke_sft(
         typer.echo(f"✗ BNUP SFT failed: {err}", err=True)
         raise typer.Exit(1)
     typer.echo(f"✓ BNUP SFT done: {result.get('adapter_name', '')}")
+    return result
 
 
 def _invoke_rlsl(
@@ -1172,8 +1217,13 @@ def _invoke_rlsl(
     preset: str,
     method: str,
     logger: Any,
-) -> None:
-    """Invoke the RLSL/DPO training path (reuses RLSLEngine)."""
+    init_adapter_path: str = "",
+) -> dict:
+    """Invoke the RLSL/DPO training path (reuses RLSLEngine).
+
+    init_adapter_path: SFT adapter path to chain DPO/ORPO on (fusion-mlx #1149).
+    Empty = fresh LoRA. Returns the engine result dict (carries adapter_path).
+    """
     from fusion_trainer.config import DatasetConfig, SFTConfig, TrainerConfig
     from fusion_trainer.rlsl.pipeline import RLSLEngine
     from fusion_trainer.rlsl.presets import RLSL_PRESETS
@@ -1189,7 +1239,9 @@ def _invoke_rlsl(
                 f"Unknown preset '{preset}'. Available: {', '.join(sorted(RLSL_PRESETS))}"
             )
         preset_vals = RLSL_PRESETS[preset]
-        logger.info("Loaded preset '%s' (%s)", preset, preset_vals.get("description", ""))
+        logger.info(
+            "Loaded preset '%s' (%s)", preset, preset_vals.get("description", "")
+        )
 
     def _pick(key: str, default: Any = None) -> Any:
         if key in preset_vals:
@@ -1209,6 +1261,12 @@ def _invoke_rlsl(
         "run_name": str(_pick("run_name", "")),
         "output_dir": str(_pick("output_dir", "")),
     }
+    # #1149: chain DPO/ORPO on a prior SFT adapter when provided.
+    # RLSLConfig.init_adapter_path flows into the fusion-mlx DPO job config,
+    # so the policy model loads with the SFT adapter (reference stays base-only).
+    if init_adapter_path:
+        rlsl_kwargs["init_adapter_path"] = init_adapter_path
+        logger.info("BNUP %s: chaining on SFT adapter %s", method, init_adapter_path)
 
     from fusion_trainer.config import RLSLConfig
 
@@ -1242,6 +1300,7 @@ def _invoke_rlsl(
         typer.echo(f"✗ BNUP {method} failed: {err}", err=True)
         raise typer.Exit(1)
     typer.echo(f"✓ BNUP {method} done: {result.get('adapter_name', '')}")
+    return result
 
 
 def _parse_dataset_arg(arg: str) -> tuple[str, str]:

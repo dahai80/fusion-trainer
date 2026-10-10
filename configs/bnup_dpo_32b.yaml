@@ -4,16 +4,17 @@
 # Method: DPO (beta=0.1, sigmoid loss)
 # Data: output of `ft bnup-prep --dpo` (ShareGPT preference pairs)
 #
-# NOTE on adapter chaining: fusion-mlx's DPO endpoint (dpo_service.py:271)
-# loads the base model without adapter_path — DPO trains a fresh LoRA,
-# NOT chained on the SFT adapter. Upstream gap filed (fusion-mlx #1149).
-# The pipeline runs SFT and DPO as sequential independent stages, then
-# merges the DPO adapter. When upstream lands adapter_path support, the
-# pipeline will pass the SFT adapter_name for true chaining.
+# Adapter chaining (fusion-mlx #1149, closed via PR #1152): the BNUP
+# pipeline auto-fills init_adapter_path from the SFT stage's adapter
+# path, so the DPO policy model loads with the SFT adapter before
+# preference training (reference model stays base-only). For a standalone
+# `ft bnup-train --stage dpo` or `ft rlsl --method dpo`, pass the SFT
+# adapter path via --init-adapter-path. Empty = fresh LoRA.
 
 rlsl:
   method: dpo
   beta: 0.1  # DPO temperature (spec: dpo_beta=0.1, dpo_loss_type=sigmoid)
+  init_adapter_path: ""  # SFT adapter path; auto-filled by pipeline stage
 
   # Training hyperparameters (spec §"阶段2 DPO配置")
   batch_size: 1
