@@ -7,6 +7,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc7] - 2026-10-10
+
+Closes the 3 acceptance-review gaps on #58 (merge) + #59 (BNUP config):
+`ft merge --publish` TypeError crash, missing post-merge sample
+validation, and missing `presets/bnup.py` preset module.
+
+### Fixed
+- **`ft merge --publish` TypeError (#58 Gap 1):** the merge CLI called
+  `publish_adapter_if_enabled(adapter_name=..., ...)` but the actual
+  signature is `(config, result)` — crashed every time `--publish` was
+  used. Fixed by adding `ModelHubClient.publish_merged_model(name,
+  base_model)` (POSTs `model_type="mlx"`, no `base_model_id` — a merged
+  model is a standalone model, not a LoRA adapter) and calling it
+  directly from the merge CLI. Idempotent on 409 via `_find_existing_model`.
+- **Post-merge sample validation (#58 Gap 2):** `merge_and_export` now
+  generates a Socratic-format inference sample from the merged model
+  (via `chat_completions` + `DEFAULT_VALIDATION_PROMPT`) and runs
+  `validate_merged_model` to check `<thinking>`+`<dsl>` format. Best-effort
+  (fail-visible warning on generation error, never gates the merge). New
+  `generate_validation_sample` helper. The merge CLI prints the validation
+  result.
+
+### Added
+- **`presets/bnup.py` module (#59 Gap 1):** dedicated BNUP preset module
+  with `BNUP_SFT_32B`, `BNUP_DPO_32B`, `BNUP_PIPELINE` — the single source
+  for BNUP training presets. SFT/DPO values sourced from the existing
+  `sft/presets.py` + `rlsl/presets.py` (no duplication); `BNUP_PIPELINE`
+  adds orchestration config (`sft_preset`, `dpo_preset`, `chain_adapter`,
+  `merge`).
+
+### Tests
+- 17 new tests: `publish_merged_model` (4), `generate_validation_sample` (4),
+  `merge_and_export` validation wiring (2), `presets/bnup.py` (7). 514 pass,
+  15 skip.
+
 ## [1.0.0rc6] - 2026-10-10
 
 DPO adapter chaining — wires the now-landed upstream `init_adapter_path`

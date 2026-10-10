@@ -177,6 +177,56 @@ class TestPublishAdapterErrors:
             client.publish_adapter(name="adapter", base_model="b")
 
 
+class TestPublishMergedModel:
+    def test_201_returns_published_true(self, monkeypatch):
+        captured = {}
+
+        def _fake_post(url, json=None, headers=None, timeout=None):
+            captured["json"] = json
+            return _Resp(201, payload={"id": "m9", "name": "bnup-merged"})
+
+        monkeypatch.setattr(hub_mod.httpx, "post", _fake_post)
+        client = ModelHubClient(base_url="http://hub", api_key="tok")
+        result = client.publish_merged_model(name="bnup-merged", base_model="qwen")
+        assert result["published"] is True
+        assert result["model"]["id"] == "m9"
+        assert captured["json"]["model_type"] == "mlx"
+        assert "base_model_id" not in captured["json"]
+
+    def test_short_name_raises(self):
+        client = ModelHubClient(base_url="http://h")
+        with pytest.raises(HubPublishError, match="too short"):
+            client.publish_merged_model(name="ab")
+
+    def test_409_idempotent_when_own_model_exists(self, monkeypatch):
+        existing = {"id": "m9", "name": "bnup-merged", "model_type": "mlx"}
+        monkeypatch.setattr(
+            hub_mod.httpx,
+            "post",
+            lambda *a, **kw: _Resp(409, payload={"detail": "exists"}),
+        )
+        monkeypatch.setattr(
+            hub_mod.httpx, "get", lambda *a, **kw: _Resp(200, payload=[existing])
+        )
+        client = ModelHubClient(base_url="http://h")
+        result = client.publish_merged_model(name="bnup-merged")
+        assert result["published"] is True
+        assert result["idempotent"] is True
+
+    def test_409_non_idempotent_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            hub_mod.httpx,
+            "post",
+            lambda *a, **kw: _Resp(409, payload={"detail": "exists"}),
+        )
+        monkeypatch.setattr(
+            hub_mod.httpx, "get", lambda *a, **kw: _Resp(200, payload=[])
+        )
+        client = ModelHubClient(base_url="http://h")
+        with pytest.raises(HubPublishError, match="409"):
+            client.publish_merged_model(name="bnup-merged")
+
+
 class TestListModelsEnvelope:
     def test_data_envelope_unwrapped(self, monkeypatch):
         # R17: hub returning {"data":[...]} must be unwrapped, not treated as

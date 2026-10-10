@@ -2,7 +2,8 @@
 
 Merges a trained LoRA/DoRA adapter with the base model via fusion-mlx's
 merge-adapter API, optionally dequantizes for Apple Silicon deployment,
-and validates the merged model produces valid <thinking>+<dsl> output.
+generates a post-merge inference sample, and validates the merged model
+produces valid <thinking>+<dsl> output.
 
 Pure HTTP delegation — never imports mlx_lm directly. All merge work
 happens inside fusion-mlx (convert_routes.py POST /v1/merge-adapter).
@@ -20,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 _THINKING_PATTERN = re.compile(r"<thinking>.*?</thinking>", re.DOTALL)
 _DSL_PATTERN = re.compile(r"<dsl>.*?</dsl>", re.DOTALL)
+
+DEFAULT_VALIDATION_PROMPT = (
+    "You are a Socratic math lecturer. Solve this step by step, then emit "
+    "the final answer as a Socratic DSL JSON inside <dsl>...</dsl>. "
+    "Problem: A basket has 12 apples. 3 are eaten. How many remain? "
+    "Wrap your reasoning in <thinking>...</thinking>."
+)
 
 
 def merge_adapter(
@@ -86,9 +94,7 @@ def export_merged_model(
     if bits is None:
         raise ValueError(f"quantize must be '4bit' or '8bit', got: {quantize}")
 
-    logger.info(
-        "export_merged_model: quantizing %s to %d-bit", merged_model_path, bits
-    )
+    logger.info("export_merged_model: quantizing %s to %d-bit", merged_model_path, bits)
     body: dict[str, Any] = {
         "model": merged_model_path,
         "q_bits": bits,
@@ -154,6 +160,53 @@ def validate_merged_model(
     return result
 
 
+def generate_validation_sample(
+    client: MLXFineTuneClient,
+    model_id: str,
+    prompt: str = "",
+    *,
+    max_tokens: int = 512,
+) -> str:
+    """Generate a post-merge inference sample from the merged model.
+
+    Calls fusion-mlx /v1/chat/completions with the merged model path/id
+    and a Socratic-format validation prompt, returning the response text
+    for validate_merged_model(). Fail-visible: a generation error logs
+    loudly and returns "" (the merge itself still succeeded — validation
+    is best-effort, not a merge gate).
+
+    Args:
+        client: MLXFineTuneClient (HTTP boundary to fusion-mlx).
+        model_id: Merged model path or alias (fusion-mlx resolves it).
+        prompt: Validation prompt; empty = DEFAULT_VALIDATION_PROMPT.
+        max_tokens: Max generation tokens.
+    """
+    use_prompt = prompt or DEFAULT_VALIDATION_PROMPT
+    logger.info(
+        "generate_validation_sample: model=%s prompt_len=%d", model_id, len(use_prompt)
+    )
+    messages = [{"role": "user", "content": use_prompt}]
+    try:
+        completions = client.chat_completions(
+            model_id=model_id,
+            messages=messages,
+            n=1,
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+    except MLXFineTuneError as exc:
+        logger.warning(
+            "generate_validation_sample: generation failed (non-blocking, "
+            "merge itself succeeded): %s",
+            exc,
+        )
+        return ""
+    if not completions:
+        logger.warning("generate_validation_sample: empty completion list")
+        return ""
+    return completions[0]
+
+
 def merge_and_export(
     client: MLXFineTuneClient,
     base_model: str,
@@ -161,12 +214,16 @@ def merge_and_export(
     output_dir: str = "",
     quantize: str = "",
     dequantize: bool = False,
+    validate: bool = True,
+    validation_prompt: str = "",
 ) -> dict[str, Any]:
-    """Full merge + optional quantize + validate pipeline.
+    """Full merge + optional quantize + post-merge validation pipeline.
 
-    Orchestrates merge_adapter → export_merged_model in one call.
-    Validation (validate_merged_model) is left to the caller since it
-    requires a generation call (use fusion-mlx /v1/chat/completions).
+    Orchestrates merge_adapter → export_merged_model → generate_validation_sample
+    → validate_merged_model in one call. The validation step generates a
+    Socratic-format sample from the merged model and checks <thinking>+<dsl>
+    format — best-effort (fail-visible warning on generation error, never
+    gates the merge result).
     """
     merge_result = merge_adapter(
         client=client,
@@ -183,8 +240,26 @@ def merge_and_export(
         quantize=quantize,
     )
 
+    validation: dict[str, Any] = {"status": "skipped"}
+    if validate:
+        sample = generate_validation_sample(
+            client=client,
+            model_id=merged_path,
+            prompt=validation_prompt,
+        )
+        if sample:
+            validation = dict(validate_merged_model(sample))
+            validation["status"] = "completed"
+            validation["sample"] = sample[:200]
+        else:
+            validation = {
+                "status": "failed",
+                "reason": "generation returned empty sample",
+            }
+
     return {
         "merge": merge_result,
         "quantize": quantize_result,
+        "validation": validation,
         "final_model_path": merged_path,
     }

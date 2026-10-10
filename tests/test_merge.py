@@ -12,7 +12,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from fusion_trainer.merge import (
+    DEFAULT_VALIDATION_PROMPT,
     export_merged_model,
+    generate_validation_sample,
     merge_adapter,
     merge_and_export,
     validate_merged_model,
@@ -79,8 +81,7 @@ class TestExportMergedModel:
 class TestValidateMergedModel:
     def test_valid_response(self):
         response = (
-            "<thinking>\n思考过程\n</thinking>\n"
-            '<dsl>\n{"meta": {"id": "x"}}\n</dsl>'
+            '<thinking>\n思考过程\n</thinking>\n<dsl>\n{"meta": {"id": "x"}}\n</dsl>'
         )
         result = validate_merged_model(response)
         assert result["has_thinking"] is True
@@ -118,11 +119,13 @@ class TestMergeAndExport:
             "status": "ok",
             "output_path": "/merged",
         }
+        client.chat_completions.return_value = []
         result = merge_and_export(
             client=client,
             base_model="m",
             adapter_path="a",
             output_dir="/merged",
+            validate=False,
         )
         assert result["merge"]["status"] == "ok"
         assert result["quantize"]["status"] == "skipped"
@@ -136,14 +139,78 @@ class TestMergeAndExport:
             "output_path": "/merged",
         }
         client._request.return_value = {"status": "ok"}
+        client.chat_completions.return_value = []
         result = merge_and_export(
             client=client,
             base_model="m",
             adapter_path="a",
             output_dir="/merged",
             quantize="4bit",
+            validate=False,
         )
         assert result["quantize"]["status"] == "ok"
+
+    def test_merge_validates_sample(self):
+        client = MagicMock()
+        client.merge_adapter.return_value = {
+            "status": "ok",
+            "output_path": "/merged",
+        }
+        valid_sample = '<thinking>step</thinking><dsl>{"a":1}</dsl>'
+        client.chat_completions.return_value = [valid_sample]
+        result = merge_and_export(
+            client=client,
+            base_model="m",
+            adapter_path="a",
+            output_dir="/merged",
+            validate=True,
+        )
+        assert result["validation"]["status"] == "completed"
+        assert result["validation"]["valid"] is True
+
+    def test_merge_validation_failed_format(self):
+        client = MagicMock()
+        client.merge_adapter.return_value = {
+            "status": "ok",
+            "output_path": "/merged",
+        }
+        client.chat_completions.return_value = ["no format tags here"]
+        result = merge_and_export(
+            client=client,
+            base_model="m",
+            adapter_path="a",
+            output_dir="/merged",
+            validate=True,
+        )
+        assert result["validation"]["status"] == "completed"
+        assert result["validation"]["valid"] is False
+
+
+class TestGenerateValidationSample:
+    def test_returns_completion_text(self):
+        client = MagicMock()
+        client.chat_completions.return_value = ["sample output"]
+        text = generate_validation_sample(client, "model-id")
+        assert text == "sample output"
+
+    def test_empty_completions_returns_empty(self):
+        client = MagicMock()
+        client.chat_completions.return_value = []
+        assert generate_validation_sample(client, "model-id") == ""
+
+    def test_generation_error_returns_empty(self):
+        from fusion_trainer.mlx_client import MLXFineTuneError
+
+        client = MagicMock()
+        client.chat_completions.side_effect = MLXFineTuneError("boom")
+        assert generate_validation_sample(client, "model-id") == ""
+
+    def test_default_prompt_used(self):
+        client = MagicMock()
+        client.chat_completions.return_value = ["x"]
+        generate_validation_sample(client, "model-id")
+        call = client.chat_completions.call_args
+        assert DEFAULT_VALIDATION_PROMPT in call.kwargs["messages"][0]["content"]
 
 
 class TestMlxClientMergeAdapter:
@@ -152,7 +219,9 @@ class TestMlxClientMergeAdapter:
 
         client = MLXFineTuneClient.__new__(MLXFineTuneClient)
         client._base = "http://localhost:11434"
-        client._request = MagicMock(return_value={"status": "ok", "output_path": "/out"})
+        client._request = MagicMock(
+            return_value={"status": "ok", "output_path": "/out"}
+        )
         result = client.merge_adapter(
             model="Qwen2.5-32B",
             adapter_path="/adapters/bnup",
