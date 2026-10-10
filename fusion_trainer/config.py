@@ -239,6 +239,13 @@ class RLSLConfig:
     beta: float = 0.1
     """Temperature parameter for DPO/ORPO."""
 
+    init_adapter_path: str = ""
+    """SFT adapter path to chain DPO/ORPO on (fusion-mlx #1149).
+
+    When set, fusion-mlx loads the policy model with this adapter before
+    DPO training — enabling the two-stage SFT→DPO pipeline. The reference
+    model stays base-only (DPO theory). Empty = fresh LoRA (backward compat)."""
+
     # RLSL (PPO-light) parameters
     clip_epsilon: float = 0.2
     ppo_epochs: int = 4

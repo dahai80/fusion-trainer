@@ -53,7 +53,7 @@ class ORPOTrainer:
         # A5: iters = epoch * (total // batch_size),梯度步非样本步(见 dpo.py)。
         steps_per_epoch = max(1, total_pairs // batch_size)
         iters = self.rlsl_cfg.num_epochs * steps_per_epoch
-        return {
+        cfg: dict[str, Any] = {
             "iters": max(1, iters),
             "batch_size": batch_size,
             "learning_rate": float(self.rlsl_cfg.learning_rate),
@@ -65,6 +65,15 @@ class ORPOTrainer:
             "max_seq_length": int(self.config.dataset.max_seq_length),
             "seed": int(self.config.seed),
         }
+        # #1149: pass SFT adapter path for two-stage SFT→ORPO chaining.
+        # Only include when non-empty — empty means fresh LoRA (backward compat).
+        if self.rlsl_cfg.init_adapter_path:
+            cfg["init_adapter_path"] = self.rlsl_cfg.init_adapter_path
+            logger.info(
+                "ORPO: chaining on SFT adapter %s (fusion-mlx #1149)",
+                self.rlsl_cfg.init_adapter_path,
+            )
+        return cfg
 
     def train(
         self,

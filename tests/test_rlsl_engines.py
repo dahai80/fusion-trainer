@@ -279,6 +279,20 @@ class TestDPOTrainer:
         result = trainer.train([])
         assert result["num_pairs"] == 0
 
+    def test_chaining_includes_init_adapter_path(self, monkeypatch):
+        # #1149: init_adapter_path flows into the fusion-mlx DPO job config.
+        calls = _patch_pref_client(monkeypatch)
+        trainer = DPOTrainer(_make_config("dpo", init_adapter_path="/sft/adapter"))
+        trainer.train(_make_preference_data(2))
+        assert calls[0]["config"]["init_adapter_path"] == "/sft/adapter"
+
+    def test_no_chaining_omits_init_adapter_path(self, monkeypatch):
+        # Empty init_adapter_path must NOT appear in config (backward compat).
+        calls = _patch_pref_client(monkeypatch)
+        trainer = DPOTrainer(_make_config("dpo"))
+        trainer.train(_make_preference_data(2))
+        assert "init_adapter_path" not in calls[0]["config"]
+
 
 # ===========================================================================
 # ORPOTrainer
@@ -316,6 +330,13 @@ class TestORPOTrainer:
         result = trainer.train([])
         assert result["num_pairs"] == 0
 
+    def test_chaining_includes_init_adapter_path(self, monkeypatch):
+        # #1149: ORPO chains on SFT adapter too (same DPOService path).
+        calls = _patch_pref_client(monkeypatch)
+        trainer = ORPOTrainer(_make_config("orpo", init_adapter_path="/sft/adapter"))
+        trainer.train(_make_preference_data(2))
+        assert calls[0]["config"]["init_adapter_path"] == "/sft/adapter"
+
 
 # ===========================================================================
 # RLSLEngine
@@ -351,6 +372,34 @@ class TestRLSLEngine:
             assert result["status"] == "completed"
             assert calls[0]["method"] == "dpo"
             assert len(calls[0]["preference_pairs"]) == 3
+
+    def test_run_dpo_chains_on_sft_adapter(self, monkeypatch):
+        # #1149 end-to-end: RLSLConfig.init_adapter_path → fusion-mlx job config.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_path = Path(tmpdir) / "pref.jsonl"
+            import json
+
+            with open(data_path, "w") as f:
+                for i in range(3):
+                    f.write(
+                        json.dumps({"prompt": f"Q{i}", "chosen": "c", "rejected": "r"})
+                        + "\n"
+                    )
+            config = TrainerConfig(
+                dataset=DatasetConfig(path=str(data_path)),
+                sft=SFTConfig(model="test-model"),
+                rlsl=RLSLConfig(
+                    method="dpo",
+                    run_name="test_dpo_chain",
+                    init_adapter_path="/sft/adp",
+                ),
+                cache_path=tmpdir,
+            )
+            calls = _patch_pref_client(monkeypatch)
+            engine = RLSLEngine(config)
+            result = engine.run()
+            assert result["status"] == "completed"
+            assert calls[0]["config"]["init_adapter_path"] == "/sft/adp"
 
     def test_run_orpo(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:

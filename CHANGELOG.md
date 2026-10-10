@@ -7,6 +7,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc6] - 2026-10-10
+
+DPO adapter chaining — wires the now-landed upstream `init_adapter_path`
+(fusion-mlx #1149, closed via PR #1152) so the BNUP pipeline runs true
+two-stage SFT→DPO training instead of an independent DPO LoRA.
+
+### Added
+- **`RLSLConfig.init_adapter_path`** — SFT adapter path to chain DPO/ORPO on.
+  Flows into `_build_dpo_config`/`_build_orpo_config` and is only sent to
+  fusion-mlx when non-empty (empty = fresh LoRA, backward compat). The policy
+  model loads with the SFT adapter; the reference model stays base-only
+  (DPO theory).
+- **BNUP pipeline auto-chaining** — the `bnup-train --stage pipeline` closure
+  now captures the SFT result's `final_model_path` and passes it to the DPO
+  stage's `init_adapter_path`. The merge step merges the DPO adapter (carrying
+  the SFT→DPO signal) with the base. Falls back to fresh LoRA with a loud
+  warning if SFT produced no adapter path.
+- **`--init-adapter-path` CLI flag** on both `rlsl` and `bnup-train`, so a
+  standalone `dpo` stage can chain on a prior SFT adapter manually.
+- **ORPO chaining** — `ORPOTrainer._build_orpo_config` gains the same
+  `init_adapter_path` passthrough (same upstream DPOService path).
+
+### Changed
+- `configs/bnup_dpo_32b.yaml` — replaced the stale adapter-chaining-gap note
+  with chaining documentation; added `init_adapter_path: ""` field.
+- `_invoke_sft`/`_invoke_rlsl` now return their result dicts (previously
+  `None`) so the pipeline can extract `final_model_path`/`adapter_path`.
+
+### Tests
+- DPO/ORPO config-builder tests assert `init_adapter_path` is included when
+  set and omitted when empty.
+- RLSLEngine end-to-end test asserts `init_adapter_path` reaches the
+  fusion-mlx job config.
+- CLI tests assert the flag is registered and flows into `RLSLConfig`.
+
 ## [1.0.0rc5] - 2026-10-10
 
 BNUP two-stage training pipeline — data prep (#56), DPO negative factory
