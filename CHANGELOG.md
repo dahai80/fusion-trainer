@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc8] - 2026-10-10
+
+Closes the #57 test coverage gap: DPO negative factory tests now call the
+real `validate_dsl_str` from fusion-core to prove each generated negative
+actually fails DSL schema validation (true negatives, not structural
+heuristics).
+
+### Tests
+- **`test_bnup_negatives.py` (#57 gap):** added 7 `validate_dsl_str`-based
+  tests — one per generator (`make_broken_json`, `make_direct_answer`,
+  `make_wrong_visual_type`, `make_missing_tag`, `make_format_drift`) plus
+  a comprehensive `test_all_negatives_fail_dsl_validation` on
+  `generate_negatives` output, and a `test_valid_dsl_passes_validation`
+  baseline proving the positive sample passes (so the negatives are
+  meaningful). The test file's docstring already claimed "proving they
+  are true negatives" — now it actually does. 521 pass, 15 skip.
+
 ## [1.0.0rc7] - 2026-10-10
 
 Closes the 3 acceptance-review gaps on #58 (merge) + #59 (BNUP config):

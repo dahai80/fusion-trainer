@@ -1,7 +1,10 @@
 """Tests for BNUP DPO negative sample factory (issue #57).
 
 Each generator must produce output that FAILS DSL validation — proving
-they are true negatives, not false ones.
+they are true negatives, not false ones. Every generator test class
+includes a ``test_fails_dsl_validation`` that calls the real
+``validate_dsl_str`` from fusion-core to verify the negative actually
+fails schema validation (not just structural heuristics).
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from fusion_core.dsl_schema import validate_dsl_str
 
 from fusion_trainer.dataset.bnup_negatives import (
     generate_negatives,
@@ -18,6 +22,28 @@ from fusion_trainer.dataset.bnup_negatives import (
     make_missing_tag,
     make_wrong_visual_type,
 )
+
+
+def _extract_dsl_content(response: str) -> str:
+    if "<dsl>" in response and "</dsl>" in response:
+        start = response.index("<dsl>") + len("<dsl>")
+        end = response.rindex("</dsl>")
+        return response[start:end].strip()
+    return response.strip()
+
+
+def _assert_negative_fails(response: str) -> None:
+    dsl_content = _extract_dsl_content(response)
+    ok, msg = validate_dsl_str(dsl_content)
+    assert not ok, (
+        f"negative should FAIL validate_dsl_str but passed.\n"
+        f"response: {response[:200]}\n"
+        f"extracted: {dsl_content[:200]}"
+    )
+    assert msg, (
+        f"validate_dsl_str returned empty error for failing negative:\n{response[:200]}"
+    )
+
 
 _VALID_DSL = {
     "meta": {
@@ -67,6 +93,11 @@ class TestMakeBrokenJson:
         broken = make_broken_json("")
         assert broken == '{"meta":'
 
+    def test_fails_dsl_validation(self):
+        dsl_str = json.dumps(_VALID_DSL, ensure_ascii=False)
+        broken = make_broken_json(dsl_str)
+        _assert_negative_fails(broken)
+
 
 class TestMakeDirectAnswer:
     def test_no_thinking_tag(self):
@@ -78,6 +109,10 @@ class TestMakeDirectAnswer:
     def test_no_dsl_block(self):
         result = make_direct_answer("题目", "V=S*h", "60")
         assert "<dsl>" not in result
+
+    def test_fails_dsl_validation(self):
+        result = make_direct_answer("题目", "V=S*h", "60")
+        _assert_negative_fails(result)
 
 
 class TestMakeWrongVisualType:
@@ -102,6 +137,10 @@ class TestMakeWrongVisualType:
         assert isinstance(parsed, dict)
         assert parsed["meta"]["visual_type"] == "vr_scene"
 
+    def test_fails_dsl_validation(self):
+        result = make_wrong_visual_type(_VALID_DSL, wrong_type="hologram_4d")
+        _assert_negative_fails(result)
+
 
 class TestMakeMissingTag:
     def test_strips_dsl_block(self):
@@ -119,6 +158,10 @@ class TestMakeMissingTag:
         result = make_missing_tag(response)
         assert result == response
 
+    def test_fails_dsl_validation(self):
+        result = make_missing_tag(_VALID_RESPONSE)
+        _assert_negative_fails(result)
+
 
 class TestMakeFormatDrift:
     def test_renames_required_fields(self):
@@ -134,6 +177,10 @@ class TestMakeFormatDrift:
         parsed = json.loads(result)
         required = {"meta", "parameters", "entities", "pipeline"}
         assert not required.issubset(set(parsed.keys()))
+
+    def test_fails_dsl_validation(self):
+        result = make_format_drift(_VALID_DSL)
+        _assert_negative_fails(result)
 
 
 class TestGenerateNegatives:
@@ -178,3 +225,20 @@ class TestGenerateNegatives:
         )
         for neg in negatives:
             assert neg != _VALID_RESPONSE
+
+    def test_all_negatives_fail_dsl_validation(self):
+        negatives = generate_negatives(
+            chosen_response=_VALID_RESPONSE,
+            dsl_dict=_VALID_DSL,
+            question="题目",
+            formula="V=S*h",
+            answer="60",
+            neg_ratio=5,
+        )
+        assert len(negatives) >= 1
+        for neg in negatives:
+            _assert_negative_fails(neg)
+
+    def test_valid_dsl_passes_validation(self):
+        ok, msg = validate_dsl_str(json.dumps(_VALID_DSL, ensure_ascii=False))
+        assert ok, f"baseline valid DSL should PASS but failed: {msg}"
