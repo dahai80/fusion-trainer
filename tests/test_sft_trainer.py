@@ -368,6 +368,41 @@ class TestRunTraining:
             assert calls[0]["config"]["quantize_base"] is True
             assert calls[0]["config"]["quant_bits"] == 4
 
+    def test_run_training_qdora_real(self, monkeypatch):
+        # #63: qdora = fine_tune_type=dora + quantize_base=True + quant_bits.
+        # mlx_lm 0.31.3 DoRALinear.from_base accepts QuantizedLinear, so
+        # fusion-mlx quantizes the frozen base then attaches DoRA adapters.
+        # PRD baseline for Qwen2.5-32B BNUP training.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(
+                method="qdora", cache_path=tmpdir, num_epochs=1, quant_bits=8
+            )
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
+            calls = _patch_mlx_client(monkeypatch)
+            result = trainer._run_training(train_loader, [])
+            assert result["status"] == "completed"
+            assert calls[0]["config"]["fine_tune_type"] == "dora"
+            assert calls[0]["config"]["quantize_base"] is True
+            assert calls[0]["config"]["quant_bits"] == 8
+            # LoRA fields present on the dora path (adapters are DoRA-shaped
+            # but rank/alpha/dropout config still applies)
+            assert calls[0]["config"]["lora_rank"] == 16
+
+    def test_run_training_qdora_quant_bits_clamped(self, monkeypatch):
+        # #63: quant_bits outside (4,8) clamps to 4 with a warning —
+        # same gate as qlora (fusion-mlx validates in (4,8)).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_config(
+                method="qdora", cache_path=tmpdir, num_epochs=1, quant_bits=3
+            )
+            trainer = SFTTrainer(cfg)
+            train_loader = [{"input": "Q", "output": "A"}]
+            calls = _patch_mlx_client(monkeypatch)
+            result = trainer._run_training(train_loader, [])
+            assert result["status"] == "completed"
+            assert calls[0]["config"]["quant_bits"] == 4
+
     def test_run_training_mxfp8_explicit_true_passes_through(self, monkeypatch):
         # #402/#425 已落地:upstream service.py now routes mxfp8=True to the
         # 8-bit QLoRA path (quantize_base=True, quant_bits=8, fine_tune_type=

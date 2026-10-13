@@ -165,8 +165,14 @@ class SFTConfig:
     """Model type: language model or vision-language model."""
 
     # Training method
-    method: Literal["full", "lora", "dora", "qlora"] = "lora"
-    """Fine-tuning method: full / lora / dora / qlora (DoRA via fusion-mlx #402)."""
+    method: Literal["full", "lora", "dora", "qdora", "qlora"] = "lora"
+    """Fine-tuning method: full / lora / dora / qdora / qlora.
+
+    qdora = quantized DoRA (#63): fine_tune_type="dora" + quantize_base=True
+    + quant_bits (frozen quantized base + DoRA adapters). PRD-prescribed
+    for Qwen2.5-32B BNUP training. Supported by fusion-mlx (mlx_lm 0.31.3
+    DoRALinear.from_base accepts QuantizedLinear).
+    """
 
     # LoRA parameters
     lora_rank: int = 16
@@ -176,9 +182,9 @@ class SFTConfig:
         default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj"]
     )
 
-    # Quantization (for QLoRA)
+    # Quantization (for QLoRA / QDoRA)
     quant_bits: int = 4
-    """Quantization bits for QLoRA (4 or 8)."""
+    """Quantization bits for the frozen base (4 or 8; QLoRA + QDoRA)."""
 
     # Training hyperparameters
     batch_size: int = 1

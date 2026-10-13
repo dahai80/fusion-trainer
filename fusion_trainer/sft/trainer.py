@@ -199,6 +199,13 @@ class SFTTrainer:
 
         if method == "qlora":
             fine_tune_type = "qlora"
+        elif method == "qdora":
+            # #63: quantized DoRA — fine_tune_type="dora" + quantize_base=True
+            # + quant_bits. fusion-mlx quantizes the frozen base then attaches
+            # DoRA adapters (mlx_lm 0.31.3 DoRALinear.from_base accepts
+            # QuantizedLinear — verified forward + grads flow). PRD baseline
+            # for Qwen2.5-32B BNUP training.
+            fine_tune_type = "dora"
         elif method == "full":
             fine_tune_type = "full"
         elif method == "dora":
@@ -280,19 +287,24 @@ class SFTTrainer:
         # decay despite the preset specifying warmup_steps/lr_scheduler.
         if lr_schedule is not None:
             cfg["lr_schedule"] = lr_schedule
-        if fine_tune_type == "qlora":
+        if method in ("qlora", "qdora"):
             # A7: send quant_bits from config (was hardcoded 4 → 8-bit QLoRA
             # impossible). fusion-mlx validates quant_bits in (4, 8).
+            # #63: qdora shares the gate — same quantized-base mechanics,
+            # DoRA adapters instead of LoRA on top.
             qb = int(self.sft_cfg.quant_bits)
             if qb not in (4, 8):
                 logger.warning(
-                    "quant_bits=%d not in (4,8); clamping to 4 for QLoRA", qb
+                    "quant_bits=%d not in (4,8); clamping to 4 for %s", qb, method
                 )
                 qb = 4
             cfg["quantize_base"] = True
             cfg["quant_bits"] = qb
             logger.info(
-                "QLoRA: fine_tune_type=qlora quantize_base=True quant_bits=%d", qb
+                "%s: fine_tune_type=%s quantize_base=True quant_bits=%d",
+                method.upper(),
+                fine_tune_type,
+                qb,
             )
         # #402/#425 已落地:透传 mxfp8。上游路由到 8-bit QLoRA(quantize_base=True,
         # quant_bits=8, fine_tune_type=qlora),语义=8-bit frozen base LoRA 省显存,

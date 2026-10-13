@@ -22,7 +22,8 @@ class TestBnupSftConfig:
         with config_path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         sft = data["sft"]
-        assert sft["method"] == "qlora"
+        # #63: PRD baseline = 8-bit QDoRA (was qlora fallback).
+        assert sft["method"] == "qdora"
         assert sft["quant_bits"] == 8
         assert sft["learning_rate"] == 1.0e-4
         assert sft["num_epochs"] == 3
@@ -55,7 +56,8 @@ class TestBnupPresets:
     def test_sft_preset_exists(self):
         assert "bnup_sft_32b" in SFT_PRESETS
         p = SFT_PRESETS["bnup_sft_32b"]
-        assert p["method"] == "qlora"
+        # #63: PRD baseline = 8-bit QDoRA (was qlora fallback).
+        assert p["method"] == "qdora"
         assert p["quant_bits"] == 8
         assert p["learning_rate"] == 1e-4
         assert p["num_epochs"] == 3
@@ -88,9 +90,7 @@ class TestBnupPrepCli:
                         "visual_type": "geometry_2d",
                         "fallback_type": "tape_diagram",
                     },
-                    "parameters": {
-                        "a": {"label": "a", "value": 1, "unit": "m"}
-                    },
+                    "parameters": {"a": {"label": "a", "value": 1, "unit": "m"}},
                     "entities": [
                         {"id": "e", "type": "t", "label": "l", "properties": {}}
                     ],
@@ -166,13 +166,13 @@ class TestBnupTrainCli:
         from typer.testing import CliRunner
 
         runner = CliRunner()
-        with patch(
-            "fusion_trainer.cli.SFTTrainer"
-        ) if hasattr(
-            __import__("fusion_trainer.cli", fromlist=["SFTTrainer"]), "SFTTrainer"
-        ) else patch(
-            "fusion_trainer.sft.trainer.SFTTrainer"
-        ) as mock_trainer_cls:
+        with (
+            patch("fusion_trainer.cli.SFTTrainer")
+            if hasattr(
+                __import__("fusion_trainer.cli", fromlist=["SFTTrainer"]), "SFTTrainer"
+            )
+            else patch("fusion_trainer.sft.trainer.SFTTrainer") as mock_trainer_cls
+        ):
             mock_trainer = MagicMock()
             mock_trainer.train.return_value = {
                 "status": "completed",

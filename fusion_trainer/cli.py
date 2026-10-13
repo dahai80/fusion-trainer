@@ -96,7 +96,7 @@ def sft(
         "lora",
         "--method",
         "-M",
-        help="Training method: full, lora, dora, qlora",
+        help="Training method: full, lora, dora, qdora (quantized DoRA), qlora",
     ),
     lora_rank: int = typer.Option(
         16,
