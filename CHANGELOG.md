@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc9] - 2026-10-13
+
+Closes #63: adds a true quantized DoRA (`qdora`) method so the BNUP
+Qwen2.5-32B SFT config matches the PRD baseline (16-bit LoRA / 8-bit
+QDoRA) instead of falling back to 8-bit QLoRA.
+
+### Added
+- **`qdora` method (#63):** `SFTConfig.method` now accepts `qdora` —
+  maps to fusion-mlx `fine_tune_type="dora"` + `quantize_base=True` +
+  `quant_bits` (frozen quantized base + DoRA adapters). mlx_lm 0.31.3
+  `DoRALinear.from_base` accepts `QuantizedLinear`, so the combination
+  works — verified numerically (forward + gradient flow) and live
+  end-to-end on real hardware: a QDoRA job on Llama-3.2-1B-Instruct-4bit
+  via fusion-mlx quantized the base to 8-bit, trained DoRA adapters
+  (`lora_a`/`lora_b`/`m` magnitude tensors in adapters.safetensors),
+  completed, and the adapter mounted for inference.
+
+### Changed
+- `bnup_sft_32b` preset + `configs/bnup_sft_32b.yaml`: `method` qlora →
+  qdora (PRD baseline per #63; quant_bits stays 8).
+- CLI `--method` help text now lists `qdora`.
+
+### Tests
+- 3 new tests: `test_run_training_qdora_real` (config mapping: dora +
+  quantize_base + quant_bits=8 + lora fields), `test_run_training_qdora_
+  quant_bits_clamped` (same (4,8) gate as qlora), updated bnup preset/
+  config assertions (method=qdora). 523 pass, 15 skip.
+
 ## [1.0.0rc8] - 2026-10-10
 
 Closes the #57 test coverage gap: DPO negative factory tests now call the

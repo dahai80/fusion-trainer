@@ -1,8 +1,10 @@
 # BNUP SFT Configuration — Stage 1 Domain SFT (issue #59)
 # ============================================================
 # Target: Qwen2.5-32B-Instruct (北师大版 K-12 数学苏格拉底讲师)
-# Method: 8-bit QLoRA (closest to spec's QDoRA; fusion-mlx has no
-#         combined dora+quantize path — method=qlora quant_bits=8)
+# Method: 8-bit QDoRA (PRD baseline, issue #63) — fine_tune_type=dora
+#         + quantize_base=True + quant_bits=8. mlx_lm 0.31.3
+#         DoRALinear.from_base accepts QuantizedLinear; verified
+#         forward + gradient flow on quantized base.
 # Hardware: M5 128GB unified memory
 # System prompt: injected via bnup_prep.build_sft_sample (<thinking>+<dsl>)
 # Data: output of `ft bnup-prep --sft` (ShareGPT/Alpaca JSONL)
@@ -10,7 +12,7 @@
 sft:
   model: ""  # e.g. "Qwen2.5-32B-Instruct" (fusion-mlx alias)
   model_type: lm
-  method: qlora
+  method: qdora
   quant_bits: 8
 
   # LoRA parameters

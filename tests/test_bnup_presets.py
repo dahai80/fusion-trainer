@@ -16,7 +16,9 @@ from fusion_trainer.presets.bnup import (
 
 class TestBnupPresetsModule:
     def test_sft_preset_values(self):
-        assert BNUP_SFT_32B["method"] == "qlora"
+        # #63: PRD baseline = 8-bit QDoRA (fine_tune_type=dora +
+        # quantize_base=True + quant_bits=8), no longer QLoRA fallback.
+        assert BNUP_SFT_32B["method"] == "qdora"
         assert BNUP_SFT_32B["quant_bits"] == 8
         assert "description" in BNUP_SFT_32B
 
