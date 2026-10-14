@@ -20,9 +20,13 @@ import copy
 import json
 import logging
 import random
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# params.<name> reference extractor (mirrors fusion-k12 eval_harness._PARAM_SUB)
+PARAM_NAME_RE = re.compile(r"params\.(\w+)")
 
 VALID_VISUAL_TYPES = (
     "array_grid",
@@ -86,9 +90,7 @@ def make_wrong_visual_type(dsl_dict: dict[str, Any], wrong_type: str = "") -> st
     original = meta.get("visual_type", "")
     meta["visual_type"] = wrong
     mutated["meta"] = meta
-    logger.debug(
-        "make_wrong_visual_type: %s -> %s", original or "(none)", wrong
-    )
+    logger.debug("make_wrong_visual_type: %s -> %s", original or "(none)", wrong)
     return json.dumps(mutated, ensure_ascii=False)
 
 
@@ -135,9 +137,101 @@ def make_format_drift(dsl_dict: dict[str, Any]) -> str:
         new_key = _FIELD_RENAMES.get(key, key)
         renamed[new_key] = val
     logger.debug(
-        "make_format_drift: renamed %d keys", sum(1 for k in mutated if k in _FIELD_RENAMES)
+        "make_format_drift: renamed %d keys",
+        sum(1 for k in mutated if k in _FIELD_RENAMES),
     )
     return json.dumps(renamed, ensure_ascii=False)
+
+
+# Real E1 failure vocabulary (e2e_28final.json per_sample: "eval exec: '每排'"
+# "eval exec: 'cols'" "eval exec: 'row_count'" "eval exec: 'T_bridge'"
+# "eval exec: 'L_wire'" "eval exec: 'v_cone'" "eval exec: '31'" — the model
+# defined parameters but referenced drifted names in pipeline.eval). Each
+# entry maps a live eval reference to the drift form observed in production.
+_DRIFT_SUFFIXES = ("s", "_count", "_total", "_per_row", "_each", "_val")
+_DRIFT_TRANSLATE = {
+    "rows": "每排",
+    "cols": "列数",
+    "row_count": "排数",
+    "col_count": "列数",
+    "count": "数量",
+    "total": "总数",
+    "length": "长度",
+    "speed": "速度",
+    "time": "时间",
+    "area": "面积",
+    "width": "宽度",
+    "height": "高",
+}
+_DRIFT_CASE = str.maketrans(
+    "abcdefghijklmnopqrstuvwxyz_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+)
+
+
+def _drift_variants(name: str) -> list[str]:
+    """Return plausible drift spellings for a parameter name (real E1 forms)."""
+    out: list[str] = []
+    low = name.lower()
+    # 1. 中文同义名 (最高频 E1 形态: '每排' 代替 rows)
+    zh = _DRIFT_TRANSLATE.get(low)
+    if zh:
+        out.append(zh)
+    # 2. 缩写 (cols 代替 columns / cnt 代替 count)
+    if low.endswith("count"):
+        out.append(low[:-5] + "s" if not low.endswith("s") else low[:-1])
+        out.append("cnt_" + low.replace("_count", ""))
+    elif low.endswith("s") and len(low) > 3:
+        out.append(low[:-1])
+    # 3. 大小写漂移 (T_bridge 代替 t_bridge — 真实样本原样)
+    cased = name.translate(_DRIFT_CASE)
+    if cased != name:
+        out.append(cased)
+    # 4. 后缀漂移 (_total/_val/_each 附加)
+    for suf in _DRIFT_SUFFIXES:
+        cand = name + suf
+        if cand != name:
+            out.append(cand)
+    # 去重保序
+    seen: set[str] = set()
+    uniq = []
+    for cand in out:
+        if cand not in seen and cand != name:
+            seen.add(cand)
+            uniq.append(cand)
+    return uniq
+
+
+def make_param_drift(dsl_dict: dict[str, Any], rng: random.Random | None = None) -> str:
+    """Rewrite one pipeline.eval reference to an UNDEFINED parameter name.
+
+    The #1 real-model failure mode (10/18 fixable errors in e2e_28final):
+    parameters defines L_bridge, eval references 每排/cols/T_bridge. The
+    drift name is chosen from the observed-failure vocabulary; JSON stays
+    valid and schema passes (parameters schema is unconstrained) — the
+    break only surfaces at eval execution (NameError), exactly mirroring
+    production. Also may inline a bare number literal (real '31' failure).
+    """
+    rng = rng or random
+    mutated = copy.deepcopy(dsl_dict)
+    params = mutated.get("parameters", {})
+    pipe = mutated.get("pipeline", [])
+    # Collect (step_index, ref) pairs where ref is a defined parameter
+    spots: list[tuple[int, str]] = []
+    for i, step in enumerate(pipe):
+        for ref in PARAM_NAME_RE.findall(str(step.get("eval", ""))):
+            if ref in params:
+                spots.append((i, ref))
+    if not spots:
+        return json.dumps(mutated, ensure_ascii=False)
+    idx, ref = rng.choice(spots)
+    variants = _drift_variants(ref)
+    drift = rng.choice(variants) if variants else ref + "x"
+    step = pipe[idx]
+    expr = str(step.get("eval", ""))
+    # Replace exactly one occurrence of params.<ref> with the drift name
+    step["eval"] = expr.replace(f"params.{ref}", f"params.{drift}", 1)
+    logger.debug("make_param_drift: %s -> %s in step %d", ref, drift, idx + 1)
+    return json.dumps(mutated, ensure_ascii=False)
 
 
 def generate_negatives(
@@ -161,15 +255,29 @@ def generate_negatives(
     dsl_str = json.dumps(dsl_dict, ensure_ascii=False) if dsl_dict else ""
 
     if dsl_dict:
-        candidates.append(make_broken_json(dsl_str))
-        candidates.append(make_wrong_visual_type(dsl_dict))
-        candidates.append(make_format_drift(dsl_dict))
-    candidates.append(make_direct_answer(question, formula, answer))
-    candidates.append(make_missing_tag(chosen_response))
+        drift_negs = [
+            make_param_drift(dsl_dict, random),  # E1 头号失败模式 (#28)
+            make_param_drift(dsl_dict, random),
+        ]  # 双份提高密度 (去重后仍常为 2)
+        others = [
+            make_broken_json(dsl_str),
+            make_wrong_visual_type(dsl_dict),
+            make_format_drift(dsl_dict),
+        ]
+    else:
+        drift_negs, others = [], []
+    others += [
+        make_direct_answer(question, formula, answer),
+        make_missing_tag(chosen_response),
+    ]
 
-    random.shuffle(candidates)
-    count = min(neg_ratio, len(candidates))
-    selected = candidates[:count]
+    # 选择: 负例总数 ≤5 (文档契约); param_drift 优先占 2 席 —
+    # neg_ratio=3 时 drift 密度 67%, 直击 E1; 其余席位从静态负例池随机填充
+    count = max(0, min(neg_ratio, 5))
+    n_drift = min(len(drift_negs), 2, count)
+    random.shuffle(others)
+    selected = drift_negs[:n_drift] + others[: count - n_drift]
+    random.shuffle(selected)
     logger.info(
         "generate_negatives: %d negatives from %d candidates (ratio=%d)",
         len(selected),

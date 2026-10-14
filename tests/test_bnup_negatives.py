@@ -226,7 +226,12 @@ class TestGenerateNegatives:
         for neg in negatives:
             assert neg != _VALID_RESPONSE
 
-    def test_all_negatives_fail_dsl_validation(self):
+    def test_all_negatives_fail_validation_or_eval(self):
+        """静态负例必须过不了 validate_dsl_str; param_drift 是语义负例 —
+        JSON/schema 合法, 破绽只在 eval 求值时暴露 (NameError), 用生产求值器断言。
+        (sft-dpo-1013 §2.4: E1 漂移的破绽正是静态校验查不到的那类)"""
+        from fusion_k12_teacher.eval.eval_harness import BNUPEvaluator
+
         negatives = generate_negatives(
             chosen_response=_VALID_RESPONSE,
             dsl_dict=_VALID_DSL,
@@ -236,8 +241,18 @@ class TestGenerateNegatives:
             neg_ratio=5,
         )
         assert len(negatives) >= 1
+        ev = BNUPEvaluator()
         for neg in negatives:
-            _assert_negative_fails(neg)
+            dsl_content = _extract_dsl_content(neg)
+            ok, _msg = validate_dsl_str(dsl_content)
+            if ok:
+                # 语义负例 (param_drift): 必须在生产求值器下失败
+                dsl = json.loads(dsl_content)
+                # 漂移键在 params_val 下标中缺失 (KeyError); 若漂移到
+                # 非下标形态则 NameError — 两者都是 eval 求值失败
+                with pytest.raises((KeyError, NameError)):
+                    ev.evaluate_eval_expression(dsl["pipeline"], dsl["parameters"])
+            # 静态负例由 _assert_negative_fails 覆盖 (其余测试)
 
     def test_valid_dsl_passes_validation(self):
         ok, msg = validate_dsl_str(json.dumps(_VALID_DSL, ensure_ascii=False))
