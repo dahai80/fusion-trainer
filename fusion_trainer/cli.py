@@ -156,6 +156,14 @@ def sft(
         "--publish",
         help="Publish the trained LoRA adapter to fusion-model-hub on completion (issue #49). Failures warn but do not block the run.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume an interrupted run from the newest checkpoint in the "
+        "fusion-mlx adapter dir (~/.fusion-mlx/adapters/<model>/<run-name>/, "
+        "issue #65; requires fusion-mlx >= 0.10.12 / #1182). No checkpoint "
+        "found = loud warning + fresh start.",
+    ),
 ):
     """Run supervised fine-tuning (SFT) on a base model.
 
@@ -240,6 +248,27 @@ def sft(
     )
     # Non-CLI-exposed fields: preset > YAML > dataclass default.
     _apply_extras(sft_cfg, preset_vals, yaml_vals)
+
+    # #65: checkpoint-aware restart. Point init_adapter_path at the
+    # fusion-mlx adapter dir; SFTTrainer._resolve_resume stages the newest
+    # numbered checkpoint and subtracts its step from iters.
+    if resume:
+        from fusion_trainer.sft.trainer import (
+            MLX_ADAPTER_BASE_DIR,
+            find_latest_checkpoint,
+        )
+
+        run_name_eff = run_name or "sft_run"
+        adapter_dir = MLX_ADAPTER_BASE_DIR / model / run_name_eff
+        ckpt = find_latest_checkpoint(adapter_dir)
+        if ckpt:
+            sft_cfg.init_adapter_path = str(adapter_dir)
+            typer.echo(f"↻ Resume: checkpoint step {ckpt[1]} found ({ckpt[0]})")
+        else:
+            typer.echo(
+                f"⚠ --resume: no checkpoint in {adapter_dir}; starting fresh",
+                err=True,
+            )
 
     cfg = TrainerConfig(
         seed=seed,
@@ -785,6 +814,14 @@ def _apply_extras(sft_cfg: Any, preset_vals: dict, yaml_vals: dict) -> None:
         "max_grad_norm",
         "gradient_accumulation_steps",
         "model_type",
+        # #65 live-verify found YAML save_every silently dropped here — the
+        # job ran with the default 500 and wrote no numbered checkpoint, so
+        # --resume had nothing to resume from. Checkpointing cadence, logging
+        # cadence, quant bits, and the step cap are all config-file concerns.
+        "save_every",
+        "log_every",
+        "quant_bits",
+        "max_steps",
     ]
     for key in extras:
         # preset wins over YAML (preset is a higher-precedence named bundle).
@@ -1037,6 +1074,12 @@ def bnup_train(
         help="SFT adapter path to chain DPO on (dpo stage; fusion-mlx #1149). "
         "Pipeline stage auto-fills this from SFT output.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume an interrupted SFT stage from the newest checkpoint "
+        "(issue #65; fusion-mlx #1182). Applies to the sft/pipeline stage.",
+    ),
 ):
     """Run BNUP two-stage training (SFT → DPO → merge).
 
@@ -1073,6 +1116,7 @@ def bnup_train(
             dataset=sft_dataset,
             preset=sft_preset,
             logger=logger,
+            resume=resume,
         )
         return {"stage": "sft", "status": "completed", "result": result}
 
@@ -1156,6 +1200,7 @@ def _invoke_sft(
     dataset: str,
     preset: str,
     logger: Any,
+    resume: bool = False,
 ) -> dict:
     """Invoke the SFT training path (reuses SFTTrainer).
 
@@ -1208,6 +1253,29 @@ def _invoke_sft(
         run_name=str(_pick("run_name", "")),
         output_dir=str(_pick("output_dir", "")),
     )
+
+    # #65: checkpoint-aware restart (mirrors the sft command's --resume).
+    if resume:
+        from fusion_trainer.sft.trainer import (
+            MLX_ADAPTER_BASE_DIR,
+            find_latest_checkpoint,
+        )
+
+        run_name_eff = sft_cfg.run_name or "sft_run"
+        adapter_dir = MLX_ADAPTER_BASE_DIR / sft_cfg.model / run_name_eff
+        ckpt = find_latest_checkpoint(adapter_dir)
+        if ckpt:
+            sft_cfg.init_adapter_path = str(adapter_dir)
+            logger.info(
+                "BNUP SFT resume: checkpoint step %d found (%s)",
+                ckpt[1],
+                ckpt[0],
+            )
+        else:
+            logger.warning(
+                "BNUP SFT --resume: no checkpoint in %s; starting fresh",
+                adapter_dir,
+            )
 
     _path, _hub_dataset = _parse_dataset_arg(dataset)
     if not _path and not _hub_dataset and yaml_dataset.get("hub_dataset"):

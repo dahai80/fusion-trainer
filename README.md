@@ -72,10 +72,10 @@ fusion-* products (consumption layer)
 
 ### BNUP Two-Stage Training Pipeline (issues #56–#59)
 - **Data prep** ✅ — `ft bnup-prep --stage sft` validates raw BNUP math problems against the Socratic DSL v3 schema (via fusion-core `validate_dsl_str`) and packages valid samples as `<thinking>`+`<dsl>` ShareGPT JSONL. `ft bnup-prep --stage dpo` generates DPO preference pairs with configurable negative ratio.
-- **Negative sample factory** ✅ — 5 syntactically distinct negative generators (broken JSON, direct-answer, wrong visual_type, missing tag, format drift), each designed to fail DSL validation. Up to 5 negatives per sample.
+- **Negative sample factory** ✅ — 5 static negative generators (broken JSON, direct-answer, wrong visual_type, missing tag, format drift) that each fail DSL validation, plus a 6th semantic generator `make_param_drift` (eval references a drifted parameter name — valid JSON/schema, fails only at eval execution, the E1 top failure class). Up to 5 negatives per sample, param_drift getting priority slots.
 - **Model merge + export** ✅ — `ft merge --base <model> --adapter <path>` merges a trained LoRA/DoRA adapter into the base model via fusion-mlx `POST /v1/merge-adapter`, with optional 4-bit/8-bit post-merge quantization for Apple Silicon deployment.
-- **Pipeline orchestration** ✅ — `ft bnup-train --stage pipeline` runs SFT → DPO → merge sequentially. Configs: `configs/bnup_sft_32b.yaml` (8-bit QLoRA, cutoff 4096), `configs/bnup_dpo_32b.yaml` (beta=0.1, sigmoid).
-- **DPO adapter chaining** — fusion-mlx's DPO endpoint does not yet support loading a pre-trained adapter before DPO training ([fusion-mlx#1149](https://github.com/dahai80/fusion-mlx/issues/1149)). Until it lands, the pipeline runs DPO as a fresh adapter and merges the DPO output with the base.
+- **Pipeline orchestration** ✅ — `ft bnup-train --stage pipeline` runs SFT → DPO → merge sequentially, auto-chaining DPO on the SFT adapter. Configs: `configs/bnup_sft_32b.yaml` (8-bit QDoRA, cutoff 4096), `configs/bnup_dpo_32b.yaml` (beta=0.1, sigmoid).
+- **Checkpoint resume + engine-restart detection** ✅ (issue #65) — `ft sft --resume` / `ft bnup-train --stage sft|pipeline --resume` continues an interrupted run from the newest `NNNNNNN_adapters.safetensors` checkpoint (fusion-mlx #1182 `init_adapter_path`, weights loaded into the fresh LoRA layers, already-trained steps subtracted from `iters`). If fusion-mlx restarts mid-run, the trainer detects the lost/cancelled job, reports `interrupted` with the latest checkpoint, and never zombie-polls. A `job_state.json` liveness file tracks `job_id`/`adapter_dir`/`step`/`status` under the run output dir.
 
 ---
 
@@ -270,11 +270,11 @@ fusion_trainer_train_loss{run="run-1"} 0.1234
 
 | Command | Description |
 |---|---|
-| `fusion-trainer sft` | Run supervised fine-tuning (add `--publish` to publish the adapter to model-hub on completion) |
+| `fusion-trainer sft` | Run supervised fine-tuning (add `--publish` to publish the adapter to model-hub on completion, `--resume` to continue an interrupted run from its newest checkpoint, issue #65) |
 | `fusion-trainer rlsl` | Run DPO/ORPO/RLSL/GRPO alignment (add `--publish` to publish) |
 | `fusion-trainer publish <run_id>` | Publish a completed run's LoRA adapter to fusion-model-hub (issue #49) |
 | `fusion-trainer bnup-prep --stage sft\|dpo` | Prepare BNUP training data (SFT DSL validation or DPO pair generation, issues #56/#57) |
-| `fusion-trainer bnup-train --stage sft\|dpo\|pipeline` | Run BNUP two-stage training (SFT → DPO → merge, issue #59) |
+| `fusion-trainer bnup-train --stage sft\|dpo\|pipeline` | Run BNUP two-stage training (SFT → DPO → merge, issue #59; `--resume` continues an interrupted SFT stage, issue #65) |
 | `fusion-trainer merge --base <model> --adapter <path>` | Merge a trained adapter into the base model via fusion-mlx (issue #58) |
 | `fusion-trainer info` | System info & hardware check |
 | `fusion-trainer --version` / `-V` | Print version (`ft <version>`) |

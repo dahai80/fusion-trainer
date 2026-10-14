@@ -54,11 +54,36 @@ def deduplicate(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         norm_prompt = re.sub(r"\s+", " ", prompt_text).strip().lower()
         norm_completion = re.sub(r"\s+", " ", completion_text).strip().lower()
-        key = norm_prompt + "\x00" + norm_completion
         if not norm_prompt and not norm_completion:
-            # No detectable text on either side — drop (nothing to train on).
-            dropped += 1
-            continue
+            # Chat formats (messages/ShareGPT) carry their text in nested
+            # fields the flat keys above can't see — the E5 drop silently
+            # deleted every messages sample (a real SFT load returned 0
+            # samples). Serialize the chat turns into the key instead:
+            # identical conversations dedup, distinct ones survive.
+            chat = item.get("messages") or item.get("conversations")
+            if isinstance(chat, list) and chat:
+                try:
+                    import json as _json
+
+                    norm_prompt = (
+                        re.sub(
+                            r"\s+",
+                            " ",
+                            _json.dumps(chat, ensure_ascii=False, sort_keys=True),
+                        )
+                        .strip()
+                        .lower()
+                    )
+                except (TypeError, ValueError):
+                    norm_prompt = ""
+            if not norm_prompt:
+                # Genuinely no detectable text anywhere — keep (schema
+                # filtering is load_messages' job, per the E5 contract).
+                result.append(item)
+                continue
+            key = norm_prompt + "\x00chat"
+        else:
+            key = norm_prompt + "\x00" + norm_completion
         if key in seen:
             dropped += 1
             continue

@@ -209,6 +209,15 @@ class SFTConfig:
     save_every: int = 500
     """Save checkpoint every N steps."""
 
+    init_adapter_path: str = ""
+    """Resume an interrupted SFT run from an adapter checkpoint dir
+    (fusion-mlx #1182). Points at a dir containing adapters.safetensors
+    (the run's own ~/.fusion-mlx/adapters/<model>/<name>/ holds numbered
+    NNNNNN_adapters.safetensors checkpoints). Weights load into the freshly
+    built LoRA layers before train(); the step counter restarts at 0
+    upstream, so the trainer subtracts the checkpoint step from iters.
+    Empty = fresh training (backward compat)."""
+
     output_dir: str = ""
     """Output directory for checkpoints and final weights (Trainer-local)."""
 

@@ -56,7 +56,14 @@ MERGE_ADAPTER_PATH = "/v1/merge-adapter"
 
 
 class MLXFineTuneError(RuntimeError):
-    pass
+    # #65: status_code carries the HTTP status when the error came from a
+    # non-2xx response (None for transport/timeout/JSON errors). wait_for_*_job
+    # uses it to distinguish "job gone" (404 — engine restarted and dropped
+    # the persisted job) from a transient poll failure that should keep
+    # retrying until the deadline.
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class MLXFineTuneClient:
@@ -156,11 +163,13 @@ class MLXFineTuneClient:
                     backoff *= 2
                     continue
                 raise MLXFineTuneError(
-                    f"{method} {url} returned {resp.status_code} after {max_retries} retries"
+                    f"{method} {url} returned {resp.status_code} after {max_retries} retries",
+                    status_code=resp.status_code,
                 )
             if resp.status_code >= 400:
                 raise MLXFineTuneError(
-                    f"{method} {url} failed {resp.status_code}: {resp.text}"
+                    f"{method} {url} failed {resp.status_code}: {resp.text}",
+                    status_code=resp.status_code,
                 )
             return self._parse_json(resp, method, url)
         raise MLXFineTuneError(f"{method} {url} exhausted retries: {last_exc}")
@@ -191,6 +200,25 @@ class MLXFineTuneClient:
         raise MLXFineTuneError(
             f"poll get {url} returned a list, expected a job dict: {result!r}"
         )
+
+    @staticmethod
+    def _raise_if_job_lost(job_id: str, exc: MLXFineTuneError, api: str = "") -> None:
+        # #65: a 404 on the poll path means the job no longer exists —
+        # fusion-mlx restarted (memory-pressure fatal_exit / operator restart)
+        # and its persisted-jobs recovery dropped it. Retrying until the
+        # 24h deadline is zombie polling; fail NOW so the caller can report
+        # an interrupted run and offer checkpoint resume. Transport errors
+        # and 5xx keep the A1 continue-and-retry semantics.
+        if getattr(exc, "status_code", None) == 404:
+            logger.error(
+                "wait_for%s_job %s: job no longer exists (404) — fusion-mlx "
+                "likely restarted and dropped the job. Treating run as "
+                "interrupted; resume from the latest checkpoint instead of "
+                "restarting from step 0 (fusion-mlx #1182 init_adapter_path).",
+                api,
+                job_id,
+            )
+            raise exc
 
     # ------------------------------------------------------------------
     # Health
@@ -351,6 +379,7 @@ class MLXFineTuneClient:
             try:
                 job = self.get_job(job_id)
             except MLXFineTuneError as exc:
+                self._raise_if_job_lost(job_id, exc)
                 logger.warning("wait_for_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
@@ -440,6 +469,7 @@ class MLXFineTuneClient:
             try:
                 job = self.get_vlm_job(job_id)
             except MLXFineTuneError as exc:
+                self._raise_if_job_lost(job_id, exc, api="_vlm")
                 logger.warning("wait_for_vlm_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
@@ -527,6 +557,7 @@ class MLXFineTuneClient:
             try:
                 job = self.get_grpo_job(job_id)
             except MLXFineTuneError as exc:
+                self._raise_if_job_lost(job_id, exc, api="_grpo")
                 logger.warning("wait_for_grpo_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
@@ -629,6 +660,7 @@ class MLXFineTuneClient:
             try:
                 job = self.get_dpo_job(job_id)
             except MLXFineTuneError as exc:
+                self._raise_if_job_lost(job_id, exc, api="_dpo")
                 logger.warning("wait_for_dpo_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
@@ -716,6 +748,7 @@ class MLXFineTuneClient:
             try:
                 job = self.get_reward_job(job_id)
             except MLXFineTuneError as exc:
+                self._raise_if_job_lost(job_id, exc, api="_reward")
                 logger.warning("wait_for_reward_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue

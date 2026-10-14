@@ -206,6 +206,75 @@ class DatasetLoader:
         )
         return train, val
 
+    def load_sft(
+        self,
+        path: str = "",
+        hub_dataset: str = "",
+        model_hub_path: str = "",
+        split: str = "train",
+        val_ratio: float = 0.05,
+        max_samples: int = 0,
+        max_seq_length: int = 4096,
+        input_field: str = "text",
+        output_field: str = "output",
+        remove_duplicates: bool = True,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Schema-aware SFT load: chat datasets route through load_messages.
+
+        The flat load() drops messages/ShareGPT samples in _normalize (no
+        input/output fields) — a chat-format SFT dataset loaded "successfully"
+        with 0 samples and then trained on an empty file. Sniff the dominant
+        schema first: chat → load_messages (messages pass through to
+        stage_dataset for the tokenizer chat template), else → load().
+        """
+        resolved = self._resolve_path(path, hub_dataset, model_hub_path)
+        data = load_dataset_file(resolved, max_samples=max_samples)
+        chat = 0
+        flat = 0
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            schema = detect_dataset_schema(item)
+            if schema in (SCHEMA_MESSAGES, SCHEMA_SHAREGPT):
+                chat += 1
+            elif schema:
+                flat += 1
+        if chat and flat:
+            logger.warning(
+                "mixed-schema SFT dataset (%d chat + %d flat samples) — "
+                "routing through the chat loader; flat samples are skipped "
+                "with a per-sample warning",
+                chat,
+                flat,
+            )
+        if chat:
+            logger.info(
+                "load_sft: chat schema detected (%d/%d samples) — using load_messages",
+                chat,
+                len(data),
+            )
+            return self.load_messages(
+                path=path,
+                hub_dataset=hub_dataset,
+                model_hub_path=model_hub_path,
+                split=split,
+                val_ratio=val_ratio,
+                max_samples=max_samples,
+                max_seq_length=max_seq_length,
+            )
+        return self.load(
+            path=path,
+            hub_dataset=hub_dataset,
+            model_hub_path=model_hub_path,
+            split=split,
+            val_ratio=val_ratio,
+            max_samples=max_samples,
+            max_seq_length=max_seq_length,
+            input_field=input_field,
+            output_field=output_field,
+            remove_duplicates=remove_duplicates,
+        )
+
     def load_grpo(
         self,
         path: str = "",

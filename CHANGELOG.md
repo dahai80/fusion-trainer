@@ -7,6 +7,63 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc10] - 2026-10-15
+
+Closes #65: SFT checkpoint resume + engine-restart detection, and closes the
+data-path gaps found during live verification.
+
+### Added
+
+- `ft sft --resume` / `ft bnup-train --stage sft|pipeline --resume`
+  (issue #65): checkpoint-aware restart. Finds the newest numbered
+  checkpoint (`NNNNNNN_adapters.safetensors`) in the run's fusion-mlx
+  adapter dir, stages it (upstream loads exactly `adapters.safetensors`,
+  so the source checkpoint is never overwritten by the resumed job's first
+  save), submits the job with `init_adapter_path` (fusion-mlx #1182,
+  v0.10.12+), and subtracts the checkpoint step from `iters` (the upstream
+  step counter restarts at 0). Already fully trained → completed no-op
+  result pointing at the checkpoint. No checkpoint → loud warning, fresh
+  start.
+- `SFTConfig.init_adapter_path` — resume field, mirrors `RLSLConfig`.
+- Engine-side job-loss detection (#65 pt2): a 404 on the job poll now
+  fails fast as `interrupted` instead of zombie-polling to the 24h
+  deadline (`MLXFineTuneError.status_code` carries the HTTP status; the
+  transient retry/backoff semantics are unchanged). A `cancelled` terminal
+  status (fusion-mlx restart recovery marks RUNNING/QUEUED jobs cancelled)
+  gets the same interrupted treatment with the latest checkpoint printed
+  and a `--resume` hint.
+- `job_state.json` liveness state under the run output dir (#65 pt3/4):
+  `job_id / adapter_dir / step / resume_step / status`, persisted
+  atomically at job submit, on every step change, and on every terminal
+  path — engine-side `os._exit` bypasses atexit, so state is only as
+  durable as the last poll.
+- 6th DPO negative generator `make_param_drift` (#57 follow-up,
+  sft-dpo-1013 §2.4): rewrites one `params.<name>` reference in a
+  pipeline eval expression to a drifted name (Chinese synonym / English
+  abbreviation / case / suffix variants, vocabulary from real e2e
+  failures). JSON and schema stay valid — the flaw surfaces only at eval
+  execution (KeyError on the drifted key), which is exactly the E1 class
+  static validation cannot catch. `generate_negatives` gives param_drift
+  up to 2 priority slots per sample (highest contrast density for the
+  top failure mode).
+
+### Fixed
+
+- `deduplicate` silently deleted every messages/ShareGPT-format sample
+  (the E5 docstring said empty-key samples are kept; the code dropped
+  them). A chat-format SFT dataset loaded "successfully" with 0 samples
+  and trained on an empty file. Chat turns are now serialized into the
+  dedup key — identical conversations dedup, distinct ones survive.
+- `SFTTrainer.train` routed chat-format datasets through the flat loader,
+  whose `_normalize` drops samples without input/output fields. New
+  `DatasetLoader.load_sft` sniffs the dominant schema and routes chat
+  datasets through `load_messages` (messages pass through to
+  `stage_dataset` for the tokenizer chat template).
+- `_apply_extras` (sft CLI) dropped YAML `save_every` / `log_every` /
+  `quant_bits` / `max_steps` — a config-file `save_every: 50` ran with the
+  default 500 and wrote no numbered checkpoint, leaving `--resume`
+  nothing to resume from.
+
 ## [1.0.0rc9] - 2026-10-13
 
 Closes #63: adds a true quantized DoRA (`qdora`) method so the BNUP
