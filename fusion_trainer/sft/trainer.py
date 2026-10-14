@@ -11,6 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import shutil
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +27,30 @@ if TYPE_CHECKING:
     from ..experiment import ExperimentLogger
 
 logger = logging.getLogger(__name__)
+
+# #65: numbered checkpoints written by mlx_lm every steps_per_save steps,
+# e.g. 0000700_adapters.safetensors.
+_CHECKPOINT_RE = re.compile(r"^(\d+)_adapters\.safetensors$")
+
+# fusion-mlx ADAPTER_BASE_DIR (fusion_mlx/training/service.py).
+MLX_ADAPTER_BASE_DIR = Path.home() / ".fusion-mlx" / "adapters"
+
+
+def find_latest_checkpoint(adapter_dir: Path | str) -> tuple[Path, int] | None:
+    # #65: locate the newest numbered checkpoint in a fusion-mlx adapter
+    # dir. Returns (checkpoint_file, step) or None when the dir holds no
+    # numbered checkpoint (fresh run or cleaned up).
+    best: tuple[int, Path] | None = None
+    for p in Path(adapter_dir).glob("*_adapters.safetensors"):
+        m = _CHECKPOINT_RE.match(p.name)
+        if not m:
+            continue
+        step = int(m.group(1))
+        if best is None or step > best[0]:
+            best = (step, p)
+    if best is None:
+        return None
+    return best[1], best[0]
 
 
 class SFTTrainer:
@@ -64,6 +92,11 @@ class SFTTrainer:
         self._train_samples: list[dict[str, Any]] = []
         self._adapter_path: str = ""
 
+        # #65 resume state (resolved in _run_training before job submission)
+        self._resume_dir: str = ""
+        self._resume_step: int = 0
+        self._last_persisted_step: int = -1
+
         # Optional live-progress sink (RunManager). If set, raw fusion-mlx job
         # events are forwarded here in addition to ExperimentLogger, so the GUI
         # can stream loss curves. None = CLI mode (no sink).
@@ -85,9 +118,10 @@ class SFTTrainer:
             print(f"║  LoRA alpha: {self._lora_cfg.alpha}")
         print("╚══════════════════════════════════════════════════════")
 
-        # Step 1: Load dataset
+        # Step 1: Load dataset (schema-aware: chat formats route through
+        # load_messages — the flat load drops messages/ShareGPT samples)
         print("[1/4] Loading dataset...")
-        train_data, val_data = self._loader.load(
+        train_data, val_data = self._loader.load_sft(
             path=self.dataset_cfg.path,
             hub_dataset=self.dataset_cfg.hub_dataset,
             val_ratio=self.dataset_cfg.val_ratio,
@@ -220,6 +254,17 @@ class SFTTrainer:
         steps_per_epoch = max(1, total_samples // max(1, self.sft_cfg.batch_size))
         iters = self.sft_cfg.max_steps or (steps_per_epoch * self.sft_cfg.num_epochs)
 
+        # #65: fusion-mlx #1182 restarts the step counter at 0 on resume, so
+        # subtract the already-trained steps to avoid over-training.
+        if self._resume_step > 0:
+            logger.info(
+                "resume: %d steps already trained; iters %d -> %d",
+                self._resume_step,
+                iters,
+                max(iters - self._resume_step, 0),
+            )
+            iters = max(iters - self._resume_step, 0)
+
         # A7: fusion-mlx FineTuneConfig accepts ONLY its declared fields
         # (FineTuneConfig(**body) raises TypeError on unknown keys → 400).
         # Confirmed supported: lr_schedule (dict), quant_bits. NOT supported
@@ -322,6 +367,13 @@ class SFTTrainer:
                 "(8-bit frozen base + LoRA for memory saving, NOT fp8 compute, "
                 "MLX 0.32 has no fp8 dtype; fusion-mlx #425)."
             )
+        # #65: resume an interrupted run — fusion-mlx #1182 loads
+        # adapters.safetensors from this dir into the freshly built LoRA
+        # layers before train(). _resume_dir is staged in _run_training
+        # (numbered checkpoints are copied to resume_stage/adapters.safetensors
+        # because upstream loads exactly that filename).
+        if self._resume_dir:
+            cfg["init_adapter_path"] = self._resume_dir
         return cfg
 
     def _build_lr_schedule(self, iters: int) -> dict[str, Any] | None:
@@ -619,8 +671,17 @@ class SFTTrainer:
             # consumes a HF dataset id or a local dir of images + jsonl
             # directly. Branch early, keep one try/finally.
             if self.sft_cfg.model_type == "vlm":
+                if self.sft_cfg.init_adapter_path:
+                    logger.warning(
+                        "VLM resume is not supported upstream "
+                        "(VLMFineTuneConfig has no init_adapter_path) — "
+                        "ignoring init_adapter_path=%s, starting fresh (#65)",
+                        self.sft_cfg.init_adapter_path,
+                    )
                 result = self._submit_vlm_job(exp_logger)
                 return result
+
+            self._resolve_resume()
 
             staged_dir = self._output_dir / "staged_data"
             dataset_path = MLXFineTuneClient.stage_dataset(
@@ -634,6 +695,29 @@ class SFTTrainer:
             mlx_cfg = self._build_mlx_config()
             adapter_name = self.sft_cfg.run_name or "sft_run"
 
+            # #65: resume landed on an already-finished step count — nothing
+            # to train; surface the existing checkpoint instead of submitting
+            # a zero-iter job.
+            if self._resume_dir and int(mlx_cfg.get("iters", 0)) <= 0:
+                ckpt = find_latest_checkpoint(
+                    MLX_ADAPTER_BASE_DIR / self.sft_cfg.model / adapter_name
+                )
+                src = str(ckpt[0]) if ckpt else self._resume_dir
+                print(
+                    f"      ✓ Run already trained {self._resume_step} iters "
+                    f"— nothing left to do."
+                )
+                print(f"      Adapter: {src}")
+                return {
+                    "status": "completed",
+                    "resumed_noop": True,
+                    "total_steps": self._resume_step,
+                    "output_dir": str(self._output_dir),
+                    "final_model_path": src,
+                    "adapter_name": adapter_name,
+                    "method": self.sft_cfg.method,
+                }
+
             client = MLXFineTuneClient(port=self.config.mlx_port)
             job = client.create_job(
                 model_id=self.sft_cfg.model,
@@ -642,6 +726,7 @@ class SFTTrainer:
                 adapter_name=adapter_name,
             )
             job_id = job.get("job_id", "")
+            self._persist_job_state("running", job_id)
             print(f"      Submitted fine-tune job: {job_id}")
             print(
                 f"      iters={mlx_cfg['iters']} batch_size={mlx_cfg['batch_size']} "
@@ -668,7 +753,34 @@ class SFTTrainer:
                     is_canceled=getattr(self, "is_canceled", None),
                 )
             except MLXFineTuneError as exc:
+                if getattr(exc, "status_code", None) == 404:
+                    # #65: engine restarted and dropped the persisted job.
+                    # Fail NOW as interrupted — never zombie-poll to timeout.
+                    ckpt = find_latest_checkpoint(
+                        MLX_ADAPTER_BASE_DIR / self.sft_cfg.model / adapter_name
+                    )
+                    hint = f"{ckpt[0]} (step {ckpt[1]})" if ckpt else "(none)"
+                    print(
+                        f"      ✗ Run interrupted: job {job_id} lost "
+                        f"(fusion-mlx restart dropped it). "
+                        f"Latest checkpoint: {hint}"
+                    )
+                    print(
+                        "        Rerun with --resume to continue from the checkpoint."
+                    )
+                    self._persist_job_state("interrupted", job_id)
+                    exp_logger.save()
+                    return {
+                        "status": "interrupted",
+                        "error": str(exc),
+                        "job_id": job_id,
+                        "resume_checkpoint": str(ckpt[0]) if ckpt else "",
+                        "resume_step": ckpt[1] if ckpt else 0,
+                        "output_dir": str(self._output_dir),
+                        "method": self.sft_cfg.method,
+                    }
                 print(f"      ✗ Training failed: {exc}")
+                self._persist_job_state("failed", job_id)
                 exp_logger.save()
                 return {
                     "status": "failed",
@@ -679,7 +791,36 @@ class SFTTrainer:
 
             status = final_job.get("status", "")
             if status != "completed":
+                # #65: a returned "cancelled" on this path is engine-side —
+                # fusion-mlx restart recovery marks RUNNING/QUEUED jobs
+                # cancelled (user cancel raises instead). Same interrupted
+                # treatment: surface the checkpoint, suggest --resume.
+                if status == "cancelled":
+                    ckpt = find_latest_checkpoint(
+                        MLX_ADAPTER_BASE_DIR / self.sft_cfg.model / adapter_name
+                    )
+                    hint = f"{ckpt[0]} (step {ckpt[1]})" if ckpt else "(none)"
+                    print(
+                        f"      ✗ Run interrupted: job {job_id} cancelled "
+                        f"engine-side (fusion-mlx restart recovery). "
+                        f"Latest checkpoint: {hint}"
+                    )
+                    print(
+                        "        Rerun with --resume to continue from the checkpoint."
+                    )
+                    self._persist_job_state("interrupted", job_id)
+                    exp_logger.save()
+                    return {
+                        "status": "interrupted",
+                        "error": final_job.get("error", "") or "cancelled engine-side",
+                        "job_id": job_id,
+                        "resume_checkpoint": str(ckpt[0]) if ckpt else "",
+                        "resume_step": ckpt[1] if ckpt else 0,
+                        "output_dir": str(self._output_dir),
+                        "method": self.sft_cfg.method,
+                    }
                 print(f"      ✗ Job ended with status: {status}")
+                self._persist_job_state(status or "failed", job_id)
                 exp_logger.save()
                 return {
                     "status": status,
@@ -691,6 +832,7 @@ class SFTTrainer:
             adapter_path = final_job.get("adapter_path", "")
             self._adapter_path = adapter_path
             self._save_final(adapter_path=adapter_path)
+            self._persist_job_state("completed", job_id)
             exp_logger.save()
 
             result = {
@@ -733,6 +875,12 @@ class SFTTrainer:
             if etype == "train_loss":
                 step = ev.get("step", 0)
                 self._global_step = step
+                # #65 pt4: persist last_seen_step incrementally (per step
+                # change), not only at start/end — engine restarts bypass
+                # atexit, so state is only as durable as the last poll.
+                if step != self._last_persisted_step:
+                    self._last_persisted_step = step
+                    self._persist_job_state("running", job.get("job_id", ""))
                 exp_logger.log_metrics(
                     step=step,
                     metrics={
@@ -755,6 +903,71 @@ class SFTTrainer:
                     metrics={"val_loss": ev.get("val_loss", 0.0)},
                 )
                 print(f"      Val loss: {ev.get('val_loss', 0.0):.4f}")
+
+    def _resolve_resume(self) -> None:
+        # #65: stage the resume checkpoint for fusion-mlx #1182. Upstream
+        # loads exactly {init_adapter_path}/adapters.safetensors, while the
+        # run's own checkpoints are numbered (NNNNNN_adapters.safetensors) in
+        # the same dir — copy the newest one to resume_stage/ so the resumed
+        # job does not overwrite the source checkpoint at its first save.
+        # Step counter restarts at 0 upstream; _resume_step lets
+        # _build_mlx_config subtract already-trained iters.
+        if not self.sft_cfg.init_adapter_path:
+            return
+        adapter_dir = Path(self.sft_cfg.init_adapter_path)
+        ckpt = find_latest_checkpoint(adapter_dir)
+        if ckpt is not None:
+            src, step = ckpt
+            staged = self._output_dir / "resume_stage"
+            staged.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, staged / "adapters.safetensors")
+            self._resume_dir = str(staged)
+            self._resume_step = step
+            logger.info("resume: checkpoint step %d staged %s -> %s", step, src, staged)
+            print(f"      ↻ Resume: checkpoint step {step} ({src})")
+        elif (adapter_dir / "adapters.safetensors").exists():
+            # Explicit dir holding final weights (e.g. a completed run's
+            # adapter). Step unknown — train the full iters on loaded weights.
+            self._resume_dir = str(adapter_dir)
+            self._resume_step = 0
+            logger.info(
+                "resume: adapters.safetensors in %s (step unknown)", adapter_dir
+            )
+            print(f"      ↻ Resume: adapter weights from {adapter_dir}")
+        else:
+            logger.warning(
+                "init_adapter_path=%s holds no adapters.safetensors and no "
+                "numbered checkpoint — starting fresh (#65)",
+                adapter_dir,
+            )
+            print(f"      ⚠ --resume: no checkpoint in {adapter_dir}; starting fresh")
+
+    def _persist_job_state(self, status: str, job_id: str = "") -> None:
+        # #65 (pt3/4): liveness state under output_dir so a restarted trainer
+        # can decide resume-vs-fresh without operator archaeology. Written
+        # incrementally (on submit + every step change + on every terminal
+        # path) because engine-side os._exit bypasses atexit persistence —
+        # trainer-side state is only as durable as the last poll.
+        adapter_name = self.sft_cfg.run_name or "sft_run"
+        state = {
+            "job_id": job_id,
+            "model": self.sft_cfg.model,
+            "adapter_name": adapter_name,
+            "adapter_dir": str(
+                MLX_ADAPTER_BASE_DIR / self.sft_cfg.model / adapter_name
+            ),
+            "step": self._global_step,
+            "resume_step": self._resume_step,
+            "status": status,
+            "updated_at": time.time(),
+        }
+        p = self._output_dir / "job_state.json"
+        tmp = p.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+            os.replace(tmp, p)
+        except OSError as e:
+            logger.warning("job state persist failed: %s", e)
 
     def _save_final(self, adapter_path: str = "") -> str:
         """Record final adapter metadata (Trainer-local pointer).

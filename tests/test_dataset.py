@@ -302,10 +302,38 @@ class TestDeduplicate:
         deduped = deduplicate(data)
         assert len(deduped) == 1
 
-    def test_empty_text_skipped(self):
+    def test_empty_text_kept(self):
+        # E5 contract (docstring): empty-key samples are KEPT — schema
+        # filtering is load_messages' job. The old drop silently deleted
+        # every messages-format sample (SFT load returned 0 samples).
+        # Degenerate flat empty-text is filter_by_length's concern.
         data = [{"text": ""}, {"text": "hello"}]
         deduped = deduplicate(data)
-        assert len(deduped) == 1
+        assert len(deduped) == 2
+
+    def test_messages_not_all_dropped(self):
+        # Regression (live SFT load returned 0 samples): chat formats carry
+        # text in nested fields — dedup must keep them all.
+        data = [
+            {"messages": [{"role": "user", "content": "a"}]},
+            {"messages": [{"role": "user", "content": "b"}]},
+        ]
+        assert len(deduplicate(data)) == 2
+
+    def test_identical_messages_deduped(self):
+        data = [
+            {"messages": [{"role": "user", "content": "a"}]},
+            {"messages": [{"role": "user", "content": "a"}]},
+        ]
+        assert len(deduplicate(data)) == 1
+
+    def test_sharegpt_conversations_deduped(self):
+        data = [
+            {"conversations": [{"from": "human", "value": "x"}]},
+            {"conversations": [{"from": "human", "value": "x"}]},
+            {"conversations": [{"from": "human", "value": "y"}]},
+        ]
+        assert len(deduplicate(data)) == 2
 
 
 class TestFilterByLength:
