@@ -10,6 +10,7 @@ fails schema validation (not just structural heuristics).
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from fusion_core.dsl_schema import validate_dsl_str
@@ -228,9 +229,27 @@ class TestGenerateNegatives:
 
     def test_all_negatives_fail_validation_or_eval(self):
         """静态负例必须过不了 validate_dsl_str; param_drift 是语义负例 —
-        JSON/schema 合法, 破绽只在 eval 求值时暴露 (NameError), 用生产求值器断言。
-        (sft-dpo-1013 §2.4: E1 漂移的破绽正是静态校验查不到的那类)"""
-        from fusion_k12_teacher.eval.eval_harness import BNUPEvaluator
+        JSON/schema 合法, 破绽只在 eval 求值时暴露, 用求值器断言。
+        (sft-dpo-1013 §2.4: E1 漂移的破绽正是静态校验查不到的那类)
+
+        求值器复刻生产 BNUPEvaluator.evaluate_eval_expression 的核心语义
+        (fusion-k12-teacher eval_harness.py: params.xxx → params_val['xxx'],
+        eval restricted globals) — 不直接 import 跨项目包 (CI 环境不装
+        fusion-k12-teacher, 且 trainer 不依赖它), 但断言语义一致:
+        漂移键在 params_val 下标中缺失 (KeyError) 即求值失败。"""
+
+        def _eval_pipeline(pipeline, parameters):
+            params_val = {
+                k: v.get("value", 0)
+                for k, v in parameters.items()
+                if isinstance(v, dict)
+            }
+            for step_item in pipeline:
+                expr = str(step_item.get("eval", ""))
+                if not expr:
+                    continue
+                py_expr = re.sub(r"params\.(\w+)", r"params_val['\1']", expr)
+                eval(py_expr, {"__builtins__": None}, {"params_val": params_val})
 
         negatives = generate_negatives(
             chosen_response=_VALID_RESPONSE,
@@ -241,17 +260,14 @@ class TestGenerateNegatives:
             neg_ratio=5,
         )
         assert len(negatives) >= 1
-        ev = BNUPEvaluator()
         for neg in negatives:
             dsl_content = _extract_dsl_content(neg)
             ok, _msg = validate_dsl_str(dsl_content)
             if ok:
-                # 语义负例 (param_drift): 必须在生产求值器下失败
+                # 语义负例 (param_drift): 必须在求值器下失败
                 dsl = json.loads(dsl_content)
-                # 漂移键在 params_val 下标中缺失 (KeyError); 若漂移到
-                # 非下标形态则 NameError — 两者都是 eval 求值失败
                 with pytest.raises((KeyError, NameError)):
-                    ev.evaluate_eval_expression(dsl["pipeline"], dsl["parameters"])
+                    _eval_pipeline(dsl["pipeline"], dsl["parameters"])
             # 静态负例由 _assert_negative_fails 覆盖 (其余测试)
 
     def test_valid_dsl_passes_validation(self):
