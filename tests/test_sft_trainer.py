@@ -705,6 +705,57 @@ class TestTrain:
             with pytest.raises(ValueError, match="must be provided"):
                 trainer.train()
 
+    def test_system_prompt_carried_to_staged_messages(self):
+        """#69: Alpaca system field must survive loader -> dataloader -> stage_dataset."""
+        import json as _json
+
+        from fusion_trainer.mlx_client import MLXFineTuneClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "train.jsonl"
+            rows = [
+                {"instruction": "Q1", "input": "", "output": "A1", "system": "SYS"},
+                {"instruction": "Q2", "input": "", "output": "A2"},
+            ]
+            with open(p, "w") as f:
+                for r in rows:
+                    f.write(_json.dumps(r, ensure_ascii=False) + "\n")
+
+            cfg = TrainerConfig(
+                dataset=DatasetConfig(path=str(p), max_seq_length=128),
+                sft=SFTConfig(model="test-model", method="lora"),
+                cache_path=tmpdir,
+            )
+            trainer = SFTTrainer(cfg)
+            train_data, _val = trainer._loader.load_sft(
+                path=str(p),
+                hub_dataset="",
+                val_ratio=0.0,
+                max_samples=0,
+                max_seq_length=128,
+                input_field="input",
+                output_field="output",
+                remove_duplicates=False,
+            )
+            flat = trainer._prepare_dataloader(train_data)
+            assert flat[0].get("system") == "SYS"
+            assert "system" not in flat[1]
+
+            staged_dir = Path(
+                MLXFineTuneClient.stage_dataset(flat, tmpdir, filename="staged.jsonl")
+            )
+            lines = [
+                _json.loads(l)
+                for l in (staged_dir / "staged.jsonl").read_text().splitlines()
+            ]
+            assert [m["role"] for m in lines[0]["messages"]] == [
+                "system",
+                "user",
+                "assistant",
+            ]
+            assert lines[0]["messages"][0]["content"] == "SYS"
+            assert [m["role"] for m in lines[1]["messages"]] == ["user", "assistant"]
+
     def test_train_with_mock_integration(self, monkeypatch):
         """Integration test: mock model loading + HTTP client, verify flow."""
         with tempfile.TemporaryDirectory() as tmpdir:

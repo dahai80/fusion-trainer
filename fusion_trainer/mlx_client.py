@@ -891,10 +891,19 @@ class MLXFineTuneClient:
                 else:
                     inp = item.get("input", "")
                     outp = item.get("output", "")
-                    messages = [
-                        {"role": "user", "content": str(inp)},
-                        {"role": "assistant", "content": str(outp)},
-                    ]
+                    messages = []
+                    # #69: Alpaca system field → first chat message so the
+                    # chat template renders it during training (matches the
+                    # serving shape, which always has a system role).
+                    system_text = str(item.get("system", "") or "")
+                    if system_text:
+                        messages.append({"role": "system", "content": system_text})
+                    messages.extend(
+                        [
+                            {"role": "user", "content": str(inp)},
+                            {"role": "assistant", "content": str(outp)},
+                        ]
+                    )
                     f.write(
                         json.dumps({"messages": messages}, ensure_ascii=False) + "\n"
                     )
