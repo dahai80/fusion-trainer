@@ -214,7 +214,12 @@ class SFTTrainer:
                 continue
             inp = item.get("input", "")
             out = item.get("output", "")
-            formatted.append({"input": str(inp), "output": str(out)})
+            flat = {"input": str(inp), "output": str(out)}
+            # #69: keep the system field so stage_dataset emits it as a
+            # chat message (models are served with a system prompt).
+            if item.get("system"):
+                flat["system"] = str(item["system"])
+            formatted.append(flat)
         return formatted
 
     def _build_mlx_config(self) -> dict[str, Any]:

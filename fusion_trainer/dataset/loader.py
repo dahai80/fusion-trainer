@@ -407,7 +407,15 @@ class DatasetLoader:
             if max_seq_length > 0:
                 input_text = input_text[:max_seq_length]
                 output_text = output_text[:max_seq_length]
-            result.append({"input": input_text, "output": output_text})
+            sample = {"input": input_text, "output": output_text}
+            system_text = str(item.get("system", "") or "")
+            if system_text:
+                # #69: carry the Alpaca system field through so stage_dataset
+                # can emit it as the first chat message — dropping it trains
+                # the model without a system prompt while serving always has
+                # one (distribution mismatch).
+                sample["system"] = system_text
+            result.append(sample)
         if dropped:
             logger.warning(
                 "_normalize: dropped %d/%d samples missing input or output "
