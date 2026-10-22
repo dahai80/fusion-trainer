@@ -131,9 +131,12 @@ def test_dataset_delete(client):
 
 
 def test_build_config_defaults_and_overrides():
+    # self-sufficient: create the dataset here, not via an earlier test
+    # (pytest-randomly shuffles order)
+    bs._validate_and_store("cfg_ds", JSONL_OK, "jsonl")
     req = bs.RunStart(
         name="cfgtest",
-        dataset="jsonl_ok",
+        dataset="cfg_ds",
         lora_rank=8,
         learning_rate=1e-4,
         num_epochs=1,
@@ -145,11 +148,12 @@ def test_build_config_defaults_and_overrides():
     assert cfg.sft.method == "lora"
     assert cfg.sft.model == bs.DEFAULT_BASE_MODEL
     assert cfg.mlx_port == 11434
-    assert Path(cfg.dataset.path).name == "jsonl_ok.jsonl"
+    assert Path(cfg.dataset.path).name == "cfg_ds.jsonl"
 
 
 def test_build_config_unknown_preset_422():
-    req = bs.RunStart(name="cfgtest", dataset="jsonl_ok", preset="nope")
+    bs._validate_and_store("cfg_ds2", JSONL_OK, "jsonl")
+    req = bs.RunStart(name="cfgtest", dataset="cfg_ds2", preset="nope")
     with pytest.raises(Exception) as ei:
         bs._build_config(req)
     assert "unknown preset" in str(ei.value)

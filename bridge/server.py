@@ -6,7 +6,11 @@ lifecycle — the browser never sees the admin key. Runs are background
 threads in THIS process, so the bridge must stay up for the duration of
 a training (console restarts do not affect it).
 
-Auth: static bearer token (FUSION_TRAINER_BRIDGE_KEY). Loopback bind only.
+Auth: bearer token — the static FUSION_TRAINER_BRIDGE_KEY for direct
+loopback access, plus the gateway-issued fm- module key (issue #72) for
+requests the fusion-gateway /shell proxy forwards. Loopback bind only;
+the gateway proxy at /shell/fusion-trainer/ is the single user-facing
+entry when shell registration is enabled.
 
 Env:
   FUSION_TRAINER_BRIDGE_KEY   required bearer token for console -> bridge
@@ -15,14 +19,19 @@ Env:
   FUSION_TRAINER_BRIDGE_PORT  default 8790
   FUSION_MLX_MODEL            default base model alias
   FUSION_TRAINER_BRIDGE_PRESETS  preset registry JSON (editable without release)
+  FUSION_SHELL_GATEWAY_URL    gateway base — enables shell registration (#72)
+  FUSION_GATEWAY_ADMIN_KEY    gateway key authorized for /api/v1/shell/*
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
+import secrets
 import time
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +41,7 @@ from pydantic import BaseModel
 
 # fusion_trainer is importable because the bridge runs inside the
 # fusion-trainer repo's venv (scripts/trainer-bridge.sh guarantees it).
+from bridge import shell_registry  # noqa: E402
 from fusion_trainer import RunManager, TrainerConfig  # noqa: E402
 from fusion_trainer.dataset import formats as ds_formats  # noqa: E402
 from fusion_trainer.merge import merge_and_export  # noqa: E402
@@ -81,7 +91,35 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # CSV pair upload → chat JSONL conversion
 _PAIR_COLUMNS = ("instruction", "input", "output")
 
-app = FastAPI(title="fusion-trainer bridge", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(_: Any):
+    # Issue #72: register the console as a fusion-gateway shell module and
+    # keep it heartbeating, so the shell sidebar lists 训练 and the gateway
+    # proxy (/shell/fusion-trainer/) is the user-facing entry. Env-gated —
+    # never fatal to the bridge itself.
+    task = None
+    if shell_registry.shell_registration_enabled():
+        task = asyncio.create_task(shell_registry.shell_registry_loop())
+        logger.info("shell registration loop started (module fusion-trainer)")
+    else:
+        logger.info(
+            "shell registration disabled — set FUSION_SHELL_GATEWAY_URL + "
+            "FUSION_GATEWAY_ADMIN_KEY to list the console in the shell sidebar"
+        )
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            logger.info("shell registration loop stopped")
+
+
+app = FastAPI(title="fusion-trainer bridge", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # loopback-only service behind token
@@ -107,14 +145,17 @@ def _mlx() -> MLXFineTuneClient:
 
 
 def _auth(authorization: str) -> None:
-    """Constant-time-ish check; fail closed when no key is configured."""
-    if not BRIDGE_KEY:
+    """Accept the static bridge key OR the gateway-issued fm- module key
+    (issue #72 — the gateway /shell proxy injects the fm- key as Bearer).
+    Constant-time compare per candidate; fail closed when no key exists."""
+    keys = shell_registry.accepted_bridge_keys()
+    if not keys:
         raise HTTPException(
             status_code=503,
             detail="bridge key not configured — set FUSION_TRAINER_BRIDGE_KEY",
         )
     token = authorization.removeprefix("Bearer ").strip()
-    if not token or token != BRIDGE_KEY:
+    if not token or not any(secrets.compare_digest(token, k) for k in keys):
         raise HTTPException(status_code=401, detail="invalid bridge token")
 
 
@@ -408,6 +449,7 @@ async def health() -> dict[str, Any]:
         "mlx_port": MLX_PORT,
         "mlx": mlx_info,
         "presets": len(_load_presets()),
+        "shell_registered": shell_registry.shell_registration_enabled(),
     }
 
 
@@ -674,6 +716,10 @@ async def index():
 if __name__ == "__main__":
     import uvicorn
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
     if not BRIDGE_KEY:
         raise SystemExit(
             "FUSION_TRAINER_BRIDGE_KEY is required (and must match the "

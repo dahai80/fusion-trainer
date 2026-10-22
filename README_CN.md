@@ -265,6 +265,18 @@ Fusion-Trainer 作为整条 Fusion 产品矩阵的**模型迭代工厂**：
 
 **闭环反馈：** 各 Fusion Agent 产生交互样本 → 筛选后存入数据集仓库 → 用于下一轮 SFT/RLSL 训练 → 更新模型部署回产品。
 
+### 训练控制台（trainer-bridge，#71/#72）
+
+自带四节式 Web 控制台 —— 数据集 / 训练 / 合并发布 / 基座对比评测 —— 由 trainer-bridge（`bridge/`，FastAPI 薄门面）提供。浏览器永远接触不到 fusion-mlx 管理密钥；训练运行为 bridge 进程内的后台线程，刷新页面不影响训练。
+
+```bash
+export FUSION_TRAINER_BRIDGE_KEY=<token>     # 浏览器直连 bridge 的令牌
+./scripts/trainer-bridge.sh start            # 监听 http://127.0.0.1:8790/
+./scripts/trainer-bridge.sh stop
+```
+
+**Shell 模块注册（#72）：** bridge 启动时向 fusion-gateway shell 注册表登记 `bridge/manifest.json` 并每 15 秒心跳，fusion-web-shell 侧边栏由此出现 **训练控制台** 一级入口，网关代理 `http://127.0.0.1:11432/shell/fusion-trainer/` 成为唯一用户入口（bridge 停止 → 侧边栏条目置灰 unreachable）。注册走 K1 网关签发密钥：注册体不带 `api_key`，网关签发 `fm-` 模块密钥（仅返回一次），bridge 落盘到 `~/.fusion-trainer-bridge/web_module_key`（0600），心跳与代理请求均以它鉴权（入站同时接受静态 bridge 令牌供环回直连）。由 `FUSION_SHELL_GATEWAY_URL` + `FUSION_GATEWAY_ADMIN_KEY` 环境变量开启；`trainer-bridge.sh` 默认指向本机网关并自动从网关配置读取管理密钥。
+
 ---
 
 ## 发布与变更管理

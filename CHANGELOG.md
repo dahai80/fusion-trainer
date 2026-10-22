@@ -7,6 +7,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc12] - 2026-10-23
+
+Closes #72: the trainer console is now a first-class fusion-gateway shell
+module — the shell sidebar lists 训练控制台 and the gateway proxy
+(`/shell/fusion-trainer/`) is the single user-facing entry.
+
+### Added
+- `bridge/shell_registry.py` — shell module registration + heartbeat
+  (same pattern as fusion-cowork / fusion-agent-studio): registers
+  `bridge/manifest.json` (id `fusion-trainer`, entry `/shell/fusion-trainer/`,
+  upstream `http://127.0.0.1:8790`) with `POST /api/v1/shell/manifests`,
+  heartbeats every 15s, re-registers on gateway restart (404) or issued-key
+  invalidation (401/403). Env-gated: `FUSION_SHELL_GATEWAY_URL` +
+  `FUSION_GATEWAY_ADMIN_KEY` (trainer-bridge.sh defaults the URL to the local
+  gateway and reads the admin key from the gateway config when unset).
+- K1/K2 gateway-issued `fm-` module key: the registration body carries no
+  `api_key`, the gateway issues the key (`raw_key`, returned exactly once),
+  the bridge persists it to `~/.fusion-trainer-bridge/web_module_key` (0600)
+  and uses it for heartbeat auth. Inbound bridge auth dual-accepts the
+  static `FUSION_TRAINER_BRIDGE_KEY` (direct loopback) and the issued `fm-`
+  key (gateway proxy injection) — constant-time compare, 401/503 fail-closed.
+- `GET /health` reports `shell_registered`; bridge `__main__` configures
+  logging so shell-registry INFO lines reach the log file.
+
+### Fixed
+- Upstream fusion-gateway#277 (fixed via fusion-gateway#278): the shell
+  registry's re-registration keep-branch dropped the issued-key plaintext,
+  wiping the proxy credential while heartbeats stayed green — a bridge
+  restart left the module reachable but the proxy 401. Live-verified after
+  the gateway fix: re-registration retains the key, proxy stays 200.
+- `bridge/test_server.py` `_build_config` tests are now self-sufficient
+  (create their own dataset) — pytest-randomly shuffles order and the old
+  cross-test dependency flaked.
+
+### Verified (live e2e, fusion-gateway 11432 + bridge 8790)
+- Sidebar lists 训练控制台 online; clicking opens the four-section GUI in
+  the shell iframe at `/shell/fusion-trainer/` with live presets/runs data.
+- Bridge stop → entry greys `unreachable` (heartbeat expiry); restart →
+  online again, key retained across the re-registration.
+- Direct `:8790` access stays loopback-only and 401s without a token.
+- `bridge/test_shell_registry.py` (14 cases, mocked HTTP) +
+  `bridge/test_server.py` (21) green under random ordering; full suite 551
+  passed; ruff clean.
+
 ## [1.0.0rc11] - 2026-10-22
 
 Closes #71: Trainer console GUI migrated verbatim from f-ecommerce (migration
