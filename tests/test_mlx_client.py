@@ -45,6 +45,19 @@ class TestAdminRouteHeader:
         assert client._headers.get("Authorization") == "Bearer explicit-token"
 
 
+class TestFusionSourceHeader:
+    # Bridge/model-manager hosts must declare X-Fusion-Source: model-hub —
+    # merge/serve model-management endpoints are gated on it
+    # (fusion-mlx auth.py:531).
+    def test_source_header_when_set(self):
+        client = MLXFineTuneClient(port=11434, source="model-hub")
+        assert client._headers.get("X-Fusion-Source") == "model-hub"
+
+    def test_no_source_header_by_default(self):
+        client = MLXFineTuneClient(port=11434)
+        assert "X-Fusion-Source" not in client._headers
+
+
 class TestBaseURL:
     def test_base_url_includes_port(self):
         client = MLXFineTuneClient(port=11434)

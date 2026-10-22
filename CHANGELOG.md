@@ -7,6 +7,63 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc11] - 2026-10-22
+
+Closes #71: Trainer console GUI migrated verbatim from f-ecommerce (migration
+study `fusion/insight/f-ecommerce-migration-1022.md`, E4) with business logic
+generalized — no e-commerce semantics remain.
+
+### Added
+
+- **trainer-bridge console** (`bridge/`): FastAPI facade (`server.py`) around
+  the fusion_trainer library serving the four-section Trainer GUI
+  (`trainer.html`: datasets / training / merge & publish / evaluation) at `/`.
+  Bridge owns the fusion-mlx admin key + RunManager lifecycle (runs survive
+  console refreshes); loopback bind, bearer-token auth on every data route,
+  browser never sees the admin key.
+- Dataset upload pipeline: CSV (instruction,input,output) or chat JSONL →
+  schema detection + validation via `fusion_trainer.dataset.formats`, 50 MB
+  cap, name sanitization, list/delete.
+- Run lifecycle endpoints (`POST /runs`, list/detail/stop/merge) with one
+  active run per machine (409 on second), dataset existence checks, and
+  preset registry resolution.
+- Merge & publish flow: `POST /runs/{id}/merge` produces a standalone model
+  in `~/.fusion-mlx/models` (auto-enters the `/v1/models` catalog);
+  `POST /publish` promotes the newest merged model of a completed run into
+  the published slot; `POST /publish {"run_id": ""}` reverts to base.
+  Hot-mount of raw adapters is not used (engine registry is 2-level; slash
+  model ids nest deeper — filed fusion-mlx#1317).
+- Evaluation endpoint `POST /eval`: same instruction to base and published
+  tuned model, side-by-side answers.
+- Preset registry as a config file (`~/.fusion-trainer-bridge/presets.json`,
+  seeded from `SFT_PRESETS`, re-read per request — editable without a
+  release; corrupt/empty falls back to built-ins with a warning).
+- Lifecycle script `scripts/trainer-bridge.sh` (start/stop/status/log; reads
+  the engine key from `~/.fusion-mlx/settings.json`, never hardcoded).
+- Explicit training-memory budget: `SFTConfig.memory_limit_gb` (default 0 =
+  upstream default) passed through to fusion-mlx `FineTuneConfig`; the
+  bridge computes 85%-line − resident − 6 GB headroom (floor 8) because the
+  upstream default assumes a dedicated training box.
+- `MLXFineTuneClient(source=...)` emits `X-Fusion-Source` — merge/serve
+  model-management endpoints are gated on it (fusion-mlx auth).
+
+### Fixed
+
+- Tiny-run progress: `steps_per_report` capped to `iters` (a 2-step smoke run
+  previously completed with zero progress events, UI stuck at 0/3); completed
+  runs report `step == total_steps`; `list_runs`/`run_status` now carry the
+  `model` field for the GUI run table.
+
+### Tests
+
+- `bridge/test_server.py`: 21 cases (TestClient, mocked RunManager/MLX
+  client) covering auth gate, CSV/JSONL validation, config building, publish
+  (409s, merged-model promotion, newest-merge pick, revert), eval, page
+  serving.
+- Core: memory-budget passthrough (omitted at 0 / passed when set),
+  tiny-run `steps_per_report` cap, completed-run step/model fields,
+  `X-Fusion-Source` header. Suite: 551 passed, 15 skipped.
+
 ## [1.0.0rc10] - 2026-10-15
 
 Closes #65: SFT checkpoint resume + engine-restart detection, and closes the

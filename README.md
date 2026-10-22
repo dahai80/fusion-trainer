@@ -374,6 +374,25 @@ fusion-studio (SwiftUI TrainerView)
 
 ---
 
+## Trainer Console (bridge, #71)
+
+A self-contained four-section web console — datasets, training, merge & publish, base-vs-tuned evaluation — served by the **trainer-bridge**, a thin FastAPI facade around the fusion_trainer library (`bridge/`). The browser never sees the fusion-mlx admin key; the bridge owns it plus the `RunManager` lifecycle (runs are background threads in the bridge process, so a console refresh never kills a training).
+
+```bash
+export FUSION_TRAINER_BRIDGE_KEY=<token>     # bearer token browser -> bridge
+./scripts/trainer-bridge.sh start            # serves http://127.0.0.1:8790/
+./scripts/trainer-bridge.sh stop             # (engine key read from ~/.fusion-mlx/settings.json)
+```
+
+- **Endpoints:** `POST/GET/DELETE /datasets`, `GET /presets`, `POST /runs` + `GET /runs` + `POST /runs/{id}/stop|merge`, `POST /publish` + `GET /published`, `POST /eval`, `GET /health`, and `GET /` serving the console page (`bridge/trainer.html`). Loopback bind only; every data route requires the bearer token (401 fail-closed).
+- **Publish** promotes a run's **merged standalone model** (written to `~/.fusion-mlx/models` at merge time, so published models auto-enter the fusion-mlx `/v1/models` catalog); `POST /publish {"run_id": ""}` reverts to the base model. Hot-mounting raw adapters is deliberately not used — the engine adapter registry is 2-level and slash model ids nest deeper (fusion-mlx#1317).
+- **Preset registry:** `~/.fusion-trainer-bridge/presets.json` (seeded from `SFT_PRESETS` on first start, re-read per request — edit presets without cutting a release; corrupt/empty file falls back to built-ins with a warning).
+- **Memory budget:** the bridge computes an explicit `memory_limit_gb` (85% safety line − resident − 6 GB headroom, floor 8) because fusion-mlx's default (60% of physical) assumes a dedicated training box and rejects jobs when large models are already serving.
+- **Tiny-run reporting:** `steps_per_report` is capped to `iters` so smoke runs still emit progress events, and completed runs report `step == total_steps` instead of `0/N`.
+- **Tests:** `bridge/test_server.py` (21 cases, FastAPI TestClient, mocked RunManager/MLX client): `python -m pytest bridge/test_server.py -q`
+
+---
+
 ## Releases & Change Management
 
 Releases follow [Semantic Versioning](https://semver.org/) against the frozen

@@ -47,3 +47,5 @@ logs/
 *.pth
 *.gguf
 *.ckpt
+# --- Bridge local venv (not committed) ---
+.venv-bridge/

@@ -309,6 +309,11 @@ class SFTTrainer:
 
         lr_schedule = self._build_lr_schedule(iters)
 
+        # Tiny runs (smoke tests, demos) have fewer steps than log_every —
+        # report every step then, or the run completes with zero progress
+        # events and the UI shows 0/3.
+        steps_per_report = max(1, min(self.sft_cfg.log_every, iters))
+
         cfg: dict[str, Any] = {
             "fine_tune_type": fine_tune_type,
             "optimizer": "adamw",
@@ -316,14 +321,18 @@ class SFTTrainer:
             "batch_size": self.sft_cfg.batch_size,
             "iters": iters,
             "val_batches": 5,
-            "steps_per_report": self.sft_cfg.log_every,
-            "steps_per_eval": max(self.sft_cfg.log_every * 5, 50),
+            "steps_per_report": steps_per_report,
+            "steps_per_eval": max(steps_per_report * 5, 50),
             "steps_per_save": self.sft_cfg.save_every,
             "max_seq_length": self.dataset_cfg.max_seq_length,
             "grad_accumulation_steps": self.sft_cfg.gradient_accumulation_steps,
             "mask_prompt": True,
             "seed": self.config.seed,
         }
+        # Explicit memory budget pass-through (fusion-mlx FineTuneConfig.
+        # memory_limit_gb). 0 keeps the upstream default.
+        if self.sft_cfg.memory_limit_gb > 0:
+            cfg["memory_limit_gb"] = float(self.sft_cfg.memory_limit_gb)
         # P3-4 (round-3 audit): only send LoRA fields for lora/dora/qlora. A
         # full fine-tune sending lora_rank/lora_layers is meaningless and could
         # confuse upstream validation. Strip them on the full path.

@@ -79,10 +79,16 @@ class MLXFineTuneClient:
         base_url: str = "http://localhost",
         admin_token: str = "",
         timeout: float = 30.0,
+        source: str = "",
     ):
         self._base = f"{validate_service_url(base_url, field_name='base_url')}:{port}"
         token = admin_token or os.environ.get("FUSION_MLX_ADMIN_TOKEN", "")
         self._headers = {"X-Fusion-Route": "admin"}
+        # Model-management endpoints (merge/serve/load) are gated on
+        # X-Fusion-Source: model-hub (fusion-mlx auth.py:531). A host that
+        # manages models on the user's behalf declares itself here.
+        if source:
+            self._headers["X-Fusion-Source"] = source
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
         self._timeout = timeout

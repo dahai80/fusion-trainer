@@ -415,3 +415,20 @@ class TestDatasetsAdapters:
             res = rm.delete_adapter("any")
             assert res["ok"] is False
             assert "error" in res
+
+
+class TestRunRecordFields:
+    def test_completed_run_reports_full_steps_and_model(self, monkeypatch):
+        # Tiny runs finish before the first steps_per_report boundary —
+        # a completed run must show step == total_steps (not 0/N), and
+        # list_runs must carry the model for the GUI run table.
+        with tempfile.TemporaryDirectory() as tmp:
+            _patch_sft_client(monkeypatch)
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg = _make_sft_config(tmp)
+            run_id = rm.start_sft(cfg)["run_id"]
+            _wait_terminal(rm, run_id)
+            rec = next(r for r in rm.list_runs() if r["run_id"] == run_id)
+            assert rec["status"] == "completed"
+            assert rec["model"] == cfg.sft.model
+            assert rec["step"] == rec["total_steps"] > 0

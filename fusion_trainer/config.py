@@ -201,6 +201,11 @@ class SFTConfig:
 
     # Precision
     use_mxfp8: bool = False
+    # Explicit training-memory budget (GB) passed to fusion-mlx's
+    # FineTuneConfig.memory_limit_gb. 0 = upstream default (60% of physical,
+    # tuned for dedicated training boxes — wrong when large models are
+    # already resident, e.g. 27B serving + training on one Mac).
+    memory_limit_gb: float = 0.0
     """Use MXFP8 mixed precision training (MLX-native). Upstream-blocked
     (fusion-mlx#402); default False. Explicit True fail-stops until upstream
     lands, so the user's intent is never silently downgraded (audit L2)."""

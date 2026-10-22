@@ -760,6 +760,13 @@ class RunManager:
                     "adapter_path", ""
                 )
                 rec["adapter_name"] = result.get("adapter_name", "")
+                # A completed run shows its full step count even when the
+                # upstream job emitted fewer/no progress events (tiny smoke
+                # runs finish before the first steps_per_report boundary).
+                if final_status == "completed":
+                    total = int(rec.get("total_steps") or 0)
+                    if total > 0:
+                        rec["step"] = total
                 rec["finished"] = time.time()
                 if publish_result is not None:
                     rec["publish_result"] = publish_result
@@ -845,6 +852,7 @@ class RunManager:
             return {
                 "run_id": run_id,
                 "status": r.get("status", ""),
+                "model": r.get("model", ""),
                 "step": step,
                 "total_steps": total_steps,
                 "phase": r.get("phase", ""),

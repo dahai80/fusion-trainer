@@ -1083,3 +1083,47 @@ class TestRealFusionMLXIntegration:
         assert mean_reward != 58.0, (
             f"mean_reward is length fallback, not RM: {mean_reward}"
         )
+
+
+# ===========================================================================
+# Text-SFT config — memory budget + tiny-run reporting floor
+# ===========================================================================
+
+
+class TestMLXConfigMemoryBudget:
+    def _trainer(self, tmpdir: str, **sft_kw) -> SFTTrainer:
+        data_path = _make_dataset_file(tmpdir)
+        cfg = TrainerConfig(
+            dataset=DatasetConfig(path=data_path, max_seq_length=128),
+            sft=SFTConfig(model="test-model", method="lora", **sft_kw),
+            cache_path=tmpdir,
+        )
+        return SFTTrainer(cfg)
+
+    def test_memory_limit_gb_omitted_when_zero(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = self._trainer(tmpdir)
+            trainer._train_samples = [{"input": "Q", "output": "A"}]
+            built = trainer._build_mlx_config()
+            assert "memory_limit_gb" not in built
+
+    def test_memory_limit_gb_passed_through(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = self._trainer(tmpdir, memory_limit_gb=12.5)
+            trainer._train_samples = [{"input": "Q", "output": "A"}]
+            built = trainer._build_mlx_config()
+            assert built["memory_limit_gb"] == 12.5
+
+    def test_steps_per_report_capped_to_iters_for_tiny_runs(self):
+        # A smoke run (fewer steps than log_every) must report every step —
+        # steps_per_report = min(log_every, iters), not the raw log_every,
+        # otherwise the run completes with zero progress events (UI 0/3).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = self._trainer(tmpdir, log_every=500, num_epochs=1, batch_size=1)
+            trainer._train_samples = [
+                {"input": f"Q{i}", "output": "A"} for i in range(4)
+            ]
+            built = trainer._build_mlx_config()
+            assert built["iters"] == 4
+            assert built["steps_per_report"] == 4
+            assert built["steps_per_eval"] == 50

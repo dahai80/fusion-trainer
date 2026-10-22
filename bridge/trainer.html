@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trainer — Fusion Trainer</title>
+<style>
+  :root {
+    --fs-bg: #f6f7f9; --bg-soft: #f8fafc;
+    --fs-text: #1a1f2e; --fs-text-2: #6b7280;
+    --fs-border: #d7dce3; --fs-brand: #2563eb;
+    --fs-success: #16a34a; --fs-error: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--fs-text); max-width: 1080px; margin: 0 auto; padding: 24px 20px;
+    background: var(--fs-bg); }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  h2 .muted { font-weight: normal; font-size: 13px; }
+  section { background: #fff; border: 1px solid var(--fs-border);
+    border-radius: 8px; padding: 14px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--fs-border);
+    vertical-align: middle; }
+  th { font-size: 12px; color: var(--fs-text-2); text-transform: uppercase; }
+  button { font: inherit; padding: 5px 12px; border-radius: 6px;
+    border: 1px solid var(--fs-border); background: #fff; cursor: pointer; }
+  button.primary { background: var(--fs-brand); border-color: var(--fs-brand); color: #fff; }
+  button.link { border: none; background: none; color: var(--fs-brand);
+    padding: 2px 4px; text-decoration: underline; }
+  button.hidden { display: none; }
+  input, select, textarea { font: inherit; padding: 5px 8px;
+    border: 1px solid var(--fs-border); border-radius: 6px; background: #fff; }
+  .trainer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .trainer-grid section { margin: 0; }
+  textarea { width: 100%; min-height: 110px; font-family: ui-monospace, monospace; }
+  .progress-track { background: var(--fs-border); border-radius: 4px;
+    height: 8px; width: 120px; display: inline-block; vertical-align: middle; }
+  .progress-fill { background: var(--fs-brand); height: 8px;
+    border-radius: 4px; }
+  .eval-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .eval-cols pre { white-space: pre-wrap; background: var(--bg-soft, #f8fafc);
+    padding: 8px; border-radius: 6px; min-height: 60px; max-height: 300px;
+    overflow-y: auto; }
+  .muted { color: var(--fs-text-2); }
+  .msg { color: var(--fs-error); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         margin-right: 6px; vertical-align: middle; }
+  .dot.ok { background: var(--fs-success); }
+  .dot.bad { background: var(--fs-error); }
+</style>
+</head>
+<body data-page="trainer">
+<h1>Model Trainer</h1>
+<p class="muted">Fine-tune the assistant model on your own data — upload a
+dataset, train a LoRA adapter, merge it, publish it to the AI Assistant,
+and compare it against the base model.</p>
+
+<h2>1 · Datasets <span class="muted">CSV (instruction,input,output) or chat JSONL</span></h2>
+<div class="trainer-grid">
+  <section>
+    <input id="ds-name" placeholder="dataset-name (letters, digits, _ -)" style="width:220px">
+    <label class="muted"> or pick a file: <input type="file" id="ds-file" accept=".csv,.jsonl,.json"></label>
+    <textarea id="ds-content" placeholder='Paste CSV rows: instruction,input,output
+or JSONL: {"messages": [...]}'></textarea>
+    <button class="primary" id="ds-upload">Validate &amp; Save</button>
+    <span id="ds-msg" class="muted"></span>
+  </section>
+  <section>
+    <table>
+      <thead><tr><th>Name</th><th>Samples</th><th>Bytes</th><th></th></tr></thead>
+      <tbody id="ds-rows"></tbody>
+    </table>
+  </section>
+</div>
+
+<h2>2 · Training <span class="muted">LoRA on the assistant base model</span></h2>
+<section>
+  <p>
+    <label>Run name <input id="run-name" placeholder="my-first-tune" style="width:150px"></label>
+    <label>Dataset <select id="run-dataset"></select></label>
+    <label>Preset <select id="run-preset"><option value="">4B defaults (rank 16 · lr 2e-4 · 3 epochs)</option></select></label>
+    <label>Epochs <input id="run-epochs" type="number" min="1" max="20" value="3" style="width:60px"></label>
+    <button class="primary" id="run-start">Start Training</button>
+    <span id="run-msg" class="muted"></span>
+  </p>
+  <table>
+    <thead><tr><th>Run</th><th>Model</th><th>Status</th><th>Progress</th><th></th></tr></thead>
+    <tbody id="run-rows"></tbody>
+  </table>
+</section>
+
+<h2>3 · Merge &amp; Publish <span class="muted">adapter → standalone model → Assistant</span></h2>
+<section>
+  <p id="pub-line" class="muted">No tuned model published — the Assistant uses the base model.</p>
+  <button id="pub-revert" class="hidden">Revert to base model</button>
+  <span id="pub-msg" class="muted"></span>
+</section>
+
+<h2>4 · Evaluation <span class="muted">same instruction → base vs tuned, side by side</span></h2>
+<section>
+  <input id="eval-instruction" placeholder="Ask both models the same thing…" style="width:420px">
+  <button class="primary" id="eval-run">Run Evaluation</button>
+  <span id="eval-msg" class="muted"></span>
+  <div class="eval-cols" style="margin-top:10px">
+    <div><b>Base model</b><pre id="eval-base">—</pre></div>
+    <div><b>Tuned model</b><pre id="eval-tuned">—</pre></div>
+  </div>
+</section>
+
+<p class="msg" id="msg"></p>
+<p class="msg" id="conn-msg"></p>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// Bridge bearer token — entered once, kept in localStorage. The browser
+// never sees the fusion-mlx admin key; it only ever holds this token.
+const KEY_STORE = "fusion-trainer-bridge-key";
+let BRIDGE_KEY = localStorage.getItem(KEY_STORE) || "";
+
+async function api(method, path, body) {
+  const opt = { method, headers: {"Content-Type": "application/json"} };
+  if (BRIDGE_KEY) opt.headers["Authorization"] = `Bearer ${BRIDGE_KEY}`;
+  if (body !== undefined) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && path !== "health") {
+    localStorage.removeItem(KEY_STORE);
+    BRIDGE_KEY = prompt("Bridge token:") || "";
+    if (BRIDGE_KEY) localStorage.setItem(KEY_STORE, BRIDGE_KEY);
+    throw new Error("token saved — retry");
+  }
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+
+// ── datasets ──────────────────────────────────────────────────────────
+async function loadDatasets() {
+  try {
+    const { datasets } = await api("GET", "datasets");
+    $("ds-rows").innerHTML = datasets.map(d =>
+      `<tr><td>${esc(d.name)}</td><td>${esc(d.samples)}</td>` +
+      `<td>${esc(d.bytes)}</td>` +
+      `<td><button data-del="${esc(d.name)}" class="link">Delete</button></td></tr>`
+    ).join("") || `<tr><td colspan="4" class="muted">No datasets yet.</td></tr>`;
+    const sel = $("run-dataset");
+    const cur = sel.value;
+    sel.innerHTML = datasets.map(d => `<option>${esc(d.name)}</option>`).join("");
+    if (datasets.some(d => d.name === cur)) sel.value = cur;
+  } catch (e) { $("ds-msg").textContent = e.message; }
+}
+
+$("ds-file").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  $("ds-content").value = await f.text();
+  if (!$("ds-name").value) $("ds-name").value =
+    f.name.replace(/\.(csv|jsonl|json)$/i, "").replace(/[^A-Za-z0-9_-]/g, "-");
+});
+
+$("ds-upload").addEventListener("click", async () => {
+  $("ds-msg").textContent = "uploading…";
+  try {
+    const res = await api("POST", "datasets", {
+      name: $("ds-name").value.trim(),
+      content: $("ds-content").value,
+      fmt: "auto",
+    });
+    $("ds-msg").textContent =
+      `saved: ${res.samples} samples, schema ${res.schema}`;
+    await loadDatasets();
+  } catch (e) { $("ds-msg").textContent = `rejected: ${e.message}`; }
+});
+
+$("ds-rows").addEventListener("click", async e => {
+  const name = e.target?.dataset?.del;
+  if (!name) return;
+  try { await api("DELETE", `datasets/${name}`); await loadDatasets(); }
+  catch (err) { $("ds-msg").textContent = err.message; }
+});
+
+// ── presets + runs ────────────────────────────────────────────────────
+async function loadPresets() {
+  try {
+    const { presets } = await api("GET", "presets");
+    $("run-preset").innerHTML += presets.map(p => `<option>${esc(p)}</option>`).join("");
+  } catch (e) { /* non-fatal */ }
+}
+
+async function loadRuns() {
+  try {
+    const { runs } = await api("GET", "runs?limit=15");
+    $("run-rows").innerHTML = runs.map(r => {
+      const total = r.total_steps || 0, step = r.step || 0;
+      const pct = total > 0 ? Math.min(100, step / total * 100) : 0;
+      const active = r.status === "running";
+      const actions = [];
+      if (active)
+        actions.push(`<button data-stop="${esc(r.run_id)}" class="link">Stop</button>`);
+      if (r.status === "completed" && r.final_adapter) {
+        actions.push(`<button data-merge="${esc(r.run_id)}" class="link">Merge</button>`);
+        actions.push(`<button data-publish="${esc(r.run_id)}" class="link">Publish</button>`);
+      }
+      return `<tr><td>${esc(r.name || r.run_id)}</td>` +
+        `<td class="muted">${esc(r.model || "")}</td>` +
+        `<td>${esc(r.status)}${r.error ? ` <span class="muted">${esc(String(r.error).slice(0, 60))}</span>` : ""}</td>` +
+        `<td><span class="progress-track"><span class="progress-fill" style="width:${pct}%"></span></span> ` +
+        `${step}/${total || "?"} ${total ? `(${pct.toFixed(0)}%)` : ""}</td>` +
+        `<td>${actions.join(" ")}</td></tr>`;
+    }).join("") || `<tr><td colspan="5" class="muted">No runs yet.</td></tr>`;
+  } catch (e) {
+    $("run-msg").textContent = `bridge unreachable — start scripts/trainer-bridge.sh`;
+  }
+}
+
+$("run-start").addEventListener("click", async () => {
+  $("run-msg").textContent = "starting…";
+  try {
+    const body = {
+      name: $("run-name").value.trim() ||
+        `tune-${new Date().toISOString().slice(5, 16).replace(/[^0-9T-]/g, "")}`,
+      dataset: $("run-dataset").value,
+      preset: $("run-preset").value,
+      num_epochs: parseInt($("run-epochs").value, 10) || 3,
+    };
+    const res = await api("POST", "runs", body);
+    $("run-msg").textContent = `run ${res.run_id} started (${res.model})`;
+    await loadRuns();
+  } catch (e) { $("run-msg").textContent = e.message; }
+});
+
+$("run-rows").addEventListener("click", async e => {
+  const stop = e.target?.dataset?.stop;
+  const merge = e.target?.dataset?.merge;
+  const publish = e.target?.dataset?.publish;
+  try {
+    if (stop) { await api("POST", `runs/${stop}/stop`, {}); await loadRuns(); }
+    if (merge) {
+      $("run-msg").textContent = "merging… (loads base weights, takes a while)";
+      const res = await api("POST", `runs/${merge}/merge`, { quantize: "" });
+      $("run-msg").textContent = `merged → ${res.model_id}`;
+      await loadRuns();
+    }
+    if (publish) {
+      const res = await api("POST", "publish", { run_id: publish });
+      $("pub-msg").textContent = res.published
+        ? `published: ${res.record.model_id} (registered in the model catalog)`
+        : "publish failed";
+      await loadPublished();
+    }
+  } catch (err) { $("run-msg").textContent = err.message; }
+});
+
+// ── publish state ─────────────────────────────────────────────────────
+async function loadPublished() {
+  try {
+    const rec = await api("GET", "published");
+    if (rec && rec.model_id && !rec.cleared) {
+      $("pub-line").innerHTML =
+        `Published tuned model: <b>${esc(rec.model_id)}</b> ` +
+        `<span class="muted">(at ${esc(rec.published_at || "?")})</span>`;
+      $("pub-revert").classList.remove("hidden");
+    } else {
+      $("pub-line").textContent =
+        "No tuned model published — the Assistant uses the base model.";
+      $("pub-revert").classList.add("hidden");
+    }
+  } catch (e) { /* bridge down — line stays default */ }
+}
+
+$("pub-revert").addEventListener("click", async () => {
+  try {
+    await api("POST", "publish", { run_id: "" });
+    $("pub-msg").textContent = "reverted to base model";
+    await loadPublished();
+  } catch (e) { $("pub-msg").textContent = e.message; }
+});
+
+// ── evaluation ────────────────────────────────────────────────────────
+$("eval-run").addEventListener("click", async () => {
+  $("eval-msg").textContent = "asking both models…";
+  $("eval-base").textContent = "…"; $("eval-tuned").textContent = "…";
+  try {
+    const res = await api("POST", "eval",
+      { instruction: $("eval-instruction").value.trim() });
+    $("eval-base").textContent = res.base_answer || "(empty)";
+    $("eval-tuned").textContent = res.tuned_answer ||
+      "(no tuned model published)";
+    $("eval-msg").textContent = "";
+  } catch (e) { $("eval-msg").textContent = e.message; }
+});
+
+// ── boot ──────────────────────────────────────────────────────────────
+async function loadConn() {
+  // The bridge's /health probes fusion-mlx /v1/models, so one call
+  // covers both layers.
+  try {
+    const h = await api("GET", "health");
+    $("conn-msg").innerHTML = h.ok
+      ? `<span class="dot ok"></span> model training platform connected`
+      : `<span class="dot bad"></span> model training platform down — ${h.mlx || ""}`;
+  } catch (e) {
+    $("conn-msg").innerHTML =
+      `<span class="dot bad"></span> model training platform down — ${e.message}`;
+  }
+}
+loadConn();
+loadDatasets(); loadPresets(); loadRuns(); loadPublished();
+setInterval(loadRuns, 4000);
+setInterval(loadConn, 15000);
+</script>
+</body>
+</html>
