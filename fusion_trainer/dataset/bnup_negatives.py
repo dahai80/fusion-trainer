@@ -272,11 +272,19 @@ def generate_negatives(
     ]
 
     # 选择: 负例总数 ≤5 (文档契约); param_drift 优先占 2 席 —
-    # neg_ratio=3 时 drift 密度 67%, 直击 E1; 其余席位从静态负例池随机填充
+    # neg_ratio=3 时 drift 密度最高, 直击 E1; 其余席位从静态负例池随机填充。
+    # 去重保序: 两次 make_param_drift 可能撞出同一负例 (同一 spot + 同一
+    # 变体), 撞了就用静态负例补位 — "distinct" 是文档契约, 不靠运气。
     count = max(0, min(neg_ratio, 5))
-    n_drift = min(len(drift_negs), 2, count)
     random.shuffle(others)
-    selected = drift_negs[:n_drift] + others[: count - n_drift]
+    seen: set[str] = set()
+    selected: list[str] = []
+    for neg in drift_negs[: min(len(drift_negs), 2, count)] + others:
+        if len(selected) >= count:
+            break
+        if neg not in seen:
+            seen.add(neg)
+            selected.append(neg)
     random.shuffle(selected)
     logger.info(
         "generate_negatives: %d negatives from %d candidates (ratio=%d)",
