@@ -3,12 +3,33 @@
 <head>
 <meta charset="utf-8">
 <title>Trainer — Fusion Trainer</title>
+<script>
+// Set the theme class before first paint — no flash of wrong theme.
+// Standalone: inherit the shell's stored preference, else OS preference.
+// Embedded: the shell re-pushes its current theme on iframe load.
+(function () {
+  var mode = null;
+  try { mode = localStorage.getItem("fusion.shell.theme"); } catch (e) {}
+  if (mode !== "dark" && mode !== "light") {
+    mode = window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+  }
+  document.documentElement.classList.add(mode);
+})();
+</script>
 <style>
-  :root {
-    --fs-bg: #f6f7f9; --bg-soft: #f8fafc;
+  :root, html.light {
+    --fs-bg: #f6f7f9; --bg-soft: #f8fafc; --fs-surface: #ffffff;
     --fs-text: #1a1f2e; --fs-text-2: #6b7280;
     --fs-border: #d7dce3; --fs-brand: #2563eb;
     --fs-success: #16a34a; --fs-error: #dc2626;
+  }
+  html.dark {
+    --fs-bg: #0b0e14; --bg-soft: #11151d; --fs-surface: #141926;
+    --fs-text: #e5e9f0; --fs-text-2: #8b93a3;
+    --fs-border: #2a3140; --fs-brand: #3b82f6;
+    --fs-success: #22c55e; --fs-error: #ef4444;
   }
   * { box-sizing: border-box; }
   body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -17,20 +38,22 @@
   h1 { font-size: 22px; margin: 0 0 4px; }
   h2 { font-size: 16px; margin: 28px 0 10px; }
   h2 .muted { font-weight: normal; font-size: 13px; }
-  section { background: #fff; border: 1px solid var(--fs-border);
+  section { background: var(--fs-surface); border: 1px solid var(--fs-border);
     border-radius: 8px; padding: 14px; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--fs-border);
     vertical-align: middle; }
   th { font-size: 12px; color: var(--fs-text-2); text-transform: uppercase; }
   button { font: inherit; padding: 5px 12px; border-radius: 6px;
-    border: 1px solid var(--fs-border); background: #fff; cursor: pointer; }
+    border: 1px solid var(--fs-border); background: var(--fs-surface);
+    color: var(--fs-text); cursor: pointer; }
   button.primary { background: var(--fs-brand); border-color: var(--fs-brand); color: #fff; }
   button.link { border: none; background: none; color: var(--fs-brand);
     padding: 2px 4px; text-decoration: underline; }
   button.hidden { display: none; }
   input, select, textarea { font: inherit; padding: 5px 8px;
-    border: 1px solid var(--fs-border); border-radius: 6px; background: #fff; }
+    border: 1px solid var(--fs-border); border-radius: 6px;
+    background: var(--fs-surface); color: var(--fs-text); }
   .trainer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .trainer-grid section { margin: 0; }
   textarea { width: 100%; min-height: 110px; font-family: ui-monospace, monospace; }
@@ -290,6 +313,21 @@ $("eval-run").addEventListener("click", async () => {
       "(no tuned model published)";
     $("eval-msg").textContent = "";
   } catch (e) { $("eval-msg").textContent = e.message; }
+});
+
+// ── shell theme follow ────────────────────────────────────────────────
+// Embedded in the Fusion web shell, the parent posts
+// {type:"event", event:"theme", payload:"dark"|"light"} on every toggle
+// and once on iframe load. Standalone keeps the boot-time class.
+function applyTheme(mode) {
+  if (mode !== "dark" && mode !== "light") return;
+  const root = document.documentElement;
+  root.classList.remove("dark", "light");
+  root.classList.add(mode);
+}
+window.addEventListener("message", ev => {
+  const d = ev.data;
+  if (d && d.type === "event" && d.event === "theme") applyTheme(d.payload);
 });
 
 // ── boot ──────────────────────────────────────────────────────────────

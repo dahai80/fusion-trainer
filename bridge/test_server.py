@@ -290,3 +290,17 @@ def test_index_serves_console_page(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert b"Model Trainer" in resp.content
+
+
+def test_console_theme_follows_shell(client):
+    # issue #73: class-based theming + shell theme event + no-flash boot.
+    html = client.get("/").content.decode()
+    assert "html.dark" in html and "html.light" in html
+    # boot script reads the shell's stored preference before first paint
+    assert 'localStorage.getItem("fusion.shell.theme")' in html
+    assert "prefers-color-scheme" in html
+    # embedded mode: shell posts {type:"event", event:"theme", payload:...}
+    assert 'd.type === "event" && d.event === "theme"' in html
+    assert "applyTheme" in html
+    # surfaces use tokens, not hardcoded white (dark mode would break)
+    assert "background: #fff" not in html

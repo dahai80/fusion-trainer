@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc13] - 2026-10-23
+
+Closes #73: the embedded trainer console now follows the shell theme toggle.
+
+### Fixed
+- `bridge/trainer.html` — class-based theming (`html.light` / `html.dark`)
+  replacing the hardcoded light palette: the embedded iframe subscribes to
+  the shell theme event (`{type:"event", event:"theme", payload:...}`)
+  and flips palettes without reload; standalone mode reads
+  `localStorage["fusion.shell.theme"]` (the shell's stored preference) at
+  boot, falling back to `prefers-color-scheme`; a pre-paint head script
+  sets the class before first render (no flash of wrong theme). Hardcoded
+  `#fff` surfaces moved to a `--fs-surface` token so dark mode holds.
+- `bridge/test_server.py` — `test_console_theme_follows_shell` asserts the
+  served page wires the theme contract (classes, boot script, event
+  handler, token-based surfaces).
+
+### Notes
+- #74 (TTS voice-LoRA pipeline) remains open, blocked upstream: fusion-mlx
+  audio is inference-only. Filed
+  [fusion-mlx#1336](https://github.com/dahai80/fusion-mlx/issues/1336)
+  (voice fine-tune job endpoint); trainer-side work follows that contract.
+
 ## [1.0.0rc12] - 2026-10-23
 
 Closes #72: the trainer console is now a first-class fusion-gateway shell
