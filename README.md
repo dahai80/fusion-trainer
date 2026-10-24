@@ -77,6 +77,14 @@ fusion-* products (consumption layer)
 - **Pipeline orchestration** ✅ — `ft bnup-train --stage pipeline` runs SFT → DPO → merge sequentially, auto-chaining DPO on the SFT adapter. Configs: `configs/bnup_sft_32b.yaml` (8-bit QDoRA, cutoff 4096), `configs/bnup_dpo_32b.yaml` (beta=0.1, sigmoid).
 - **Checkpoint resume + engine-restart detection** ✅ (issue #65) — `ft sft --resume` / `ft bnup-train --stage sft|pipeline --resume` continues an interrupted run from the newest `NNNNNNN_adapters.safetensors` checkpoint (fusion-mlx #1182 `init_adapter_path`, weights loaded into the fresh LoRA layers, already-trained steps subtracted from `iters`). If fusion-mlx restarts mid-run, the trainer detects the lost/cancelled job, reports `interrupted` with the latest checkpoint, and never zombie-polls. A `job_state.json` liveness file tracks `job_id`/`adapter_dir`/`step`/`status` under the run output dir.
 
+### TTS Voice Fine-Tune (issue #74)
+- **Voice-pack training** ✅ — `ft voice-train` trains a Kokoro voice package from paired `(audio, transcript)` samples by delegating to fusion-mlx `POST /admin/api/fine-tune/voice/jobs` ([fusion-mlx#1336](https://github.com/dahai80/fusion-mlx/issues/1336)). The upstream backend is gradient-free SPSA over the voice-pack rows; the trainer submits the job, polls to terminal, and reports the upstream metrics (`improved`, `initial/final_spectral_distance`) plus the resulting `voice_ref`.
+- **Dataset validation before submit** — accepts `metadata.csv` (`file|text`), `metadata.jsonl` (`{audio,text}`), or bare `<name>.wav` + `<name>.txt`; rejects missing/truncated audio and empty transcripts locally so a bad dataset never burns a job.
+- **Serving** — the trained package lands in `~/.fusion-mlx/voices/<voice_id>/` and is served by fusion-mlx as `voice_ref` on `POST /v1/audio/speech` (unknown ref → 404, no silent fallback).
+- **Hub registration** — `--publish` registers the package in fusion-model-hub as `model_type=audio` (`ModelHubClient.publish_voice_package`, 409-idempotent). Non-blocking: a hub outage never fails a training run.
+
+> `--publish` requires a hub reachable at `--hub-url` / `FUSION_MODEL_HUB_URL` with a registered API key. On this machine the local gateway does not proxy `/api/v1/models`, so point the client straight at the hub (`FUSION_MODEL_HUB_URL=http://127.0.0.1:11444`) and supply `FUSION_MODEL_HUB_API_KEY` — the client now sends the hub's `X-API-Key` header.
+
 ---
 
 ## Hardware Reference
@@ -276,6 +284,7 @@ fusion_trainer_train_loss{run="run-1"} 0.1234
 | `fusion-trainer bnup-prep --stage sft\|dpo` | Prepare BNUP training data (SFT DSL validation or DPO pair generation, issues #56/#57) |
 | `fusion-trainer bnup-train --stage sft\|dpo\|pipeline` | Run BNUP two-stage training (SFT → DPO → merge, issue #59; `--resume` continues an interrupted SFT stage, issue #65) |
 | `fusion-trainer merge --base <model> --adapter <path>` | Merge a trained adapter into the base model via fusion-mlx (issue #58) |
+| `fusion-trainer voice-train --model <kokoro> --dataset <dir>` | Train a TTS voice pack (add `--publish` to register it with model-hub, issue #74) |
 | `fusion-trainer info` | System info & hardware check |
 | `fusion-trainer --version` / `-V` | Print version (`ft <version>`) |
 | `fusion-trainer --help` | Show full help |

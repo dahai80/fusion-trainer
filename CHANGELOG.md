@@ -7,6 +7,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc14] - 2026-10-25
+
+Closes #74: TTS voice-pack (voice LoRA) training pipeline, wired on
+fusion-mlx #1336.
+
+### Added
+- `fusion_trainer/dataset/voice_prep.py` — `validate_voice_dataset` accepts
+  the three layouts fusion-mlx's voice trainer consumes (`metadata.csv`
+  `file|text`, `metadata.jsonl` `{audio,text}`, bare `<name>.wav` +
+  `<name>.txt`) and fails loudly on missing audio, truncated files
+  (< 1 KiB) or empty transcripts before a job is submitted.
+- `fusion_trainer/voice.py` — `VoiceTrainer` + `VoiceTrainConfig` mirroring
+  the upstream SPSA field set exactly (`steps`, `learning_rate`,
+  `perturbation`, `decay`, `base_voice`, `lang_code`, `max_samples`,
+  `dynamics_weight`, `level_weight`, `anchor_weight`, `seed`). Submit →
+  poll → terminal; a failed/cancelled job returns its upstream status and
+  `error`, never a faked `completed`.
+- `MLXFineTuneClient` voice endpoints: `create_voice_job`, `get_voice_job`,
+  `cancel_voice_job`, `list_voice_jobs`, `list_voice_backends`,
+  `wait_for_voice_job` (A1 retry-on-poll-failure, 404 fast-fail via
+  `_raise_if_job_lost`). Upstream reports progress over SSE only — the job
+  GET carries no `events` array.
+- `ft voice-train` CLI command — `--model/-m`, `--dataset/-d`,
+  `--voice-id`, `--steps`, `--base-voice`, `--lang-code`, `--max-samples`,
+  `--seed`, `--tenant-id`, `--publish`. Non-completed jobs exit 1.
+- `ModelHubClient.publish_voice_package` — registers the trained voice
+  package as `model_type=audio` (hub `ModelType.AUDIO`); 409 is idempotent
+  on an exact-name match. `--publish` calls it after completion and stays
+  non-blocking (a hub outage never fails the training run).
+- 24 new tests (`tests/test_voice_trainer.py` + hub header coverage).
+
+### Fixed
+- `ModelHubClient` now sends `X-API-Key` alongside `Authorization: Bearer`.
+  fusion-model-hub's local auth middleware reads `X-API-Key`; without it a
+  direct hub call (no gateway in front) returned 401 even with a valid key.
+
+### Notes
+- Voice training requires fusion-mlx with the #1336 endpoint (voice jobs,
+  `voice_ref` synthesis, trained-voice listing). Trained packages land in
+  `~/.fusion-mlx/voices/<voice_id>/` and are served by fusion-mlx as
+  `voice_ref` on `POST /v1/audio/speech` (unknown ref → 404, no silent
+  fallback).
+- Live `--publish` verification is deployment-gated on this machine: the
+  local fusion-gateway has no `/api/v1/models` proxy route and the hub's
+  registered key plaintext is unavailable. `publish_voice_package` is
+  covered by mocked contract tests; the trainer-side call path is real.
+
 ## [1.0.0rc13] - 2026-10-23
 
 Closes #73: the embedded trainer console now follows the shell theme toggle.

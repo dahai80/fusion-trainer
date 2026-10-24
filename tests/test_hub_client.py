@@ -40,9 +40,16 @@ class TestClientHeaders:
         client = ModelHubClient(base_url="http://h", api_key="k")
         assert client._headers["Authorization"] == "Bearer k"
 
+    def test_local_api_key_header_when_key(self):
+        # hub's local auth middleware reads X-API-Key; direct (non-gateway)
+        # calls need it in addition to Bearer.
+        client = ModelHubClient(base_url="http://h", api_key="k")
+        assert client._headers["X-API-Key"] == "k"
+
     def test_no_auth_without_key(self):
         client = ModelHubClient(base_url="http://h")
         assert "Authorization" not in client._headers
+        assert "X-API-Key" not in client._headers
 
 
 class TestPublishAdapterHappy:

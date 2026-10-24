@@ -71,6 +71,14 @@ fusion-* 产品（消费层）
 - 实验元数据与可复现追踪
 - Git commit 绑定，全程可追溯
 
+### TTS 音色微调（issue #74）
+- **音色包训练** ✅ —— `ft voice-train` 基于成对的 `(音频, 文本)` 样本训练 Kokoro 音色包，全部委托 fusion-mlx `POST /admin/api/fine-tune/voice/jobs`（[fusion-mlx#1336](https://github.com/dahai80/fusion-mlx/issues/1336)）。上游为无梯度 SPSA 优化，trainer 只负责提交任务、轮询到终态，并返回上游指标（`improved`、`initial/final_spectral_distance`）与 `voice_ref`。
+- **提交前数据集校验** —— 支持 `metadata.csv`（`file|text`）、`metadata.jsonl`（`{audio,text}`）、或裸 `<name>.wav` + `<name>.txt`；本地直接拒绝缺失/截断音频与空转写，避免坏数据集白白消耗任务。
+- **推理** —— 训练产物落在 `~/.fusion-mlx/voices/<voice_id>/`，由 fusion-mlx 在 `POST /v1/audio/speech` 上以 `voice_ref` 提供（未知 ref 返回 404，无静默回退）。
+- **Hub 注册** —— `--publish` 以 `model_type=audio` 注册到 fusion-model-hub（`ModelHubClient.publish_voice_package`，409 幂等）。非阻塞：Hub 故障不影响训练结果。
+
+> `--publish` 需要可访问的 Hub（`--hub-url` / `FUSION_MODEL_HUB_URL`）与已注册的 API key。本机 gateway 未代理 `/api/v1/models`，请把 `FUSION_MODEL_HUB_URL` 指向 Hub 直连地址（`http://127.0.0.1:11444`）并设置 `FUSION_MODEL_HUB_API_KEY` —— 客户端现在会同时发送 Hub 的 `X-API-Key` 头。
+
 ---
 
 ## 硬件参考
@@ -163,6 +171,7 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 | `fusion-trainer bnup-prep --stage sft\|dpo` | BNUP 数据准备（SFT 校验 / DPO 负样本生成，#56/#57） |
 | `fusion-trainer bnup-train --stage sft\|dpo\|pipeline` | BNUP 两阶段训练（SFT → DPO → 合并，#59；`--resume` 续训中断的 SFT 阶段，#65） |
 | `fusion-trainer merge --base <模型> --adapter <路径>` | 合并适配器到基座模型（#58） |
+| `fusion-trainer voice-train --model <kokoro> --dataset <目录>` | 训练 TTS 音色包（`--publish` 完成后注册到 Hub，#74） |
 | `fusion-trainer info` | 查看系统信息与硬件检查 |
 | `fusion-trainer --help` | 查看完整帮助 |
 

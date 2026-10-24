@@ -1423,6 +1423,124 @@ def _get_version() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Voice fine-tune (issue #74, fusion-mlx #1336)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="voice-train")
+def voice_train(
+    model: str = typer.Option(
+        ...,
+        "--model",
+        "-m",
+        help="Kokoro-family TTS model id (fusion-mlx model id, e.g. mlx-community/Kokoro-82M-bf16)",
+    ),
+    dataset: str = typer.Option(
+        ...,
+        "--dataset",
+        "-d",
+        help="Voice dataset dir: metadata.csv (file|text), metadata.jsonl ({audio,text}), or <name>.wav + <name>.txt pairs",
+    ),
+    voice_id: str = typer.Option(
+        "",
+        "--voice-id",
+        help="Name for the trained voice package (auto-generated if empty; must not already exist)",
+    ),
+    steps: int = typer.Option(300, "--steps", help="SPSA optimization steps"),
+    base_voice: str = typer.Option(
+        "af_heart", "--base-voice", help="Stock Kokoro voice to start from"
+    ),
+    lang_code: str = typer.Option(
+        "a", "--lang-code", help="Kokoro language code (a=US English, b=UK, ...)"
+    ),
+    max_samples: int = typer.Option(
+        0, "--max-samples", help="Cap dataset pairs used (0 = all)"
+    ),
+    seed: int = typer.Option(0, "--seed", help="Random seed (0 = unseeded)"),
+    tenant_id: str = typer.Option(
+        "default", "--tenant-id", help="Tenant owning the voice package"
+    ),
+    publish: bool = typer.Option(
+        False,
+        "--publish",
+        help="Register the voice package in fusion-model-hub after training",
+    ),
+):
+    """Train a TTS voice package (voice cloning) via fusion-mlx #1336.
+
+    Delegates to POST /admin/api/fine-tune/voice/jobs — pure HTTP, no
+    mlx_audio import. The trained package is served directly by fusion-mlx
+    as voice_ref on POST /v1/audio/speech.
+    """
+    import logging
+
+    from fusion_trainer.mlx_client import MLXFineTuneError
+    from fusion_trainer.voice import VoiceTrainConfig, VoiceTrainer
+
+    logger = logging.getLogger("fusion_trainer")
+    cfg = VoiceTrainConfig(
+        steps=steps,
+        base_voice=base_voice,
+        lang_code=lang_code,
+        max_samples=max_samples,
+        seed=seed,
+    )
+    trainer = VoiceTrainer(
+        model=model,
+        dataset_dir=dataset,
+        voice_id=voice_id,
+        tenant_id=tenant_id,
+        config=cfg,
+    )
+    try:
+        result = trainer.train()
+    except MLXFineTuneError as exc:
+        typer.echo(f"Error: voice training failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    finally:
+        trainer.close()
+
+    status = result.get("status", "")
+    if status == "completed":
+        metrics = result.get("metrics", {})
+        typer.echo("✅ Voice training complete")
+        typer.echo(f"   voice_ref:  {result.get('voice_ref', '')}")
+        typer.echo(f"   voice_path: {result.get('voice_path', '')}")
+        typer.echo(
+            f"   spectral distance: {metrics.get('initial_spectral_distance')} -> "
+            f"{metrics.get('final_spectral_distance')} "
+            f"(improved={metrics.get('improved')})"
+        )
+        if publish:
+            from fusion_trainer.config import _default_hub_api_key, _default_hub_url
+            from fusion_trainer.hub_client import HubPublishError, ModelHubClient
+
+            hub = ModelHubClient(
+                base_url=_default_hub_url(), api_key=_default_hub_api_key()
+            )
+            try:
+                pub = hub.publish_voice_package(
+                    name=result.get("voice_ref", "") or f"{model}-voice",
+                    base_model=model,
+                    voice_ref=result.get("voice_ref", ""),
+                )
+                if pub.get("published"):
+                    typer.echo(
+                        f"✓ Voice package published to hub: "
+                        f"{pub.get('model', {}).get('id', '')}"
+                        + (" (idempotent)" if pub.get("idempotent") else "")
+                    )
+            except HubPublishError as exc:
+                typer.echo(f"⚠ Voice package publish failed (non-blocking): {exc}")
+    else:
+        typer.echo(
+            f"Error: voice job ended {status}: {result.get('error', '')}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

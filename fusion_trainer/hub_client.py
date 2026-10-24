@@ -57,7 +57,12 @@ class ModelHubClient:
         self._base = validate_service_url(base_url, field_name="hub_url").rstrip("/")
         self._headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
+            # fusion-model-hub's local auth middleware reads X-API-Key
+            # (server/auth.py); Bearer is kept for gateway-fronted deployments
+            # and identity-aware mode. Sending both lets a direct hub call work
+            # without a gateway route.
             self._headers["Authorization"] = f"Bearer {api_key}"
+            self._headers["X-API-Key"] = api_key
         self._timeout = timeout
         logger.info(
             "ModelHubClient initialized: base=%s auth=%s", self._base, bool(api_key)
@@ -287,6 +292,82 @@ class ModelHubClient:
             if existing is not None:
                 logger.info(
                     "publish_merged_model: name=%s already published (idempotent)",
+                    name,
+                )
+                return {
+                    "published": True,
+                    "model": existing,
+                    "status_code": 409,
+                    "idempotent": True,
+                }
+        detail = ""
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        raise HubPublishError(f"hub POST {url} failed: {resp.status_code} {detail}")
+
+    def publish_voice_package(
+        self,
+        name: str,
+        base_model: str = "",
+        voice_ref: str = "",
+        description: str = "",
+    ) -> dict[str, Any]:
+        """Register a trained TTS voice package as model_type=audio (#74 M-C).
+
+        The weights stay on fusion-mlx (~/.fusion-mlx/voices/<voice_ref>/)
+        and are served as voice_ref on POST /v1/audio/speech — the hub entry
+        is the ownership/versioning record (tenant, approval) with the
+        voice_ref in the description. Idempotent on 409 like the other
+        publish paths (L4 pattern, model_type=audio matches the hub
+        ModelType enum).
+        """
+        if not name or len(name) < 3:
+            raise HubPublishError(f"model name too short (min 3): {name!r}")
+        payload: dict[str, Any] = {
+            "name": name,
+            "model_type": "audio",
+            "description": description
+            or (
+                f"TTS voice package from fusion-trainer "
+                f"(base: {base_model}, voice_ref: {voice_ref})"
+            ),
+        }
+        url = f"{self._base}{MODELS_PATH}"
+        logger.info("publish_voice_package: POST %s name=%s", url, name)
+        try:
+            resp = httpx.post(
+                url, json=payload, headers=self._headers, timeout=self._timeout
+            )
+        except httpx.HTTPError as exc:
+            raise HubPublishError(f"hub POST transport error: {exc}") from exc
+        if resp.status_code == 201:
+            body: dict[str, Any] = {}
+            if resp.content:
+                try:
+                    parsed = resp.json()
+                    body = parsed if isinstance(parsed, dict) else {}
+                except ValueError:
+                    logger.warning(
+                        "publish_voice_package: 201 with non-JSON body: %s",
+                        resp.text[:200],
+                    )
+            if not body.get("id"):
+                raise HubPublishError(
+                    f"hub POST {url} returned 201 but no model id for name={name}"
+                )
+            logger.info(
+                "publish_voice_package: created model_id=%s name=%s",
+                body.get("id"),
+                name,
+            )
+            return {"published": True, "model": body, "status_code": 201}
+        if resp.status_code == 409:
+            existing = self._find_existing_model(name, "audio")
+            if existing is not None:
+                logger.info(
+                    "publish_voice_package: name=%s already published (idempotent)",
                     name,
                 )
                 return {

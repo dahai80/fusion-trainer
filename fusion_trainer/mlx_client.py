@@ -21,6 +21,9 @@ Affected API:
   POST   /admin/api/fine-tune/reward/score        — score completions with RM adapter (#431)
   POST   /admin/api/fine-tune/vlm/jobs            — create VLM (vision-lang) fine-tune job (#797/#800)
   GET    /admin/api/fine-tune/vlm/jobs/{id}       — poll VLM job (#797/#800)
+  POST   /admin/api/fine-tune/voice/jobs          — create voice (TTS voice-pack) fine-tune job (#1336)
+  GET    /admin/api/fine-tune/voice/jobs/{id}     — poll voice job (#1336)
+  GET    /admin/api/fine-tune/voice/backends      — voice backends + trained voices (#1336)
   GET    /admin/api/fine-tune/adapters            — list saved adapters
   POST   /admin/api/fine-tune/adapters/{model}/{name}/serve — serve adapter
 
@@ -51,6 +54,8 @@ ORPO_JOBS_PATH = "/admin/api/fine-tune/orpo/jobs"
 REWARD_JOBS_PATH = "/admin/api/fine-tune/reward/jobs"
 REWARD_SCORE_PATH = "/admin/api/fine-tune/reward/score"
 VLM_JOBS_PATH = "/admin/api/fine-tune/vlm/jobs"
+VOICE_JOBS_PATH = "/admin/api/fine-tune/voice/jobs"
+VOICE_BACKENDS_PATH = "/admin/api/fine-tune/voice/backends"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
 MERGE_ADAPTER_PATH = "/v1/merge-adapter"
 
@@ -803,6 +808,99 @@ class MLXFineTuneClient:
         if isinstance(result, dict):
             return result
         raise MLXFineTuneError("score_reward returned non-dict")
+
+    # ------------------------------------------------------------------
+    # Voice fine-tune job lifecycle (fusion-mlx #1336:
+    # /admin/api/fine-tune/voice/jobs — Kokoro voice-pack training, SPSA.
+    # Same submit -> poll -> cancel contract as SFT/DPO; the trained
+    # package is served as a voice_ref on POST /v1/audio/speech.)
+    # ------------------------------------------------------------------
+
+    def create_voice_job(
+        self,
+        model_id: str,
+        dataset_dir: str,
+        voice_id: str = "",
+        tenant_id: str = "default",
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model_id": model_id,
+            "dataset_dir": dataset_dir,
+            "voice_id": voice_id,
+            "tenant_id": tenant_id,
+            "config": config or {},
+        }
+        logger.info(
+            "Creating VOICE job model=%s dataset=%s voice=%s tenant=%s",
+            model_id,
+            dataset_dir,
+            voice_id or "(auto)",
+            tenant_id,
+        )
+        result = self._request("POST", f"{self._base}{VOICE_JOBS_PATH}", json_body=body)
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("create_voice_job returned non-dict")
+
+    def get_voice_job(self, job_id: str) -> dict[str, Any]:
+        return self._poll_get(f"{self._base}{VOICE_JOBS_PATH}/{job_id}")
+
+    def cancel_voice_job(self, job_id: str) -> dict[str, Any]:
+        # A8: tolerate 404 — job already gone (mirrors cancel_job).
+        result = self._request(
+            "POST",
+            f"{self._base}{VOICE_JOBS_PATH}/{job_id}/cancel",
+            tolerate_status=(404,),
+        )
+        if isinstance(result, dict):
+            return result
+        return {}
+
+    def list_voice_jobs(self) -> list[dict[str, Any]]:
+        result = self._request("GET", f"{self._base}{VOICE_JOBS_PATH}")
+        if isinstance(result, list):
+            return result
+        raise MLXFineTuneError("list_voice_jobs returned non-list")
+
+    def list_voice_backends(self) -> dict[str, Any]:
+        result = self._request("GET", f"{self._base}{VOICE_BACKENDS_PATH}")
+        if isinstance(result, dict):
+            return result
+        raise MLXFineTuneError("list_voice_backends returned non-dict")
+
+    def wait_for_voice_job(
+        self,
+        job_id: str,
+        on_progress=None,
+        poll_interval: float = 2.0,
+        timeout: float = 86400.0,
+        is_canceled=None,
+    ) -> dict[str, Any]:
+        # Poll a voice job to terminal. The upstream job dict carries no
+        # `events` array (progress streams via SSE /stream), so on_progress
+        # stays quiet on this path — kept for contract symmetry with the
+        # other wait_for_* loops.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            # A1: keep polling past transient poll failures (see wait_for_job).
+            try:
+                job = self.get_voice_job(job_id)
+            except MLXFineTuneError as exc:
+                self._raise_if_job_lost(job_id, exc, api="_voice")
+                logger.warning("wait_for_voice_job poll failed, continuing: %s", exc)
+                time.sleep(poll_interval)
+                continue
+            status = job.get("status", "")
+            if status in ("completed", "failed", "cancelled"):
+                return job
+            # A restart-recovered job can land as cancelled while we poll;
+            # the next iteration returns it (fail-visible, never zombie-poll).
+            if is_canceled is not None and is_canceled():
+                logger.info("wait_for_voice_job %s interrupted by cancel", job_id)
+                raise MLXFineTuneError(f"voice job {job_id} cancelled by user")
+            time.sleep(poll_interval)
+        raise MLXFineTuneError(f"voice job {job_id} timed out after {timeout}s")
 
     # ------------------------------------------------------------------
     # Adapter management
