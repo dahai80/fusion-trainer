@@ -50,7 +50,12 @@ jobs:
       - name: Install fusion-trainer (dev) + fusion-mlx
         run: |
           python -m pip install --upgrade pip
-          pip install fusion-mlx
+          # [vlm] extra: run 40196088382 showed DPO/ORPO/reward jobs die
+          # with "No module named 'mlx_vlm'" on a base install (the
+          # training path pulls turboquant_kv -> mlx_vlm.turboquant; the
+          # slim-boot #805 promise doesn't hold for the preference-training
+          # routes). Nightly-only cost; filed upstream.
+          pip install "fusion-mlx[vlm]"
           pip install -e ".[dev]"
 
       - name: Pull test model
