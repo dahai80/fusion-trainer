@@ -92,8 +92,13 @@ jobs:
 
       - name: Boot fusion-mlx
         run: |
+          # --profile standard, explicit: the runner's RAM (< 24 GB) makes
+          # hardware auto-detect pick "lite", which disables the "tools"
+          # modality — the convert router (/v1/merge-adapter) is then not
+          # mounted and the merge contract test 404s (run 40197181739).
           nohup fusion-mlx serve --model mlx-community/Qwen3-0.6B-4bit \
-            --served-model-name Qwen3-0.6B-4bit --port 11434 \
+            --served-model-name Qwen3-0.6B-4bit --profile standard \
+            --port 11434 \
             > /tmp/fusion-mlx.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf -H "Authorization: Bearer ci-nightly-admin-key" \
