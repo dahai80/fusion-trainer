@@ -52,7 +52,10 @@ jobs:
 
       - name: Pull test model
         run: |
-          fusion-mlx pull Qwen3-0.6B-4bit
+          # alias registry keys are lowercase (aliases.json); the suites
+          # hardcode the served id "Qwen3-0.6B-4bit", which --served-model-name
+          # pins below so /v1/models and the fine-tune pool key match exactly.
+          fusion-mlx pull qwen3-0.6b-4bit
 
       - name: Provision engine settings (known admin key)
         # fusion-mlx's admin router (fine-tune jobs live under it) is
@@ -74,7 +77,8 @@ jobs:
 
       - name: Boot fusion-mlx
         run: |
-          nohup fusion-mlx serve --model Qwen3-0.6B-4bit --port 11434 \
+          nohup fusion-mlx serve --model qwen3-0.6b-4bit \
+            --served-model-name Qwen3-0.6B-4bit --port 11434 \
             > /tmp/fusion-mlx.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://localhost:11434/v1/models > /dev/null 2>&1; then
