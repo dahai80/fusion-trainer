@@ -96,6 +96,9 @@ class SFTTrainer:
         self._resume_dir: str = ""
         self._resume_step: int = 0
         self._last_persisted_step: int = -1
+        # issue #75: (step, val_loss) pairs from job events — the val_loss
+        # fallback signal for checkpoint selection after training.
+        self._val_losses: list[tuple[int, float]] = []
 
         # Optional live-progress sink (RunManager). If set, raw fusion-mlx job
         # events are forwarded here in addition to ExperimentLogger, so the GUI
@@ -863,6 +866,11 @@ class SFTTrainer:
             }
             print("\n      ✓ Training complete!")
             print(f"      Adapter: {adapter_path}")
+
+            if self.sft_cfg.eval_select:
+                selection = self._run_checkpoint_eval(adapter_name)
+                if selection is not None:
+                    result["checkpoint_selection"] = selection
             return result
         finally:
             # E4: flush + close logger + pooled client on EVERY exit path,
@@ -912,11 +920,65 @@ class SFTTrainer:
                     f"tok/s: {ev.get('tokens_per_second', 0.0):.0f}"
                 )
             elif etype == "val_loss":
+                val_step = ev.get("step", self._global_step)
+                self._val_losses.append((val_step, ev.get("val_loss", 0.0)))
                 exp_logger.log_metrics(
-                    step=ev.get("step", self._global_step),
+                    step=val_step,
                     metrics={"val_loss": ev.get("val_loss", 0.0)},
                 )
                 print(f"      Val loss: {ev.get('val_loss', 0.0):.4f}")
+
+    def _run_checkpoint_eval(self, adapter_name: str) -> dict[str, Any] | None:
+        # issue #75: benchmark every numbered checkpoint and pick the
+        # winner. Never raises — a bench outage falls back to val_loss
+        # (persisted in the selection table) and the run result survives.
+        from ..eval_loop import BenchClient, run_checkpoint_eval
+
+        adapter_dir = MLX_ADAPTER_BASE_DIR / self.sft_cfg.model / adapter_name
+        bench = None
+        if self.sft_cfg.bench_url or self.sft_cfg.bench_api_key:
+            bench = BenchClient(
+                base_url=self.sft_cfg.bench_url,
+                api_key=self.sft_cfg.bench_api_key,
+                tenant_id=self.sft_cfg.bench_tenant_id,
+            )
+        else:
+            logger.info(
+                "eval_select on but no bench_url/bench_api_key configured "
+                "— selecting on val_loss only"
+            )
+        print(f"      Evaluating checkpoints in {adapter_dir}")
+        try:
+            selection = run_checkpoint_eval(
+                model=self.sft_cfg.model,
+                adapter_dir=adapter_dir,
+                val_losses=self._val_losses,
+                bench=bench,
+                bench_executor=self.sft_cfg.bench_executor,
+                bench_suite=self.sft_cfg.bench_suite,
+                bench_params=self.sft_cfg.bench_params or None,
+                task_wait_timeout=self.sft_cfg.bench_task_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — eval must never kill the run
+            logger.warning("checkpoint eval failed: %s", exc)
+            print(f"      ⚠ Checkpoint eval failed: {exc}")
+            return None
+        for row in selection["table"]:
+            mark = "← chosen" if row.get("chosen") else ""
+            print(
+                f"        {row.get('checkpoint', '?'):32s} "
+                f"step={row.get('step', '-')}  "
+                f"val_loss={row.get('val_loss', '-')}  "
+                f"bench={row.get('bench_score', '-')} [{row.get('bench_status', '')}] "
+                f"{mark}"
+            )
+        print(
+            f"      Selection basis: {selection['basis']} "
+            f"(table: {selection['path']})"
+        )
+        if selection.get("fallback_reason"):
+            print(f"      ⚠ {selection['fallback_reason']}")
+        return selection
 
     def _resolve_resume(self) -> None:
         # #65: stage the resume checkpoint for fusion-mlx #1182. Upstream

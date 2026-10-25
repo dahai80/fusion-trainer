@@ -184,10 +184,51 @@ class DatasetLoader:
             if not messages:
                 continue
             if max_seq_length > 0:
-                messages = [
-                    {"role": m["role"], "content": str(m["content"])[:max_seq_length]}
-                    for m in messages
-                ]
+                # issue #75: cap the WHOLE conversation at a char budget of
+                # max_seq_length * 4 (~4 chars/token), not each message at
+                # max_seq_length chars. The old per-message cap treated
+                # 4096 TOKENS as 4096 CHARS — a ~4x over-truncation that
+                # silently amputated long turns. Exact token-level
+                # truncation happens upstream at batch assembly
+                # (mlx_lm.tuner truncates to max_seq_length); this is a
+                # pre-flight sanity cap, cutting whole trailing turns
+                # (never mid-assistant-answer) so the chat template stays
+                # well-formed. 4x is the common English upper bound;
+                # Chinese runs ~1.5 chars/token so it under-truncates
+                # safely (upstream still enforces the true limit).
+                budget = max_seq_length * 4
+                total = sum(len(str(m.get("content", ""))) for m in messages)
+                if total > budget:
+                    logger.warning(
+                        "chat sample exceeds pre-flight char budget "
+                        "(%d chars > %d = max_seq_length %d * 4) — trimming "
+                        "trailing turns",
+                        total,
+                        budget,
+                        max_seq_length,
+                    )
+                    kept: list[dict[str, Any]] = []
+                    used = 0
+                    for m in reversed(messages):
+                        mlen = len(str(m.get("content", "")))
+                        if used + mlen > budget:
+                            break
+                        kept.append(
+                            {"role": m["role"], "content": str(m["content"])}
+                        )
+                        used += mlen
+                    kept.reverse()
+                    # Never keep zero turns — keep at least the last message,
+                    # over-budget, so upstream token-level truncation (not an
+                    # empty sample) handles the extreme case.
+                    if not kept:
+                        kept = [
+                            {
+                                "role": messages[-1]["role"],
+                                "content": str(messages[-1]["content"])[:budget],
+                            }
+                        ]
+                    messages = kept
             normalized.append({"messages": messages})
 
         if val_ratio > 0 and len(normalized) > 1:

@@ -7,6 +7,69 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc15] - 2026-10-25
+
+Closes #75: benchmark-based checkpoint selection (eval loop), nightly
+real-training CI, GRPO backend honesty, and a chat-loader truncation fix.
+
+### Added
+- `fusion_trainer/eval_loop.py` (issue #75) — the training flywheel's
+  missing verification step. `BenchClient` talks to fusion-bench's task
+  API (`POST /api/v1/tasks`, `GET /api/v1/tasks/{id}`) over pure HTTP
+  (tenant header + Bearer; S6 URL guard). `run_checkpoint_eval`
+  enumerates every numbered checkpoint (`NNNNNN_adapters.safetensors`,
+  same layout as #65 resume), stages each one to a servable
+  `adapters.safetensors` dir, submits one bench task per checkpoint, and
+  picks the winner deterministically: bench score (higher wins, tie →
+  later step) → val_loss (lower wins, tie → later step) → last checkpoint.
+  The selection table persists atomically to
+  `checkpoint_selection.json` next to the adapters. Fail-visible, never
+  raises: a bench outage marks every row `unavailable`, records a
+  `fallback_reason`, and selects on val_loss — never a silent
+  mis-selection. NOTE: fusion-bench cannot yet evaluate LoRA adapters
+  (no `adapters` passthrough to fusion-mlx chat) — filed upstream as
+  [fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29);
+  the trainer already sends `params.adapter_path` so the loop scores true
+  checkpoint weights the moment bench lands passthrough.
+- `ft sft --eval-select` + `--bench-url/--bench-api-key/--bench-tenant-id/
+  --bench-executor` — run the checkpoint eval after a completed SFT job
+  and attach `checkpoint_selection` to the run result (printed table
+  included). YAML/preset support via the `sft:` section
+  (`eval_select`, `bench_url`, `bench_api_key`, `bench_tenant_id`,
+  `bench_executor`, `bench_suite`, `bench_params`, `bench_task_timeout`).
+- `.github/workflows/nightly.yml` — nightly real-training regression run
+  (macOS arm64): boots a real fusion-mlx with `Qwen3-0.6B-4bit`, runs
+  `TestRealFusionMLXIntegration` + the contract suite with
+  `FUSION_TRAINER_REAL=1`. The per-push ubuntu CI cannot install MLX, so
+  these ~18 tests were silently skipped on every push; upstream field
+  renames / job-lifecycle changes now get caught within a day.
+  `workflow_dispatch` trigger for on-demand runs.
+
+### Changed
+- **GRPO backend honesty (issue #75):** `RLSLConfig.grpo_backend` now
+  accepts `policy_gradient` as an alias of `grpo` (normalized in
+  `TrainerConfig.__post_init__`), and the docs state plainly that the
+  DEFAULT backend `rft` is a reward-filtered SFT approximation
+  (RFT/RAFT-style) — no per-token policy gradient, no importance ratio.
+  No behavior change; existing `rft`/`grpo` values work unchanged.
+
+### Fixed
+- `DatasetLoader.load_messages` treated `max_seq_length` TOKENS as CHARS:
+  every message was individually capped at `[:max_seq_length]` chars, a
+  ~4x over-truncation (4096-token budget silently amputated any turn
+  over 4096 chars). Now the WHOLE conversation gets a char budget of
+  `max_seq_length * 4`, trimming whole trailing turns (never mid-answer,
+  so the chat template stays well-formed); exact token-level truncation
+  happens upstream at batch assembly as before.
+
+### Upstream
+- [fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29) —
+  LoRA adapter passthrough (`adapter_path` → fusion-mlx `adapters`).
+- [fusion-mlx#1400](https://github.com/dahai80/fusion-mlx/issues/1400) —
+  SFT sequence packing (`FineTuneConfig` field; mlx_lm 0.31.3 has no
+  packing to expose yet). fusion-trainer sends nothing packing-related
+  until it lands.
+
 ## [1.0.0rc14] - 2026-10-25
 
 Closes #74: TTS voice-pack (voice LoRA) training pipeline, wired on

@@ -267,10 +267,25 @@ fusion_trainer_train_loss{run="run-1"} 0.1234
 
 | backend | behavior | endpoint |
 |---|---|---|
-| `rft` (default) | reward-filtered SFT approximation: on-policy sample → sandbox score → top-k → SFT/LoRA job | `/admin/api/fine-tune/jobs` |
-| `grpo` | real policy-gradient GRPO, runs server-side in fusion-mlx; trainer hosts a local reward HTTP endpoint that fusion-mlx calls back (`reward_server.py` → `sandbox.reward_completion`) | `/api/fine-tune/grpo/jobs` |
+| `rft` (default) | **reward-filtered SFT approximation** (RFT/RAFT-style): on-policy sample → sandbox score → top-k → SFT/LoRA job. No per-token policy gradient, no importance ratio — it converges toward higher-reward outputs but is NOT true GRPO. | `/admin/api/fine-tune/jobs` |
+| `grpo` / `policy_gradient` | real policy-gradient GRPO, runs server-side in fusion-mlx; trainer hosts a local reward HTTP endpoint that fusion-mlx calls back (`reward_server.py` → `sandbox.reward_completion`) | `/api/fine-tune/grpo/jobs` |
 
-`grpo` requires fusion-mlx #363 Phase 2. Set in YAML (`rlsl.grpo_backend: grpo`) or pass via config. Per the project rule the trainer talks **only** to fusion-mlx's HTTP API — no direct `mlx-lm` imports.
+`policy_gradient` is an alias of `grpo` (normalized in `TrainerConfig.__post_init__`, issue #75) — the honest name for when you want actual policy gradient. `grpo` requires fusion-mlx #363 Phase 2. Set in YAML (`rlsl.grpo_backend: grpo`) or pass via config. Per the project rule the trainer talks **only** to fusion-mlx's HTTP API — no direct `mlx-lm` imports.
+
+#### Checkpoint selection via fusion-bench (`--eval-select`, issue #75)
+
+Lowest val loss is a weak proxy for "best checkpoint". `ft sft --eval-select` closes the loop: after training, every numbered checkpoint (`NNNNNN_adapters.safetensors`) is benchmarked through fusion-bench's task API and the winner is picked by bench score:
+
+```bash
+ft sft --model Qwen3-0.6B-4bit --dataset data.jsonl --save-every 100 \
+    --eval-select --bench-url http://localhost:11467 \
+    --bench-api-key <jwt> --bench-tenant-id default
+```
+
+- Deterministic selection: bench score (higher wins, tie → later step) → val_loss (lower wins, tie → later step) → last checkpoint.
+- The full table — checkpoint, step, val_loss, bench task id, bench score, chosen — persists atomically to `checkpoint_selection.json` next to the adapters and is attached to the run result.
+- Fail-visible, never fatal: a bench outage (or no bench configured) marks every row `unavailable`, records a `fallback_reason`, and selects on val_loss. A selection is never silently wrong.
+- Upstream note: fusion-bench cannot yet evaluate LoRA adapters — the `adapter_path` param is sent but not forwarded to fusion-mlx chat ([fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29)). Until it lands, bench scores reflect the base model and the selector leans on val_loss; the loop scores true checkpoint weights the moment bench lands passthrough.
 
 ---
 
@@ -278,7 +293,7 @@ fusion_trainer_train_loss{run="run-1"} 0.1234
 
 | Command | Description |
 |---|---|
-| `fusion-trainer sft` | Run supervised fine-tuning (add `--publish` to publish the adapter to model-hub on completion, `--resume` to continue an interrupted run from its newest checkpoint, issue #65) |
+| `fusion-trainer sft` | Run supervised fine-tuning (add `--publish` to publish the adapter to model-hub on completion, `--resume` to continue an interrupted run from its newest checkpoint, issue #65, `--eval-select` to benchmark every checkpoint via fusion-bench and pick the winner, issue #75) |
 | `fusion-trainer rlsl` | Run DPO/ORPO/RLSL/GRPO alignment (add `--publish` to publish) |
 | `fusion-trainer publish <run_id>` | Publish a completed run's LoRA adapter to fusion-model-hub (issue #49) |
 | `fusion-trainer bnup-prep --stage sft\|dpo` | Prepare BNUP training data (SFT DSL validation or DPO pair generation, issues #56/#57) |
@@ -322,6 +337,25 @@ a live server.
 FUSION_TRAINER_LOAD=1 FUSION_MLX_ADMIN_TOKEN=<key> \
     pytest tests/test_load_stability.py -m load -v
 ```
+
+## Nightly Real-Training CI (issue #75)
+
+The per-push CI runs the mocked suite on ubuntu — MLX has no Linux wheel, so
+every test needing a live fusion-mlx engine is env-gated
+(`FUSION_TRAINER_REAL=1`) and silently skipped there.
+`.github/workflows/nightly.yml` ungates them for real: on a macOS arm64
+runner it boots a real fusion-mlx with `Qwen3-0.6B-4bit` and runs the
+real-training suite (`tests/test_sft_trainer.py::TestRealFusionMLXIntegration`)
+plus the contract suite (`tests/test_contract_integration.py`, marker
+`integration`) against actual gradient loops. Runs on schedule (02:30
+Beijing) and on demand via `workflow_dispatch`:
+
+```bash
+gh workflow run nightly -R dahai80/fusion-trainer
+```
+
+Upstream contract drift (field renames, job-lifecycle changes) is caught
+within a day instead of at the next manual verification.
 
 ## API Stability (v1.0)
 

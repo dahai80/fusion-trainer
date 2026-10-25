@@ -233,6 +233,34 @@ class SFTConfig:
     run_name: str = ""
     """Experiment run name for logging."""
 
+    # Checkpoint eval / selection (issue #75)
+    eval_select: bool = False
+    """After training, benchmark every numbered checkpoint via fusion-bench
+    and pick the winner (issue #75). Selection table persisted to
+    checkpoint_selection.json next to the adapters. Bench outage or no
+    bench configured: falls back to lowest val_loss, loudly, never silently."""
+
+    bench_url: str = ""
+    """fusion-bench base URL (default http://localhost:11467 / FUSION_BENCH_URL)."""
+
+    bench_api_key: str = ""
+    """Bearer token for fusion-bench (fusion-identity JWT; empty = unauthenticated)."""
+
+    bench_tenant_id: str = ""
+    """X-Tenant-Id for fusion-bench's fail-closed tenant middleware."""
+
+    bench_executor: str = "speed"
+    """fusion-bench executor key (speed / accuracy / …)."""
+
+    bench_suite: str = ""
+    """Optional bench suite name."""
+
+    bench_params: dict = field(default_factory=dict)
+    """Extra params forwarded to the bench task (e.g. max_tokens, judge config)."""
+
+    bench_task_timeout: float = 1800.0
+    """Per-bench-task wait timeout in seconds."""
+
 
 # ---------------------------------------------------------------------------
 # RLSL config
@@ -280,14 +308,20 @@ class RLSLConfig:
     sandbox_mode: Literal["off", "code", "math", "auto"] = "off"
     """Sandbox reward source. 'code' executes tests, 'math' compares answers, 'auto' picks by dataset field."""
 
-    grpo_backend: Literal["rft", "grpo"] = "rft"
-    """GRPO execution backend.
-    'rft'  — reward-filtered SFT approximation (on-policy sample -> sandbox
-             score -> top-k -> SFT job via /admin/api/fine-tune/jobs). Works
-             today; converges toward higher-reward outputs (RFT/RAFT-style).
-    'grpo' — real policy-gradient GRPO via fusion-mlx /api/fine-tune/grpo/jobs
-             (requires fusion-mlx #363 Phase 2). Trainer hosts a local reward
-             HTTP endpoint that fusion-mlx calls back to score completions."""
+    grpo_backend: Literal["rft", "grpo", "policy_gradient"] = "rft"
+    """GRPO execution backend. NOTE (issue #75 honesty): the DEFAULT 'rft' is
+    a reward-filtered SFT approximation (RFT/RAFT-style), not true GRPO —
+    no per-token policy gradient, no importance ratio. Use 'policy_gradient'
+    (alias of 'grpo', normalized in TrainerConfig.__post_init__) for real
+    policy-gradient GRPO.
+    'rft'             — reward-filtered SFT approximation (on-policy sample ->
+                        sandbox score -> top-k -> SFT job via
+                        /admin/api/fine-tune/jobs). Works today; converges
+                        toward higher-reward outputs.
+    'grpo' / 'policy_gradient' — real policy-gradient GRPO via fusion-mlx
+                        /api/fine-tune/grpo/jobs (fusion-mlx #363). Trainer
+                        hosts a local reward HTTP endpoint that fusion-mlx
+                        calls back to score completions."""
 
     reward_top_k: int = 4
     """Keep top-k of G samples by reward for the SFT-style update (reward-filtered GRPO approximation)."""
@@ -396,3 +430,8 @@ class TrainerConfig:
             self.rlsl.output_dir = os.path.join(
                 self.cache_path, "checkpoints", f"{base}{suffix}"
             )
+        # issue #75: "policy_gradient" is the honest alias for the GRPO
+        # backend — normalize to the internal "grpo" value so every
+        # backend dispatch stays single-sourced.
+        if self.rlsl.grpo_backend == "policy_gradient":
+            self.rlsl.grpo_backend = "grpo"

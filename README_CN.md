@@ -165,7 +165,7 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 
 | 命令 | 说明 |
 |---|---|
-| `fusion-trainer sft` | 运行监督微调（`--publish` 完成后发布适配器到 Hub；`--resume` 从最新 checkpoint 续训中断的 run，#65） |
+| `fusion-trainer sft` | 运行监督微调（`--publish` 完成后发布适配器到 Hub；`--resume` 从最新 checkpoint 续训中断的 run，#65；`--eval-select` 训练后经 fusion-bench 逐 checkpoint 评测并择优，#75） |
 | `fusion-trainer rlsl` | 运行 DPO/ORPO/RLSL/GRPO 对齐 |
 | `fusion-trainer publish <run_id>` | 发布已完成 run 的 LoRA 适配器到 Hub |
 | `fusion-trainer bnup-prep --stage sft\|dpo` | BNUP 数据准备（SFT 校验 / DPO 负样本生成，#56/#57） |
@@ -220,6 +220,34 @@ fusion-trainer publish <run_id>
 
 `start_sft`/`start_rlsl`/`stop_run`/`delete_adapter` 接受可选 `api_key` 参数；`publish_run` 接受 `trainer_api_key`（与 hub 的 `api_key` 区分开，使部署可在不泄露 hub 密钥的情况下网关操作）。
 
+#### GRPO 后端诚实声明（`grpo_backend`，issue #75）
+
+`RLSLConfig.grpo_backend` 选择 GRPO 执行路径：
+
+| 后端 | 行为 | 端点 |
+|---|---|---|
+| `rft`（默认） | **奖励过滤的 SFT 近似**（RFT/RAFT 风格）：在线采样 → sandbox 打分 → top-k → SFT/LoRA 作业。没有逐 token 策略梯度、没有重要性比率 —— 它朝更高奖励输出收敛，但**不是真正的 GRPO**。 | `/admin/api/fine-tune/jobs` |
+| `grpo` / `policy_gradient` | 真正的策略梯度 GRPO，在 fusion-mlx 服务端运行；trainer 本地起一个奖励 HTTP 回调端点供 fusion-mlx 调用（`reward_server.py` → `sandbox.reward_completion`） | `/api/fine-tune/grpo/jobs` |
+
+`policy_gradient` 是 `grpo` 的别名（在 `TrainerConfig.__post_init__` 归一化，issue #75）—— 想要真策略梯度时的诚实命名。`grpo` 需要 fusion-mlx #363 Phase 2。YAML 中设置（`rlsl.grpo_backend: grpo`）。按项目规则，trainer **只**通过 fusion-mlx HTTP API 通信 —— 不直接 import `mlx-lm`。
+
+#### 基于 fusion-bench 的 checkpoint 择优（`--eval-select`，issue #75）
+
+最低 val loss 是"最优 checkpoint"的弱代理。`ft sft --eval-select` 补全训练闭环：训练结束后，每个编号 checkpoint（`NNNNNN_adapters.safetensors`）经 fusion-bench 任务 API 跑一次评测，按 bench 分数择优：
+
+```bash
+ft sft --model Qwen3-0.6B-4bit --dataset data.jsonl --save-every 100 \
+    --eval-select --bench-url http://localhost:11467 \
+    --bench-api-key <jwt> --bench-tenant-id default
+```
+
+- 确定性选择：bench 分数（高者胜，平分取更晚 step）→ val_loss（低者胜，平分取更晚 step）→ 最后一个 checkpoint。
+- 完整选择表 —— checkpoint、step、val_loss、bench 任务 id、bench 分数、chosen —— 原子写入适配器旁的 `checkpoint_selection.json`，并附到 run 结果。
+- Fail-visible、绝不致命：bench 不可用（或未配置）时每行标记 `unavailable`、记录 `fallback_reason`、按 val_loss 择优。选择永远不会静默出错。
+- 上游说明：fusion-bench 目前无法评测 LoRA 适配器 —— `adapter_path` 参数已发送但未转发给 fusion-mlx chat（[fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29)）。在其落地前，bench 分数反映的是基座模型，选择器依赖 val_loss；bench 落地透传后本循环立即对真实 checkpoint 权重打分。
+
+---
+
 #### 指标导出（企业级）
 
 `ExperimentLogger.export_prometheus(path, run_id=, extra_series=)` 与模块级 `export_prometheus_snapshot(path, metrics, run_id=, extra_series=)` 写入 **Prometheus 文本格式**（`.prom`）快照 —— 每个标量指标键一个 gauge：
@@ -251,6 +279,18 @@ ROUNDS=10 ./scripts/load_test.sh
 FUSION_TRAINER_LOAD=1 FUSION_MLX_ADMIN_TOKEN=<key> \
     pytest tests/test_load_stability.py -m load -v
 ```
+
+---
+
+## 每日真实训练 CI（issue #75）
+
+每次 push 的 CI 在 ubuntu 上跑 mock 套件 —— MLX 没有 Linux wheel，因此所有需要实时 fusion-mlx 引擎的测试都由环境变量开关（`FUSION_TRAINER_REAL=1`）控制并在那里静默跳过。`.github/workflows/nightly.yml` 将其真正放开：在 macOS arm64 runner 上启动一个加载 `Qwen3-0.6B-4bit` 的真实 fusion-mlx，对真实梯度循环跑训练套件（`tests/test_sft_trainer.py::TestRealFusionMLXIntegration`）与契约套件（`tests/test_contract_integration.py`，marker `integration`）。按计划触发（北京时间 02:30），也可 `workflow_dispatch` 手动触发：
+
+```bash
+gh workflow run nightly -R dahai80/fusion-trainer
+```
+
+上游契约漂移（字段改名、作业生命周期变更）一天内即可捕获，而不是等下一次人工验证。
 
 ---
 

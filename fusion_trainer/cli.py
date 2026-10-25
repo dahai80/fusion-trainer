@@ -164,6 +164,35 @@ def sft(
         "issue #65; requires fusion-mlx >= 0.10.12 / #1182). No checkpoint "
         "found = loud warning + fresh start.",
     ),
+    eval_select: bool = typer.Option(
+        False,
+        "--eval-select",
+        help="After training, benchmark every numbered checkpoint via "
+        "fusion-bench and pick the winner (issue #75). Table persisted to "
+        "checkpoint_selection.json; bench outage falls back to lowest "
+        "val_loss (loudly, never silently).",
+    ),
+    bench_url: str = typer.Option(
+        "",
+        "--bench-url",
+        help="fusion-bench base URL for --eval-select (default "
+        "$FUSION_BENCH_URL or http://localhost:11467).",
+    ),
+    bench_api_key: str = typer.Option(
+        "",
+        "--bench-api-key",
+        help="Bearer token for fusion-bench (fusion-identity JWT).",
+    ),
+    bench_tenant_id: str = typer.Option(
+        "",
+        "--bench-tenant-id",
+        help="X-Tenant-Id for fusion-bench's tenant middleware.",
+    ),
+    bench_executor: str = typer.Option(
+        "speed",
+        "--bench-executor",
+        help="fusion-bench executor key (speed/accuracy/...).",
+    ),
 ):
     """Run supervised fine-tuning (SFT) on a base model.
 
@@ -245,6 +274,18 @@ def sft(
         use_mxfp8=use_mxfp8,
         run_name=run_name,
         output_dir=output_dir,
+        # issue #75: checkpoint eval/selection wiring
+        eval_select=eval_select
+        or bool(_resolve(src, "eval_select", False, preset_vals, yaml_vals, default=False)),
+        bench_url=bench_url
+        or str(_resolve(src, "bench_url", "", preset_vals, yaml_vals, default="")),
+        bench_api_key=bench_api_key
+        or str(_resolve(src, "bench_api_key", "", preset_vals, yaml_vals, default="")),
+        bench_tenant_id=bench_tenant_id
+        or str(_resolve(src, "bench_tenant_id", "", preset_vals, yaml_vals, default="")),
+        bench_executor=str(
+            _resolve(src, "bench_executor", bench_executor, preset_vals, yaml_vals, default="speed")
+        ),
     )
     # Non-CLI-exposed fields: preset > YAML > dataclass default.
     _apply_extras(sft_cfg, preset_vals, yaml_vals)
@@ -822,6 +863,12 @@ def _apply_extras(sft_cfg: Any, preset_vals: dict, yaml_vals: dict) -> None:
         "log_every",
         "quant_bits",
         "max_steps",
+        # issue #75: eval/selection fields without dedicated CLI flags.
+        # bench_url/api_key/tenant/executor/eval_select are handled in the
+        # sft command body (flag-aware); these remain YAML/preset-only.
+        "bench_suite",
+        "bench_params",
+        "bench_task_timeout",
     ]
     for key in extras:
         # preset wins over YAML (preset is a higher-precedence named bundle).

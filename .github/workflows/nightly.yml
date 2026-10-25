@@ -1,0 +1,100 @@
+# Nightly real-training regression run (issue #75).
+#
+# The per-push CI (ci.yml) runs the mocked suite on ubuntu — MLX has no
+# Linux wheel, so every test that needs a live fusion-mlx engine is
+# env-gated (FUSION_TRAINER_REAL=1) and silently skipped there. That let
+# real-loop regressions (upstream field renames, job-lifecycle changes)
+# land unnoticed for weeks. This workflow ungates them for real: it boots
+# a real fusion-mlx on a macOS arm64 runner with a tiny 0.6B model and
+# runs the real-training + contract suites against actual gradient loops.
+#
+# Cost note: macos runners are ~10x ubuntu minutes. The model is 0.6B-4bit
+# (~400 MB) and each SFT job is a handful of steps, so the whole run stays
+# well under the default 6h job limit.
+
+name: nightly
+
+on:
+  schedule:
+    # 18:30 UTC = 02:30 Beijing — off-peak, results ready for the morning.
+    - cron: "30 18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-training:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      FUSION_TRAINER_REAL: "1"
+      FUSION_MLX_PORT: "11434"
+      # Tiny model: real MLX training loop, minutes not hours.
+      FUSION_MLX_ADMIN_TOKEN: ci-nightly-admin-key
+      HF_MIRROR: https://hf-mirror.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fusion-trainer (dev) + fusion-mlx
+        run: |
+          python -m pip install --upgrade pip
+          pip install fusion-mlx
+          pip install -e ".[dev]"
+
+      - name: Pull test model
+        run: |
+          fusion-mlx pull Qwen3-0.6B-4bit
+
+      - name: Provision engine settings (known admin key)
+        # fusion-mlx's admin router (fine-tune jobs live under it) is
+        # fail-closed: a Bearer must match settings.json auth.api_key. A
+        # fresh install has no key, so every fine-tune call would 401.
+        # Write a known key so the suites' FUSION_MLX_ADMIN_TOKEN works.
+        run: |
+          mkdir -p ~/.fusion-mlx
+          cat > ~/.fusion-mlx/settings.json <<'EOF'
+          {
+            "auth": {
+              "api_key": "ci-nightly-admin-key"
+            },
+            "huggingface": {
+              "endpoint": "https://hf-mirror.com"
+            }
+          }
+          EOF
+
+      - name: Boot fusion-mlx
+        run: |
+          nohup fusion-mlx serve --model Qwen3-0.6B-4bit --port 11434 \
+            > /tmp/fusion-mlx.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:11434/v1/models > /dev/null 2>&1; then
+              echo "fusion-mlx healthy after ${i} polls"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "fusion-mlx failed to become healthy"
+          cat /tmp/fusion-mlx.log
+          exit 1
+
+      - name: Real-training suite
+        run: |
+          pytest tests/test_sft_trainer.py::TestRealFusionMLXIntegration -v
+
+      - name: Contract suite
+        run: |
+          pytest tests/test_contract_integration.py -v -m integration
+
+      - name: Dump engine log on failure
+        if: failure()
+        run: tail -200 /tmp/fusion-mlx.log || true
