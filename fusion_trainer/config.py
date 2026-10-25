@@ -199,6 +199,13 @@ class SFTConfig:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
 
+    # #1400: sequence packing for short-sample corpora — samples are
+    # concatenated into rows of at most max_seq_length tokens with a
+    # block-diagonal attention mask (no cross-sample attention). Off by
+    # default: it changes batch composition, so results are not
+    # byte-comparable with unpacked runs. Requires fusion-mlx >= 0.10.17.
+    pack_sequences: bool = False
+
     # Precision
     use_mxfp8: bool = False
     # Explicit training-memory budget (GB) passed to fusion-mlx's

@@ -1127,3 +1127,20 @@ class TestMLXConfigMemoryBudget:
             assert built["iters"] == 4
             assert built["steps_per_report"] == 4
             assert built["steps_per_eval"] == 50
+
+    def test_pack_sequences_omitted_by_default(self):
+        # Off by default AND the key must be absent, not False — older
+        # fusion-mlx (< 0.10.17) has no FineTuneConfig.pack_sequences and
+        # 400s on the unknown key.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = self._trainer(tmpdir)
+            trainer._train_samples = [{"input": "Q", "output": "A"}]
+            built = trainer._build_mlx_config()
+            assert "pack_sequences" not in built
+
+    def test_pack_sequences_passed_through(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = self._trainer(tmpdir, pack_sequences=True)
+            trainer._train_samples = [{"input": "Q", "output": "A"}]
+            built = trainer._build_mlx_config()
+            assert built["pack_sequences"] is True

@@ -51,6 +51,7 @@ fusion-* products (consumption layer)
 - Domain-specific presets (code, finance, science)
 - **fusion-router-light presets** — 1.5B LoRA + 3B full, for the gateway intent classifier / spec-decoding draft model
 - MXFP8 mixed precision ✅ — [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)/#425 CLOSED: `use_mxfp8=True` passes through to fusion-mlx, which routes to the 8-bit QLoRA path (`quantize_base=True`, `quant_bits=8`, `fine_tune_type=qlora`) — 8-bit frozen base + LoRA for memory saving, NOT fp8 compute (MLX 0.32 has no fp8 dtype). `mxfp8+full` is a contradiction (full unfreezes the base) and still fails visibly. `use_mxfp8` defaults to `False`.
+- **Sequence packing ✅** — `--pack-sequences` (or YAML `pack_sequences: true`): short samples are concatenated into rows of at most `max_seq_length` tokens with a block-diagonal attention mask (no cross-sample attention) and a per-token loss mask that still honours `mask_prompt` offsets. Big throughput win on short-sample corpora. Requires fusion-mlx >= 0.10.17 ([fusion-mlx#1400](https://github.com/dahai80/fusion-mlx/issues/1400) closed, `pack_sequences` field). Off by default: packing changes batch composition, so results are not byte-comparable with unpacked runs.
 - **VLM fine-tune ✅** — [#55](https://github.com/dahai80/fusion-trainer/issues/55) closed, consuming the upstream VLM endpoint ([fusion-mlx#797](https://github.com/dahai80/fusion-mlx/issues/797)→[#800](https://github.com/dahai80/fusion-mlx/pull/800), v0.8.80). Set `model_type="vlm"` (or use the `sft_vlm_7b_qlora` preset) and `SFTTrainer` routes to `POST /admin/api/fine-tune/vlm/jobs`, which drives `mlx_vlm.trainer` SFT/LoRA inside fusion-mlx over HTTP — same pure-HTTP-delegation rule, fusion-trainer never imports `mlx-vlm`. The VLM path does NOT stage a chat-messages jsonl: `mlx_vlm.lora.load_dataset` consumes a HF dataset id or a local dir of images + jsonl directly, so pass the dataset reference via `dataset.path` (HF id or local dir) or `dataset.hub_dataset`. **VLM QLoRA caveat:** `VLMFineTuneConfig` has no quantize field, so `method="qlora"` on a VLM run degrades to plain LoRA with a loud warning — no base quantization occurs (mlx-vlm QLoRA semantics differ from mlx-lm and are not exposed upstream, #797).
 
 ### Reinforcement Learning from Supervised Learning (RLSL)
@@ -285,7 +286,7 @@ ft sft --model Qwen3-0.6B-4bit --dataset data.jsonl --save-every 100 \
 - Deterministic selection: bench score (higher wins, tie → later step) → val_loss (lower wins, tie → later step) → last checkpoint.
 - The full table — checkpoint, step, val_loss, bench task id, bench score, chosen — persists atomically to `checkpoint_selection.json` next to the adapters and is attached to the run result.
 - Fail-visible, never fatal: a bench outage (or no bench configured) marks every row `unavailable`, records a `fallback_reason`, and selects on val_loss. A selection is never silently wrong.
-- Upstream note: fusion-bench cannot yet evaluate LoRA adapters — the `adapter_path` param is sent but not forwarded to fusion-mlx chat ([fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29)). Until it lands, bench scores reflect the base model and the selector leans on val_loss; the loop scores true checkpoint weights the moment bench lands passthrough.
+- Bench scores the true checkpoint weights: fusion-bench v0.4.11 ([fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29), closed) forwards the per-candidate `adapter_path` to fusion-mlx chat as the `adapters` field. Requires fusion-bench >= 0.4.11; against an older bench the score reflects the base model, so prefer the val_loss basis then.
 
 ---
 
@@ -293,7 +294,7 @@ ft sft --model Qwen3-0.6B-4bit --dataset data.jsonl --save-every 100 \
 
 | Command | Description |
 |---|---|
-| `fusion-trainer sft` | Run supervised fine-tuning (add `--publish` to publish the adapter to model-hub on completion, `--resume` to continue an interrupted run from its newest checkpoint, issue #65, `--eval-select` to benchmark every checkpoint via fusion-bench and pick the winner, issue #75) |
+| `fusion-trainer sft` | Run supervised fine-tuning (add `--publish` to publish the adapter to model-hub on completion, `--resume` to continue an interrupted run from its newest checkpoint, issue #65, `--eval-select` to benchmark every checkpoint via fusion-bench and pick the winner, issue #75, `--pack-sequences` to pack short samples into full rows, fusion-mlx#1400) |
 | `fusion-trainer rlsl` | Run DPO/ORPO/RLSL/GRPO alignment (add `--publish` to publish) |
 | `fusion-trainer publish <run_id>` | Publish a completed run's LoRA adapter to fusion-model-hub (issue #49) |
 | `fusion-trainer bnup-prep --stage sft\|dpo` | Prepare BNUP training data (SFT DSL validation or DPO pair generation, issues #56/#57) |

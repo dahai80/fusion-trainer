@@ -11,13 +11,14 @@ Pure HTTP: the trainer talks only to fusion-bench's task API
 auth is fusion-identity tenant auth (X-Tenant-Id + Bearer JWT), so a
 deployment routes this through an operator-issued token.
 
-Upstream note (filed, not worked around): fusion-bench executors do not
-yet forward a LoRA adapter path to fusion-mlx chat completions. The task
-params carry `adapter_path` for each candidate so the moment bench lands
-passthrough (fusion-mlx /v1/chat/completions already accepts `adapters`)
-the loop scores the true checkpoint weights; until then bench scores
-reflect the base model and the selector falls back to val_loss with a
-loud, persisted reason — never a silent mis-selection.
+Adapter scoring: fusion-bench v0.4.11 (fusion-bench#29, closed) forwards
+the per-candidate `adapter_path` in task params to fusion-mlx chat as the
+`adapters` field, so bench scores reflect the true checkpoint weights.
+The params form (not the new top-level TaskCreateRequest.adapter_path
+field) is sent deliberately: older bench releases 400 on unknown
+top-level keys, while every release reads params.adapter_path. If bench
+is unreachable or scoring fails, the selector falls back to val_loss
+with a loud, persisted reason — never a silent mis-selection.
 """
 
 from __future__ import annotations

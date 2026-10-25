@@ -50,6 +50,7 @@ fusion-* 产品（消费层）
 - QLoRA ✅ — 4-bit 量化基座 LoRA，经 fusion-mlx `FineTuneConfig`（`fine_tune_type=qlora`、`quantize_base=True`、`quant_bits=4`），见 [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)。`_build_mlx_config` 将 `method=qlora` 映射到这些字段。
 - 领域专属预设配置（代码、金融、科学）
 - MXFP8 混合精度 ✅ — [fusion-mlx#402](https://github.com/dahai80/fusion-mlx/issues/402)/#425 已关闭：`use_mxfp8=True` 透传给 fusion-mlx，路由到 8-bit QLoRA 路径（`quantize_base=True`、`quant_bits=8`、`fine_tune_type=qlora`）—— 8-bit 冻结基座 + LoRA 省显存，非 fp8 计算（MLX 0.32 无 fp8 dtype）。`mxfp8+full` 矛盾（full 解冻基座），仍 fail-visible。`use_mxfp8` 默认 `False`。
+- **序列打包 ✅** — `--pack-sequences`（或 YAML `pack_sequences: true`）：短样本拼接为至多 `max_seq_length` token 的行，块对角注意力掩码（无跨样本注意力），逐 token loss 掩码仍遵守 `mask_prompt` 偏移。短样本语料吞吐大幅提升。需 fusion-mlx >= 0.10.17（[fusion-mlx#1400](https://github.com/dahai80/fusion-mlx/issues/1400) 已关闭，`pack_sequences` 字段）。默认关闭：打包改变 batch 组成，结果与不打包运行不可逐字节对比。
 - **VLM 视觉语言微调 ✅** — [#55](https://github.com/dahai80/fusion-trainer/issues/55) 已关闭，消费上游 VLM 端点（[fusion-mlx#797](https://github.com/dahai80/fusion-mlx/issues/797)→[#800](https://github.com/dahai80/fusion-mlx/pull/800)，v0.8.80）。设置 `model_type="vlm"`（或使用 `sft_vlm_7b_qlora` 预设），`SFTTrainer` 即路由到 `POST /admin/api/fine-tune/vlm/jobs`，该端点在 fusion-mlx 内经 HTTP 驱动 `mlx_vlm.trainer` SFT/LoRA —— 同样的纯 HTTP 委托规则，fusion-trainer 不导入 `mlx-vlm`。VLM 路径**不**暂存 chat-messages jsonl：`mlx_vlm.lora.load_dataset` 直接消费 HF 数据集 id 或本地图片+jsonl 目录，因此通过 `dataset.path`（HF id 或本地目录）或 `dataset.hub_dataset` 传递数据集引用。**VLM QLoRA 注意：** `VLMFineTuneConfig` 无量化字段，故 VLM 运行中 `method="qlora"` 会降级为普通 LoRA 并发出明显告警 —— 不进行基座量化（mlx-vlm 的 QLoRA 语义与 mlx-lm 不同，上游未暴露，#797）。
 
 ### 强化监督学习（RLSL）
@@ -165,7 +166,7 @@ fusion-trainer sft --config configs/sft_7b.yaml \
 
 | 命令 | 说明 |
 |---|---|
-| `fusion-trainer sft` | 运行监督微调（`--publish` 完成后发布适配器到 Hub；`--resume` 从最新 checkpoint 续训中断的 run，#65；`--eval-select` 训练后经 fusion-bench 逐 checkpoint 评测并择优，#75） |
+| `fusion-trainer sft` | 运行监督微调（`--publish` 完成后发布适配器到 Hub；`--resume` 从最新 checkpoint 续训中断的 run，#65；`--eval-select` 训练后经 fusion-bench 逐 checkpoint 评测并择优，#75；`--pack-sequences` 短样本序列打包，fusion-mlx#1400） |
 | `fusion-trainer rlsl` | 运行 DPO/ORPO/RLSL/GRPO 对齐 |
 | `fusion-trainer publish <run_id>` | 发布已完成 run 的 LoRA 适配器到 Hub |
 | `fusion-trainer bnup-prep --stage sft\|dpo` | BNUP 数据准备（SFT 校验 / DPO 负样本生成，#56/#57） |
@@ -244,7 +245,7 @@ ft sft --model Qwen3-0.6B-4bit --dataset data.jsonl --save-every 100 \
 - 确定性选择：bench 分数（高者胜，平分取更晚 step）→ val_loss（低者胜，平分取更晚 step）→ 最后一个 checkpoint。
 - 完整选择表 —— checkpoint、step、val_loss、bench 任务 id、bench 分数、chosen —— 原子写入适配器旁的 `checkpoint_selection.json`，并附到 run 结果。
 - Fail-visible、绝不致命：bench 不可用（或未配置）时每行标记 `unavailable`、记录 `fallback_reason`、按 val_loss 择优。选择永远不会静默出错。
-- 上游说明：fusion-bench 目前无法评测 LoRA 适配器 —— `adapter_path` 参数已发送但未转发给 fusion-mlx chat（[fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29)）。在其落地前，bench 分数反映的是基座模型，选择器依赖 val_loss；bench 落地透传后本循环立即对真实 checkpoint 权重打分。
+- bench 打分针对真实 checkpoint 权重：fusion-bench v0.4.11（[fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29)，已关闭）把每个候选的 `adapter_path` 作为 `adapters` 字段转发给 fusion-mlx chat。需 fusion-bench >= 0.4.11；对更旧版本，分数反映基座模型，此时应以 val_loss 为准。
 
 ---
 

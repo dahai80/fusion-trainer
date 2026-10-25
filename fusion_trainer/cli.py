@@ -142,8 +142,15 @@ def sft(
     use_mxfp8: bool = typer.Option(
         False,
         "--mxfp8/--no-mxfp8",
-        help="Use MXFP8 mixed precision (upstream-blocked, fusion-mlx#402; "
-        "explicit --mxfp8 fail-stops until upstream lands)",
+        help="Use MXFP8 mixed precision (routes to 8-bit QLoRA, fusion-mlx#425)",
+    ),
+    pack_sequences: bool = typer.Option(
+        False,
+        "--pack-sequences/--no-pack-sequences",
+        help="Sequence packing: concatenate short samples into rows of at most "
+        "max_seq_length tokens with a block-diagonal attention mask "
+        "(fusion-mlx#1400, requires fusion-mlx >= 0.10.17). Changes batch "
+        "composition — results not byte-comparable with unpacked runs.",
     ),
     model_hub_path: str = typer.Option(
         "",
@@ -272,6 +279,8 @@ def sft(
         learning_rate=learning_rate,
         num_epochs=num_epochs,
         use_mxfp8=use_mxfp8,
+        pack_sequences=pack_sequences
+        or bool(_resolve(src, "pack_sequences", False, preset_vals, yaml_vals, default=False)),
         run_name=run_name,
         output_dir=output_dir,
         # issue #75: checkpoint eval/selection wiring
@@ -1295,6 +1304,7 @@ def _invoke_sft(
         weight_decay=float(_pick("weight_decay", 0.01)),
         max_grad_norm=float(_pick("max_grad_norm", 1.0)),
         use_mxfp8=bool(_pick("use_mxfp8", False)),
+        pack_sequences=bool(_pick("pack_sequences", False)),
         save_every=int(_pick("save_every", 500)),
         log_every=int(_pick("log_every", 10)),
         run_name=str(_pick("run_name", "")),

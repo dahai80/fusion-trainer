@@ -7,6 +7,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc16] - 2026-10-26
+
+Consumes the three upstream fixes filed during #75 (all closed 2026-10-25).
+
+### Added
+- **Sequence packing** — `ft sft --pack-sequences` (or YAML `pack_sequences:
+  true`): short samples are concatenated into rows of at most
+  `max_seq_length` tokens with a block-diagonal attention mask (no
+  cross-sample attention) and a per-token loss mask that still honours
+  `mask_prompt` offsets. Consumes the upstream `FineTuneConfig.
+  pack_sequences` field ([fusion-mlx#1400](https://github.com/dahai80/fusion-mlx/issues/1400)
+  closed, fusion-mlx >= 0.10.17). The key is only sent when explicitly on —
+  older fusion-mlx 400s on the unknown field. Off by default: packing
+  changes batch composition, so results are not byte-comparable with
+  unpacked runs. Also wired into `ft bnup-train` via `_pick`. Live-verified
+  end-to-end on Llama-3.2-1B-Instruct-4bit against fusion-mlx 0.10.17
+  (job record carries `pack_sequences: true`, status completed, adapter
+  written).
+
+### Changed
+- Nightly CI installs base (slim) `fusion-mlx>=0.10.17` instead of
+  `fusion-mlx[vlm]`: [fusion-mlx#1403](https://github.com/dahai80/fusion-mlx/issues/1403)
+  (fixed via #1406) made the turboquant attention patch pass through when
+  `mlx_vlm` is absent, so DPO/ORPO/reward jobs no longer die with
+  `No module named 'mlx_vlm'` on a slim install. Running slim keeps that
+  path regression-covered in CI.
+- `eval_loop.py` / README upstream caveat updated:
+  [fusion-bench#29](https://github.com/dahai80/fusion-bench/issues/29)
+  closed in fusion-bench v0.4.11 — the per-candidate `adapter_path` in
+  task params is forwarded to fusion-mlx chat as the `adapters` field, so
+  bench scores reflect the true checkpoint weights (bench >= 0.4.11). The
+  params form (not the new top-level `adapter_path` field) is sent
+  deliberately: older bench releases 400 on unknown top-level keys while
+  every release reads `params.adapter_path`.
+
 ## [1.0.0rc15] - 2026-10-25
 
 Closes #75: benchmark-based checkpoint selection (eval loop), nightly

@@ -384,6 +384,17 @@ class SFTTrainer:
                 "(8-bit frozen base + LoRA for memory saving, NOT fp8 compute, "
                 "MLX 0.32 has no fp8 dtype; fusion-mlx #425)."
             )
+        # #75/#1400: sequence packing — fusion-mlx 0.10.17 supplies the
+        # packed batch iterator + block-diagonal masked loss. Only sent
+        # when explicitly on: older fusion-mlx (< 0.10.17) has no
+        # FineTuneConfig.pack_sequences and would 400 on the unknown key.
+        if self.sft_cfg.pack_sequences:
+            cfg["pack_sequences"] = True
+            logger.info(
+                "Sequence packing enabled: rows up to max_seq_length=%d, "
+                "block-diagonal attention mask (fusion-mlx #1400)",
+                self.dataset_cfg.max_seq_length,
+            )
         # #65: resume an interrupted run — fusion-mlx #1182 loads
         # adapters.safetensors from this dir into the freshly built LoRA
         # layers before train(). _resume_dir is staged in _run_training
