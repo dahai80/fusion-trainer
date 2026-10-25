@@ -36,6 +36,9 @@ jobs:
       FUSION_MLX_PORT: "11434"
       # Tiny model: real MLX training loop, minutes not hours.
       FUSION_MLX_ADMIN_TOKEN: ci-nightly-admin-key
+      # huggingface_hub reads HF_ENDPOINT (hf-mirror.com is the project's
+      # download mirror); HF_MIRROR kept for fusion-mlx's own download path.
+      HF_ENDPOINT: https://hf-mirror.com
       HF_MIRROR: https://hf-mirror.com
     steps:
       - uses: actions/checkout@v4
@@ -52,10 +55,14 @@ jobs:
 
       - name: Pull test model
         run: |
-          # alias registry keys are lowercase (aliases.json); the suites
-          # hardcode the served id "Qwen3-0.6B-4bit", which --served-model-name
-          # pins below so /v1/models and the fine-tune pool key match exactly.
-          fusion-mlx pull qwen3-0.6b-4bit
+          # Full HF path, not the alias: run 40194017356 showed
+          # `serve --model <alias>` hands the RAW alias to huggingface_hub's
+          # snapshot_download (repo "qwen3-0.6b-4bit" does not exist → 401,
+          # misreported as "gated"). The pull path resolves aliases; serve's
+          # pre-download check does not. The suites hardcode the served id
+          # "Qwen3-0.6B-4bit", which --served-model-name pins below so
+          # /v1/models and the fine-tune pool key match exactly.
+          fusion-mlx pull mlx-community/Qwen3-0.6B-4bit
 
       - name: Provision engine settings (known admin key)
         # fusion-mlx's admin router (fine-tune jobs live under it) is
@@ -77,7 +84,7 @@ jobs:
 
       - name: Boot fusion-mlx
         run: |
-          nohup fusion-mlx serve --model qwen3-0.6b-4bit \
+          nohup fusion-mlx serve --model mlx-community/Qwen3-0.6B-4bit \
             --served-model-name Qwen3-0.6B-4bit --port 11434 \
             > /tmp/fusion-mlx.log 2>&1 &
           for i in $(seq 1 60); do
