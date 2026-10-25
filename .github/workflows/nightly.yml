@@ -91,7 +91,8 @@ jobs:
             --served-model-name Qwen3-0.6B-4bit --port 11434 \
             > /tmp/fusion-mlx.log 2>&1 &
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:11434/v1/models > /dev/null 2>&1; then
+            if curl -sf -H "Authorization: Bearer ci-nightly-admin-key" \
+                http://localhost:11434/v1/models > /dev/null 2>&1; then
               echo "fusion-mlx healthy after ${i} polls"
               exit 0
             fi
