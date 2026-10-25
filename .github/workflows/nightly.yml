@@ -70,7 +70,10 @@ jobs:
         # fresh install has no key, so every fine-tune call would 401.
         # Write a known key so the suites' FUSION_MLX_ADMIN_TOKEN works.
         run: |
-          mkdir -p ~/.fusion-mlx
+          # engine-pool model discovery (engine_pool._scan_models) hard-fails
+          # when ~/.fusion-mlx/models does not exist — a fresh runner never
+          # has it (run 40194670006). Create it up front.
+          mkdir -p ~/.fusion-mlx/models
           cat > ~/.fusion-mlx/settings.json <<'EOF'
           {
             "auth": {
