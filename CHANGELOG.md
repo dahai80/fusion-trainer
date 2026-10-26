@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc17] - 2026-10-26
+
+Consumes two long-closed upstream fixes whose trainer docs/comments had gone
+stale; verified live against the local gateway + engine before writing.
+
+### Changed
+- **Gateway fine-tune proxy acknowledged** — fusion-gateway v0.8.4
+  ([fusion-gateway#30](https://github.com/dahai80/fusion-gateway/issues/30),
+  closed) proxies `/admin/api/fine-tune/*` 1:1 through `:11432`, including
+  `/jobs/models` ([fusion-mlx#397](https://github.com/dahai80/fusion-mlx/issues/397),
+  closed). Verified live: jobs/adapters/models all return 200 through
+  `:11432`. The `mlx_port` default stays `11434` (one hop less, trainer's own
+  admin key); `FUSION_MLX_PORT=11432` now genuinely routes fine-tune traffic
+  through the gateway. Stale "gateway proxies only /v1*" claims removed from
+  `config.py` comments and README.
+- **Adapter registry slash-id fix acknowledged** —
+  [fusion-mlx#1317](https://github.com/dahai80/fusion-mlx/issues/1317) (PR
+  #1327): the registry walks 3 levels and lists slash-id adapters (verified:
+  `mlx-community/Qwen3-0.6B-8bit | sft1205-a` visible). The bridge still
+  deliberately publishes merged standalone models rather than hot-mounting
+  raw adapters — but the docs now say so as a design choice, not an upstream
+  blocker.
+
 ## [1.0.0rc16] - 2026-10-26
 
 Consumes the three upstream fixes filed during #75 (all closed 2026-10-25).

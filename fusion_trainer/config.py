@@ -87,11 +87,12 @@ def _default_cache_path() -> str:
 
 
 def _default_mlx_port() -> int:
-    # R16: default 11434 (fusion-mlx direct), not 11432 (fusion-gateway). The
-    # gateway proxies /v1/* but NOT /admin/api/fine-tune/*, so a default of
-    # 11432 made every create_job hit a 404 out-of-the-box — a footgun. Users
-    # who want the gateway for inference can set FUSION_MLX_PORT=11432.
-    # Upstream: fusion-mlx should have the gateway proxy /admin/api/fine-tune/*.
+    # R16: default 11434 (fusion-mlx direct), not 11432 (fusion-gateway).
+    # fusion-gateway v0.8.4+ proxies /admin/api/fine-tune/* 1:1 through :11432
+    # (fusion-gateway#30 closed, incl. /jobs/models since fusion-mlx#397), so
+    # the gateway path works — but the default stays 11434: one hop less and
+    # the trainer's own admin key. FUSION_MLX_PORT=11432 routes everything
+    # through the gateway (auth chain = gateway key, injected upstream).
     return int(os.environ.get("FUSION_MLX_PORT", "11434"))
 
 
@@ -395,10 +396,10 @@ class TrainerConfig:
     """Trainer-local cache directory for checkpoints and temp data."""
 
     mlx_port: int = field(default_factory=_default_mlx_port)
-    """Port for MLX calls. Default 11434 (fusion-mlx direct). The fusion-gateway
-    (:11432) proxies /v1/* but NOT /admin/api/fine-tune/*, so a default of 11432
-    made every create_job 404 out-of-the-box (R16). Overridable via FUSION_MLX_PORT
-    env var (set 11432 to use the gateway for inference-only paths)."""
+    """Port for MLX calls. Default 11434 (fusion-mlx direct). fusion-gateway
+    v0.8.4+ (:11432) proxies /admin/api/fine-tune/* too (fusion-gateway#30
+    closed), so FUSION_MLX_PORT=11432 routes fine-tune through the gateway;
+    the default stays direct for one hop less and the trainer's own key."""
 
     # Model-hub publish (issue #49). After a successful LoRA run, the produced
     # adapter is registered to fusion-model-hub via POST /api/v1/models
