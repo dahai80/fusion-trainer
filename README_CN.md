@@ -78,7 +78,7 @@ fusion-* 产品（消费层）
 - **推理** —— 训练产物落在 `~/.fusion-mlx/voices/<voice_id>/`，由 fusion-mlx 在 `POST /v1/audio/speech` 上以 `voice_ref` 提供（未知 ref 返回 404，无静默回退）。
 - **Hub 注册** —— `--publish` 以 `model_type=audio` 注册到 fusion-model-hub（`ModelHubClient.publish_voice_package`，409 幂等）。非阻塞：Hub 故障不影响训练结果。
 
-> `--publish` 需要可访问的 Hub（`--hub-url` / `FUSION_MODEL_HUB_URL`）与已注册的 API key。本机 gateway 未代理 `/api/v1/models`，请把 `FUSION_MODEL_HUB_URL` 指向 Hub 直连地址（`http://127.0.0.1:11444`）并设置 `FUSION_MODEL_HUB_API_KEY` —— 客户端现在会同时发送 Hub 的 `X-API-Key` 头。
+> `--publish` 需要可访问的 Hub（`--hub-url` / `FUSION_MODEL_HUB_URL`）。自 fusion-gateway#316 起，gateway（`:11432`）已代理 Hub 的 `/api/v1/models`（已实测：注册 201、409 幂等、列表可经 gateway 查询），默认 `http://localhost:11432` + gateway API key 即可，无需单独的 Hub key。直连 Hub（`:11444` + `FUSION_MODEL_HUB_API_KEY`）也仍然可用。
 
 ---
 

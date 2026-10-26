@@ -84,7 +84,7 @@ fusion-* products (consumption layer)
 - **Serving** — the trained package lands in `~/.fusion-mlx/voices/<voice_id>/` and is served by fusion-mlx as `voice_ref` on `POST /v1/audio/speech` (unknown ref → 404, no silent fallback).
 - **Hub registration** — `--publish` registers the package in fusion-model-hub as `model_type=audio` (`ModelHubClient.publish_voice_package`, 409-idempotent). Non-blocking: a hub outage never fails a training run.
 
-> `--publish` requires a hub reachable at `--hub-url` / `FUSION_MODEL_HUB_URL` with a registered API key. On this machine the local gateway does not proxy `/api/v1/models`, so point the client straight at the hub (`FUSION_MODEL_HUB_URL=http://127.0.0.1:11444`) and supply `FUSION_MODEL_HUB_API_KEY` — the client now sends the hub's `X-API-Key` header.
+> `--publish` requires a hub reachable at `--hub-url` / `FUSION_MODEL_HUB_URL`. Since fusion-gateway#316 the gateway on `:11432` proxies the hub's `/api/v1/models` (verified live: register 201, 409-idempotent, list through the gateway), so the default `http://localhost:11432` works with a gateway API key — no separate hub key needed. Pointing directly at the hub (`:11444` + `FUSION_MODEL_HUB_API_KEY`) still works.
 
 ---
 

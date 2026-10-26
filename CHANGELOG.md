@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc18] - 2026-10-26
+
+Consumes fusion-gateway#316 (hub `/api/v1/models` proxy route) and completes
+the live `--publish` verification that closed #74.
+
+### Changed
+- **Hub publish through the gateway** —
+  [fusion-gateway#316](https://github.com/dahai80/fusion-gateway/issues/316)
+  (closed) adds the `/api/v1/models` reverse proxy to fusion-model-hub, so
+  `hub_url=http://localhost:11432` (the default) works with a single gateway
+  key — no separate hub key. Verified live: `publish_voice_package` 201
+  (model_id `3e839f61e8974e06`, `model_type=audio`), 409-idempotent on
+  re-publish, entry listed through the gateway. Stale "gateway does not proxy
+  /api/v1/models, point at :11444" guidance removed from README/README_CN/
+  CLAUDE.md (hub-direct remains a documented fallback).
+- **#74 closed** — voice `--publish` verified end-to-end through the gateway;
+  `voice_ref` synthesis 200 with a real WAV on the published package.
+
 ## [1.0.0rc17] - 2026-10-26
 
 Consumes two long-closed upstream fixes whose trainer docs/comments had gone
