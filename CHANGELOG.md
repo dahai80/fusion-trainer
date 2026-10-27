@@ -7,6 +7,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc19] - 2026-10-28
+
+Eval flywheel (#76, items 11+12): consume fusion-eval#6 trajectory exports,
+RLVR-style failure mining, pass-rate-vs-rounds curve registry — plus the
+`gradient_checkpointing` passthrough that made 27B-8bit training machine-safe.
+
+### Flywheel evidence (real 27B-8bit rounds, Qwen3.8-27B-8bit, 30-task set)
+
+| round | pass_rate | delta | eval run | export sha |
+|---|---|---|---|---|
+| baseline | 53.33% | — | 20261026-151812 | c1ba555798a6 |
+| fw-round1 | 73.33% | +20.00pp | 20261027-r1-eval | e529c0b7d43c |
+| fw-round2 | 63.33% | −10.00pp | 20261027-r2-eval | a54a6ce962fa |
+
+Trend first→last +10pp (UP). Zero-type flips held at round-2:
+`long-context` 0/1→1/1 and `multi-turn-repair` 0/1→1/1 (acceptance:
+at least one baseline-zero type non-zero after one round — exceeded).
+Round-2 regression isolated to `testwrite` (3/3→0/3, all three hits of the
+900s timeout — the chained adapter over-produces on test-writing tasks;
+over-fitting signal from chaining two SFT rounds on a 22-sample eval-fed
+dataset). `feature` stayed 0/3 across all rounds. Recorded honestly via
+`ft flywheel record`; `ft flywheel status` prints the curve.
+
+### Added
+- `ft datasets from-eval <export.jsonl>` builds an SFT dataset from passed
+  trajectories (messages schema, multi-turn preserved) with a source manifest
+  (`<name>.from_eval.json`) carrying the export sha256 (#76).
+- RLVR-style failure mining: `--all` exports mine near-miss failures into DPO
+  preference pairs for round-2 alignment data (#76).
+- Eval curve registry: `ft flywheel record` maps a training round to its
+  fusion-eval run (pass_rate + per-type breakdown); `ft flywheel status`
+  prints the pass-rate-vs-rounds curve with export-hash traceability (#76).
+- `gradient_checkpointing` field on `SFTConfig` + `--grad-checkpoint` CLI
+  flag, passed through to fusion-mlx `FineTuneConfig.gradient_checkpointing`
+  (LM) / `grad_checkpoint` (VLM). Key sent only when on (older fusion-mlx
+  400s on unknown keys). Required for LoRA on very large 8-bit models:
+  27B-8bit + seq 4096 without it exhausted unified memory and panicked macOS
+  (3 kernel panics on 2026-10-26).
+- `--init-adapter-path` on `ft sft` (mirrors `ft rlsl`): initialize a fresh
+  LoRA from a prior round's adapter dir (final weights or newest numbered
+  checkpoint, staged via the #65 `_resolve_resume` path) — flywheel round
+  chaining without fabricating a checkpoint (#76).
+
+### Fixed
+- `load_messages` over-budget fallback: when the trim loop kept a trailing
+  assistant turn but dropped every user turn (or kept nothing), the sample
+  went to fusion-mlx as a lone-assistant conversation and the whole job died
+  with `TemplateError: No user query found in messages` (seen live on the #76
+  flywheel round-1 run). The fallback now always re-prepends the last user
+  query (hard-sliced), keeping the sample template-valid.
+
 ## [1.0.0rc18] - 2026-10-26
 
 Consumes fusion-gateway#316 (hub `/api/v1/models` proxy route) and completes

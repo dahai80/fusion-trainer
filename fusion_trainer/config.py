@@ -209,6 +209,15 @@ class SFTConfig:
 
     # Precision
     use_mxfp8: bool = False
+    gradient_checkpointing: bool = False
+    """Gradient (activation) checkpointing. Recomputes activations during
+    backward to slash peak memory at ~30% step-time cost — required for
+    LoRA on very large 8-bit models (e.g. 27B-8bit + seq >= 2048) where
+    activation memory without it can exceed the admission-gate budget and
+    OOM. fusion-mlx FineTuneConfig.gradient_checkpointing (grad_checkpoint
+    for VLM). Key sent to fusion-mlx only when True (older versions 400 on
+    unknown keys)."""
+
     # Explicit training-memory budget (GB) passed to fusion-mlx's
     # FineTuneConfig.memory_limit_gb. 0 = upstream default (60% of physical,
     # tuned for dedicated training boxes — wrong when large models are

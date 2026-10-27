@@ -166,7 +166,9 @@ def test_bench_client_rejects_bad_scheme():
 
 def test_create_task_contract(fake_http):
     fake = fake_http
-    fake._post_responses.append(_FakeResponse(json_data={"task_id": "t1", "status": "pending"}))
+    fake._post_responses.append(
+        _FakeResponse(json_data={"task_id": "t1", "status": "pending"})
+    )
     client = BenchClient()
     task = client.create_task(model="qwen", executor_key="speed", suite="s1")
     call = fake.post_calls[0]
@@ -422,8 +424,7 @@ def test_load_messages_short_conversation_untouched(tmp_path):
     loader, _ = _loader(tmp_path)
     f = tmp_path / "chat.jsonl"
     f.write_text(
-        json.dumps({"messages": [{"role": "user", "content": "hello"}]})
-        + "\n"
+        json.dumps({"messages": [{"role": "user", "content": "hello"}]}) + "\n"
     )
     train, val = loader.load_messages(path=str(f), val_ratio=0.0, max_seq_length=4096)
     assert len(train) == 1
@@ -438,15 +439,16 @@ def test_load_messages_budget_is_conversation_level(tmp_path):
     loader, _ = _loader(tmp_path)
     long = "x" * 6000
     f = tmp_path / "chat.jsonl"
-    f.write_text(
-        json.dumps({"messages": [{"role": "user", "content": long}]}) + "\n"
-    )
+    f.write_text(json.dumps({"messages": [{"role": "user", "content": long}]}) + "\n")
     train, _ = loader.load_messages(path=str(f), val_ratio=0.0, max_seq_length=4096)
     assert train[0]["messages"][0]["content"] == long
 
 
 def test_load_messages_trims_trailing_turns_on_budget(tmp_path):
-    # two turns far over budget: only the trailing assistant answer fits
+    # two turns far over budget: the trailing assistant answer fits, the
+    # user turn does not — the user query must be re-prepended (sliced)
+    # so the sample stays template-valid (a lone assistant turn makes
+    # upstream raise TemplateError, #76 flywheel round-1).
     loader, _ = _loader(tmp_path)
     f = tmp_path / "chat.jsonl"
     f.write_text(
@@ -463,21 +465,92 @@ def test_load_messages_trims_trailing_turns_on_budget(tmp_path):
     # max_seq_length 1024 -> budget 4096 chars
     train, _ = loader.load_messages(path=str(f), val_ratio=0.0, max_seq_length=1024)
     msgs = train[0]["messages"]
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "assistant"
-    assert len(msgs[0]["content"]) == 1000
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert len(msgs[0]["content"]) == 2048
+    assert len(msgs[1]["content"]) == 1000
 
 
 def test_load_messages_keeps_last_message_when_nothing_fits(tmp_path):
     loader, _ = _loader(tmp_path)
     f = tmp_path / "chat.jsonl"
     f.write_text(
+        json.dumps({"messages": [{"role": "user", "content": "u" * 9000}]}) + "\n"
+    )
+    train, _ = loader.load_messages(path=str(f), val_ratio=0.0, max_seq_length=1024)
+    msgs = train[0]["messages"]
+    assert len(msgs) == 1
+    assert len(msgs[0]["content"]) == 4096
+
+
+def test_load_messages_lone_assistant_fallback_keeps_user_pair(tmp_path):
+    # A [user, assistant] sample whose assistant turn alone exceeds the
+    # budget: the old zero-turn fallback kept ONLY the last message
+    # (assistant) → upstream TemplateError("No user query found in
+    # messages") killed the whole job (#76 flywheel round-1). Fallback
+    # must keep a template-valid user+assistant pair.
+    loader, _ = _loader(tmp_path)
+    f = tmp_path / "chat.jsonl"
+    f.write_text(
         json.dumps(
-            {"messages": [{"role": "user", "content": "u" * 9000}]}
+            {
+                "messages": [
+                    {"role": "user", "content": "write the parser"},
+                    {"role": "assistant", "content": "a" * 4133},
+                ]
+            }
+        )
+        + "\n"
+    )
+    train, _ = loader.load_messages(path=str(f), val_ratio=0.0, max_seq_length=1024)
+    msgs = train[0]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[0]["content"] == "write the parser"
+    assert len(msgs[1]["content"]) == 2048
+
+
+def test_load_messages_no_user_fallback_keeps_last_message(tmp_path):
+    # [system, assistant] with nothing fitting: no user turn exists, so
+    # the old last-message behavior stays (upstream fail-visible).
+    loader, _ = _loader(tmp_path)
+    f = tmp_path / "chat.jsonl"
+    f.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "system", "content": "s" * 9000},
+                    {"role": "assistant", "content": "a" * 9000},
+                ]
+            }
         )
         + "\n"
     )
     train, _ = loader.load_messages(path=str(f), val_ratio=0.0, max_seq_length=1024)
     msgs = train[0]["messages"]
     assert len(msgs) == 1
-    assert len(msgs[0]["content"]) == 4096
+    assert msgs[0]["role"] == "assistant"
+
+
+def test_load_messages_trim_keeps_assistant_drops_user_prepends_query(tmp_path):
+    # [user 3277, assistant 856] under 4096 budget: trim keeps the trailing
+    # assistant (fits) and drops the user turn (does not) → kept non-empty
+    # so the zero-turn fallback never fired → lone assistant → upstream
+    # TemplateError (#76 flywheel round-1 sample 12). Guard must prepend
+    # the user query.
+    loader, _ = _loader(tmp_path)
+    f = tmp_path / "chat.jsonl"
+    f.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "u" * 3277},
+                    {"role": "assistant", "content": "a" * 856},
+                ]
+            }
+        )
+        + "\n"
+    )
+    train, _ = loader.load_messages(path=str(f), val_ratio=0.0, max_seq_length=1024)
+    msgs = train[0]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert len(msgs[0]["content"]) == 2048
+    assert len(msgs[1]["content"]) == 856

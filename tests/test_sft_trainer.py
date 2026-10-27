@@ -1144,3 +1144,19 @@ class TestMLXConfigMemoryBudget:
             trainer._train_samples = [{"input": "Q", "output": "A"}]
             built = trainer._build_mlx_config()
             assert built["pack_sequences"] is True
+
+    def test_grad_checkpoint_omitted_by_default(self):
+        # Off by default AND key absent, not False — older fusion-mlx
+        # 400s on unknown keys (same pattern as pack_sequences).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = self._trainer(tmpdir)
+            trainer._train_samples = [{"input": "Q", "output": "A"}]
+            built = trainer._build_mlx_config()
+            assert "gradient_checkpointing" not in built
+
+    def test_grad_checkpoint_passed_through(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = self._trainer(tmpdir, gradient_checkpointing=True)
+            trainer._train_samples = [{"input": "Q", "output": "A"}]
+            built = trainer._build_mlx_config()
+            assert built["gradient_checkpointing"] is True

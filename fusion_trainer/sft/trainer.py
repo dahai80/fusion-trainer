@@ -149,7 +149,35 @@ class SFTTrainer:
         print("[4/4] Training...")
         result = self._run_training(train_loader, val_data)
 
+        # #76: if the dataset was built by `ft datasets from-eval`, the
+        # sidecar manifest carries the export sha256 — record it on the run
+        # result so every eval-fed SFT run is traceable to its source.
+        manifest = self._find_eval_manifest()
+        if manifest is not None:
+            result["source_export_sha256"] = manifest.get("export_sha256", "")
+            result["source_export_path"] = manifest.get("export_path", "")
+            logger.info(
+                "eval-fed run: source export sha256=%s (%s)",
+                str(result["source_export_sha256"])[:12],
+                result["source_export_path"],
+            )
+
         return result
+
+    def _find_eval_manifest(self) -> dict[str, Any] | None:
+        """Locate the from-eval manifest beside the configured dataset."""
+        try:
+            resolved = self._loader._resolve_path(
+                path=self.dataset_cfg.path,
+                hub_dataset=self.dataset_cfg.hub_dataset,
+                model_hub_path=self.config.model_hub_path,
+            )
+        except ValueError as exc:
+            logger.warning("could not resolve dataset path for eval manifest: %s", exc)
+            return None
+        from ..dataset.eval_ingest import find_eval_manifest
+
+        return find_eval_manifest(resolved)
 
     def _load_model(self) -> tuple[Any, Any]:
         """Verify the base model is available via fusion-mlx HTTP API.
@@ -390,6 +418,18 @@ class SFTTrainer:
         # FineTuneConfig.pack_sequences and would 400 on the unknown key.
         if self.sft_cfg.pack_sequences:
             cfg["pack_sequences"] = True
+        # Gradient (activation) checkpointing — recomputes activations in
+        # backward to cut peak memory ~order-of-magnitude on the activation
+        # side, at ~30% step-time cost. Required for LoRA on very large
+        # 8-bit models (27B-8bit + seq 4096 without it peaked past the
+        # admission-gate budget and panicked macOS). Key only sent when on:
+        # older fusion-mlx 400s on unknown keys (same pattern as pack_sequences).
+        if self.sft_cfg.gradient_checkpointing:
+            cfg["gradient_checkpointing"] = True
+            logger.info(
+                "gradient_checkpointing=True: activation recompute on — "
+                "peak memory down, step time ~30% up"
+            )
             logger.info(
                 "Sequence packing enabled: rows up to max_seq_length=%d, "
                 "block-diagonal attention mask (fusion-mlx #1400)",
@@ -500,7 +540,7 @@ class SFTTrainer:
             "steps_per_eval": max(self.sft_cfg.log_every * 5, 50),
             "steps_per_save": self.sft_cfg.save_every,
             "max_seq_length": self.dataset_cfg.max_seq_length,
-            "grad_checkpoint": False,
+            "grad_checkpoint": self.sft_cfg.gradient_checkpointing,
             "grad_accumulation_steps": self.sft_cfg.gradient_accumulation_steps,
             "seed": self.config.seed,
             "num_processes": 1,
@@ -984,8 +1024,7 @@ class SFTTrainer:
                 f"{mark}"
             )
         print(
-            f"      Selection basis: {selection['basis']} "
-            f"(table: {selection['path']})"
+            f"      Selection basis: {selection['basis']} (table: {selection['path']})"
         )
         if selection.get("fallback_reason"):
             print(f"      ⚠ {selection['fallback_reason']}")

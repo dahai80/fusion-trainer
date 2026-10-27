@@ -71,3 +71,10 @@ def test_cli_parse_hub_dataset_arg():
     result = runner.invoke(app, ["sft", "--help"])
     assert result.exit_code == 0
     assert "hub:" in result.stdout
+
+
+def test_cli_sft_init_adapter_path_flag():
+    """#76: `ft sft --init-adapter-path` exists for flywheel round chaining."""
+    result = runner.invoke(app, ["sft", "--help"])
+    assert result.exit_code == 0
+    assert "--init-adapter-path" in result.stdout

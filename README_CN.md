@@ -80,6 +80,13 @@ fusion-* 产品（消费层）
 
 > `--publish` 需要可访问的 Hub（`--hub-url` / `FUSION_MODEL_HUB_URL`）。自 fusion-gateway#316 起，gateway（`:11432`）已代理 Hub 的 `/api/v1/models`（已实测：注册 201、409 幂等、列表可经 gateway 查询），默认 `http://localhost:11432` + gateway API key 即可，无需单独的 Hub key。直连 Hub（`:11444` + `FUSION_MODEL_HUB_API_KEY`）也仍然可用。
 
+### 评测飞轮：数据摄取 + 曲线（issue #76）
+- **轨迹摄取** ✅ —— `ft datasets from-eval --export <trajectories.jsonl> --output <sft.jsonl> [--dpo-output <dpo.jsonl>]` 消费 fusion-eval 轨迹导出（[fusion-eval#6](https://github.com/dahai80/fusion-eval/issues/6)）：通过的轨迹转为 `{"messages": [...]}` SFT 样本（多轮保留，现有 `load_messages` 路径直接可训）；配合 `--all` 导出时，同一任务同时有通过+失败轨迹的样本被挖掘为 `{"prompt","chosen","rejected"}` DPO 偏好对（无通过对照的失败只大声计数，绝不伪造对）。
+- **来源可追溯** ✅ —— 每个 from-eval 数据集在旁边原子写入清单 `<output>.from_eval.json`（含导出 sha256）。`ft sft` 自动识别并在运行结果里记录 `source_export_sha256` / `source_export_path` —— 每个由评测数据喂养的训练运行都可追溯到其评测来源。
+- **轮次注册表 + 曲线** ✅ —— `ft flywheel record --label <名称> --summary <fusion-eval summary.json> --checkpoint <adapter 目录或底座模型 id> [--export <jsonl>] [--dataset <路径>]` 追加一轮记录（通过率、分类型通过率、导出哈希、评测 run id）到 `{cache_path}/flywheel.json`（原子写）。`ft flywheel status` 打印通过率-轮次曲线（含增量）、分类型通过率表与趋势线 —— 即验收证据：每轮均可由导出哈希追溯。
+- **轮次串联** ✅ —— `ft sft --init-adapter-path <adapter 目录>` 从上一轮的适配器目录初始化新 LoRA（最终权重或最新编号 checkpoint，走 #65 resume 路径暂存；步数计数从 0 开始）。用于飞轮训练轮次串联：第 N+1 轮在第 N 轮权重之上、以第 N 轮评测数据继续训练。
+- **真实轮次证据** ✅ —— Qwen3.8-27B-8bit、30 任务集：baseline 53.33% → fw-round1 73.33%（+20pp）→ fw-round2 63.33%（−10pp，testwrite 类型回归 3/3→0/3，全部 900s 超时 —— 链式过拟合信号）；`long-context` 与 `multi-turn-repair` 两个基线零分类型转非零并保持。完整曲线：`ft flywheel status`。
+
 ---
 
 ## 硬件参考

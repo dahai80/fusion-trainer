@@ -1,0 +1,304 @@
+"""Eval-trajectory ingestion for the flywheel loop (#76).
+
+Consumes fusion-eval#6 trajectory exports (JSONL, one record per task run):
+    {"schema_version": 1, "task_id", "task_type", "arm", "model", "passed",
+     "prompt", "messages": [{"role","content"}, ...], "final_diff"}
+
+and turns them into trainer-consumable datasets:
+    SFT  : passed-only records -> {"messages": [...]} (D1 messages schema,
+           the existing DatasetLoader.load_messages path trains on it)
+    DPO  : tasks with BOTH a passed and a failed trajectory ->
+           {"prompt", "chosen", "rejected"} (D1 dpo_pair schema)
+
+Every produced SFT dataset gets a sidecar manifest `<output>.from_eval.json`
+carrying the export sha256, so an SFT run fed by eval data can record its
+source (requirement 3 of #76).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+EVAL_EXPORT_SCHEMA_VERSION = 1
+MANIFEST_SUFFIX = ".from_eval.json"
+_REQUIRED_KEYS = ("task_id", "passed", "messages")
+
+
+class EvalIngestError(Exception):
+    pass
+
+
+def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_eval_export(path: Path) -> tuple[list[dict[str, Any]], str]:
+    """Load a fusion-eval trajectory export. Returns (records, sha256).
+
+    Records failing the schema check are skipped with a loud logged count —
+    fail-visible, never a silent partial conversion.
+    """
+    if not path.is_file():
+        raise EvalIngestError(f"eval export not found: {path}")
+    digest = sha256_file(path)
+    records: list[dict[str, Any]] = []
+    bad = 0
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError as exc:
+                bad += 1
+                logger.warning(
+                    "skip corrupt export line %d in %s: %s", lineno, path, exc
+                )
+                continue
+            if not isinstance(rec, dict):
+                bad += 1
+                logger.warning("skip non-object export line %d in %s", lineno, path)
+                continue
+            version = rec.get("schema_version")
+            if version != EVAL_EXPORT_SCHEMA_VERSION:
+                bad += 1
+                logger.warning(
+                    "skip export line %d: schema_version=%r != %d",
+                    lineno,
+                    version,
+                    EVAL_EXPORT_SCHEMA_VERSION,
+                )
+                continue
+            missing = [k for k in _REQUIRED_KEYS if k not in rec]
+            if missing:
+                bad += 1
+                logger.warning(
+                    "skip export line %d (task %s): missing keys %s",
+                    lineno,
+                    rec.get("task_id", "?"),
+                    missing,
+                )
+                continue
+            records.append(rec)
+    if not records:
+        raise EvalIngestError(
+            f"no valid trajectory records in {path} (skipped {bad} bad lines)"
+        )
+    if bad:
+        logger.warning(
+            "loaded %d records from %s, skipped %d bad lines", len(records), path, bad
+        )
+    logger.info(
+        "loaded %d trajectory records from %s (sha256=%s)",
+        len(records),
+        path,
+        digest[:12],
+    )
+    return records, digest
+
+
+def _valid_messages(messages: Any) -> bool:
+    if not isinstance(messages, list) or not messages:
+        return False
+    for m in messages:
+        if not isinstance(m, dict):
+            return False
+        if m.get("role") not in ("user", "assistant", "system", "tool"):
+            return False
+        if not isinstance(m.get("content"), str) or not m["content"].strip():
+            return False
+    return True
+
+
+def eval_records_to_sft(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Passed-only records -> D1 messages samples. Multi-turn preserved."""
+    samples = []
+    skipped = 0
+    for rec in records:
+        if not rec.get("passed"):
+            continue
+        messages = rec.get("messages")
+        if not _valid_messages(messages):
+            skipped += 1
+            logger.warning(
+                "skip passed trajectory %s: empty/invalid messages",
+                rec.get("task_id", "?"),
+            )
+            continue
+        samples.append(
+            {
+                "messages": [
+                    {"role": m["role"], "content": m["content"]} for m in messages
+                ]
+            }
+        )
+    if skipped:
+        logger.warning("%d passed trajectories skipped (invalid messages)", skipped)
+    logger.info(
+        "built %d SFT samples from %d trajectory records", len(samples), len(records)
+    )
+    return samples
+
+
+def mine_preference_pairs(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Failure mining: same task_id with BOTH passed and failed trajectories
+    -> DPO pairs {prompt, chosen, rejected}.
+
+    chosen = the passed trajectory's assistant turns joined; rejected = the
+    failed one's. Records without a passed sibling are NOT mined — a rejected
+    answer with no chosen reference is not a preference pair (fail-visible
+    count in the returned log, not a fabricated pair).
+    """
+    by_task: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for rec in records:
+        by_task.setdefault(str(rec.get("task_id", "")), {"passed": [], "failed": []})
+        slot = "passed" if rec.get("passed") else "failed"
+        if _valid_messages(rec.get("messages")):
+            by_task[str(rec.get("task_id", ""))][slot].append(rec)
+    pairs = []
+    unpaired_failures = 0
+    for task_id, slots in sorted(by_task.items()):
+        if not slots["passed"]:
+            unpaired_failures += len(slots["failed"])
+            continue
+        chosen_rec = slots["passed"][0]
+        prompt = str(chosen_rec.get("prompt") or "")
+        if not prompt:
+            unpaired_failures += len(slots["failed"])
+            continue
+        chosen = "\n\n".join(
+            m["content"] for m in chosen_rec["messages"] if m["role"] == "assistant"
+        )
+        for failed_rec in slots["failed"]:
+            rejected = "\n\n".join(
+                m["content"] for m in failed_rec["messages"] if m["role"] == "assistant"
+            )
+            if not chosen.strip() or not rejected.strip():
+                unpaired_failures += 1
+                continue
+            pairs.append(
+                {
+                    "prompt": prompt,
+                    "chosen": chosen,
+                    "rejected": rejected,
+                    "task_id": task_id,
+                }
+            )
+    if unpaired_failures:
+        logger.warning(
+            "%d failed trajectories not mined (no passed sibling for their task)",
+            unpaired_failures,
+        )
+    logger.info("mined %d DPO preference pairs from %d tasks", len(pairs), len(by_task))
+    return pairs
+
+
+def _per_type_counts(records: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+    for rec in records:
+        ttype = str(rec.get("task_type", "unknown"))
+        slot = "passed" if rec.get("passed") else "failed"
+        entry = counts.setdefault(ttype, {"total": 0, "passed": 0, "failed": 0})
+        entry["total"] += 1
+        entry[slot] += 1
+    return counts
+
+
+def build_from_eval_dataset(
+    export_path: Path,
+    output_path: Path,
+    dpo_output_path: Path | None = None,
+) -> dict[str, Any]:
+    """Full ingestion: export -> SFT dataset (+ optional DPO pairs) + manifest.
+
+    The manifest is written next to the SFT dataset as `<output>.from_eval.json`
+    and carries the export sha256 — SFTTrainer picks it up automatically so
+    every eval-fed run records its source (#76 requirement 3).
+    """
+    records, digest = load_eval_export(export_path)
+    sft_samples = eval_records_to_sft(records)
+    if not sft_samples:
+        raise EvalIngestError(
+            f"no passed trajectories with valid messages in {export_path} — "
+            "nothing to train on (use a passed-inclusive export)"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as fh:
+        for sample in sft_samples:
+            fh.write(json.dumps(sample, ensure_ascii=False) + "\n")
+    logger.info("wrote %d SFT samples to %s", len(sft_samples), output_path)
+
+    dpo_pairs: list[dict[str, Any]] = []
+    if dpo_output_path is not None:
+        dpo_pairs = mine_preference_pairs(records)
+        dpo_output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(dpo_output_path, "w", encoding="utf-8") as fh:
+            for pair in dpo_pairs:
+                fh.write(json.dumps(pair, ensure_ascii=False) + "\n")
+        logger.info("wrote %d DPO pairs to %s", len(dpo_pairs), dpo_output_path)
+
+    manifest = {
+        "source": "fusion-eval",
+        "export_path": str(export_path),
+        "export_sha256": digest,
+        "sft_path": str(output_path),
+        "sft_samples": len(sft_samples),
+        "dpo_path": str(dpo_output_path) if dpo_output_path else "",
+        "dpo_pairs": len(dpo_pairs),
+        "records_total": len(records),
+        "records_passed": sum(1 for r in records if r.get("passed")),
+        "records_failed": sum(1 for r in records if not r.get("passed")),
+        "per_type": _per_type_counts(records),
+    }
+    manifest_path = Path(str(output_path) + MANIFEST_SUFFIX)
+    tmp_path = Path(str(manifest_path) + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, manifest_path)
+    logger.info("wrote manifest %s (export sha256=%s)", manifest_path, digest[:12])
+    return manifest
+
+
+def find_eval_manifest(dataset_path: str | Path) -> dict[str, Any] | None:
+    """Return the from-eval manifest for a dataset file, or None.
+
+    Checked locations: `<dataset>.from_eval.json` next to the file, and (for
+    hub datasets resolved into `{hub}/datasets/<name>.jsonl`) the same suffix
+    on the resolved file.
+    """
+    if not dataset_path:
+        return None
+    p = Path(dataset_path)
+    candidates = [Path(str(p) + MANIFEST_SUFFIX)]
+    if p.suffix == ".jsonl":
+        candidates.append(p.with_name(p.name + MANIFEST_SUFFIX))
+    for cand in candidates:
+        if cand.is_file():
+            try:
+                data = json.loads(cand.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                logger.warning("unreadable eval manifest %s: %s", cand, exc)
+                return None
+            if isinstance(data, dict) and data.get("export_sha256"):
+                logger.info(
+                    "dataset %s is eval-fed (export sha256=%s)",
+                    p,
+                    str(data.get("export_sha256"))[:12],
+                )
+                return data
+    return None

@@ -213,21 +213,79 @@ class DatasetLoader:
                         mlen = len(str(m.get("content", "")))
                         if used + mlen > budget:
                             break
-                        kept.append(
-                            {"role": m["role"], "content": str(m["content"])}
-                        )
+                        kept.append({"role": m["role"], "content": str(m["content"])})
                         used += mlen
                     kept.reverse()
                     # Never keep zero turns — keep at least the last message,
                     # over-budget, so upstream token-level truncation (not an
                     # empty sample) handles the extreme case.
                     if not kept:
-                        kept = [
+                        # A lone assistant turn is NOT template-valid —
+                        # upstream raises TemplateError("No user query found
+                        # in messages") and the whole job dies (seen live on
+                        # the #76 flywheel round-1 run). Keep the last user
+                        # query + the final answer, each hard-sliced, so the
+                        # sample stays a well-formed exchange.
+                        last_user = next(
+                            (
+                                m
+                                for m in reversed(messages[:-1])
+                                if m.get("role") == "user"
+                            ),
+                            None,
+                        )
+                        if last_user is not None:
+                            kept = [
+                                {
+                                    "role": "user",
+                                    "content": str(last_user.get("content", ""))[
+                                        : budget // 2
+                                    ],
+                                },
+                                {
+                                    "role": "assistant",
+                                    "content": str(messages[-1].get("content", ""))[
+                                        : budget // 2
+                                    ],
+                                },
+                            ]
+                        else:
+                            kept = [
+                                {
+                                    "role": messages[-1]["role"],
+                                    "content": str(messages[-1]["content"])[:budget],
+                                }
+                            ]
+                    if (
+                        kept
+                        and "user" not in {m["role"] for m in kept}
+                        and any(m.get("role") == "user" for m in messages[:-1])
+                    ):
+                        # Trim kept trailing assistant turn(s) but dropped
+                        # every user turn (user turn alone over budget): a
+                        # lone assistant conversation is not template-valid —
+                        # upstream raises TemplateError("No user query found
+                        # in messages") and the job dies (#76 flywheel
+                        # round-1). Prepend the last user query, hard-sliced;
+                        # upstream token-level truncation absorbs any
+                        # residual over-budget.
+                        last_user = next(
+                            (
+                                m
+                                for m in reversed(messages[:-1])
+                                if m.get("role") == "user"
+                            ),
+                            None,
+                        )
+                        kept.insert(
+                            0,
                             {
-                                "role": messages[-1]["role"],
-                                "content": str(messages[-1]["content"])[:budget],
-                            }
-                        ]
+                                "role": "user",
+                                "content": str(last_user.get("content", ""))[
+                                    : budget // 2
+                                ],
+                            },
+                        )
                     messages = kept
             normalized.append({"messages": messages})
 

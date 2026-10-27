@@ -5,9 +5,12 @@ Commands:
     fusion-trainer sft           Run supervised fine-tuning
     fusion-trainer rlsl          Run RLSL/DPO/ORPO alignment
     fusion-trainer info          System info & hardware check
+    fusion-trainer datasets      Build trainer datasets from eval artifacts (#76)
+    fusion-trainer flywheel      Eval-flywheel round registry (#76)
 
 Dataset management (import, list, info) is handled by the companion
-project fusion-model-hub, NOT by Fusion-Trainer.
+project fusion-model-hub, NOT by Fusion-Trainer. The `datasets` group only
+converts fusion-eval trajectory exports into training-ready files.
 """
 
 from __future__ import annotations
@@ -152,6 +155,22 @@ def sft(
         "(fusion-mlx#1400, requires fusion-mlx >= 0.10.17). Changes batch "
         "composition — results not byte-comparable with unpacked runs.",
     ),
+    gradient_checkpointing: bool = typer.Option(
+        False,
+        "--grad-checkpoint/--no-grad-checkpoint",
+        help="Gradient (activation) checkpointing: recompute activations in "
+        "backward to cut peak memory at ~30% step-time cost. Required for "
+        "LoRA on very large 8-bit models (27B-8bit + seq 4096 without it "
+        "exhausts unified memory and panics macOS).",
+    ),
+    init_adapter_path: str = typer.Option(
+        "",
+        "--init-adapter-path",
+        help="SFT adapter dir to initialize from (fusion-mlx #1182). Loads "
+        "adapters.safetensors (or the newest numbered checkpoint) into the "
+        "fresh LoRA layers before training; step counter restarts at 0. "
+        "Use for multi-round flywheel chaining (#76). Empty = fresh LoRA.",
+    ),
     model_hub_path: str = typer.Option(
         "",
         "--model-hub-path",
@@ -280,20 +299,47 @@ def sft(
         num_epochs=num_epochs,
         use_mxfp8=use_mxfp8,
         pack_sequences=pack_sequences
-        or bool(_resolve(src, "pack_sequences", False, preset_vals, yaml_vals, default=False)),
+        or bool(
+            _resolve(
+                src, "pack_sequences", False, preset_vals, yaml_vals, default=False
+            )
+        ),
+        gradient_checkpointing=gradient_checkpointing
+        or bool(
+            _resolve(
+                src,
+                "gradient_checkpointing",
+                False,
+                preset_vals,
+                yaml_vals,
+                default=False,
+            )
+        ),
+        init_adapter_path=init_adapter_path,
         run_name=run_name,
         output_dir=output_dir,
         # issue #75: checkpoint eval/selection wiring
         eval_select=eval_select
-        or bool(_resolve(src, "eval_select", False, preset_vals, yaml_vals, default=False)),
+        or bool(
+            _resolve(src, "eval_select", False, preset_vals, yaml_vals, default=False)
+        ),
         bench_url=bench_url
         or str(_resolve(src, "bench_url", "", preset_vals, yaml_vals, default="")),
         bench_api_key=bench_api_key
         or str(_resolve(src, "bench_api_key", "", preset_vals, yaml_vals, default="")),
         bench_tenant_id=bench_tenant_id
-        or str(_resolve(src, "bench_tenant_id", "", preset_vals, yaml_vals, default="")),
+        or str(
+            _resolve(src, "bench_tenant_id", "", preset_vals, yaml_vals, default="")
+        ),
         bench_executor=str(
-            _resolve(src, "bench_executor", bench_executor, preset_vals, yaml_vals, default="speed")
+            _resolve(
+                src,
+                "bench_executor",
+                bench_executor,
+                preset_vals,
+                yaml_vals,
+                default="speed",
+            )
         ),
     )
     # Non-CLI-exposed fields: preset > YAML > dataclass default.
@@ -1595,6 +1641,153 @@ def voice_train(
             err=True,
         )
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Eval flywheel (#76): fusion-eval trajectory ingestion + round registry
+# ---------------------------------------------------------------------------
+
+
+datasets_app = typer.Typer(help="Build trainer datasets from eval artifacts")
+flywheel_app = typer.Typer(
+    help="Flywheel round registry: checkpoint -> eval run -> pass rate"
+)
+app.add_typer(datasets_app, name="datasets")
+app.add_typer(flywheel_app, name="flywheel")
+
+
+@datasets_app.command(name="from-eval")
+def datasets_from_eval(
+    export_file: str = typer.Option(
+        ...,
+        "--export",
+        "-e",
+        help="fusion-eval trajectory export JSONL (fusion-eval export --run <id>)",
+    ),
+    output_file: str = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="Output SFT dataset path (messages-JSONL, fed to `ft sft --dataset`)",
+    ),
+    dpo_output: str = typer.Option(
+        "",
+        "--dpo-output",
+        help="Optional: also mine DPO preference pairs to this path (needs an "
+        "--all export with failed trajectories)",
+    ),
+):
+    """Build an SFT dataset from passed eval trajectories (#76).
+
+    Passed-only records become {"messages": [...]} samples the existing SFT
+    path trains on as-is. A sidecar manifest `<output>.from_eval.json`
+    records the export sha256 — `ft sft` picks it up automatically and
+    reports the run's eval source.
+    """
+    from pathlib import Path
+
+    from fusion_trainer.dataset.eval_ingest import (
+        EvalIngestError,
+        build_from_eval_dataset,
+    )
+
+    try:
+        manifest = build_from_eval_dataset(
+            Path(export_file),
+            Path(output_file),
+            Path(dpo_output) if dpo_output else None,
+        )
+    except EvalIngestError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"SFT dataset: {manifest['sft_samples']} samples -> {manifest['sft_path']} "
+        f"({manifest['records_passed']} passed / {manifest['records_total']} records)"
+    )
+    if manifest["dpo_path"]:
+        typer.echo(f"DPO pairs:    {manifest['dpo_pairs']} -> {manifest['dpo_path']}")
+    typer.echo(f"Export sha256: {manifest['export_sha256']}")
+    typer.echo(
+        f"Manifest:      {manifest['sft_path']}.from_eval.json "
+        "(ft sft records this run's eval source automatically)"
+    )
+
+
+@flywheel_app.command(name="record")
+def flywheel_record(
+    label: str = typer.Option(
+        ..., "--label", help="Round label (e.g. baseline, round-1-sft, round-2-sft)"
+    ),
+    summary: str = typer.Option(
+        ...,
+        "--summary",
+        help="fusion-eval run summary.json (results/<run_id>/summary.json)",
+    ),
+    checkpoint: str = typer.Option(
+        "",
+        "--checkpoint",
+        help="Trained adapter path (or base model id for a baseline round)",
+    ),
+    arm: str = typer.Option(
+        "", "--arm", help="Eval arm to record (default: first arm)"
+    ),
+    export: str = typer.Option(
+        "",
+        "--export",
+        help="Trajectory export JSONL this round trained on (sha256 recorded)",
+    ),
+    dataset: str = typer.Option(
+        "", "--dataset", help="SFT dataset path used by this round"
+    ),
+    run_id: str = typer.Option(
+        "", "--run-id", help="fusion-trainer run id for this round"
+    ),
+    cache_path: str = typer.Option(
+        "",
+        "--cache-path",
+        help="Cache dir holding flywheel.json (default: FUSION_TRAINER_CACHE)",
+    ),
+):
+    """Record a flywheel round from a fusion-eval summary (#76)."""
+    from pathlib import Path
+
+    from fusion_trainer.config import _default_cache_path
+    from fusion_trainer.flywheel import FlywheelError, record_round
+
+    try:
+        entry = record_round(
+            cache_path or _default_cache_path(),
+            label=label,
+            checkpoint=checkpoint,
+            summary_path=Path(summary),
+            arm=arm,
+            export_path=export,
+            dataset_path=dataset,
+            run_id=run_id,
+        )
+    except FlywheelError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"Recorded round {label!r}: eval_run={entry['eval_run_id']} "
+        f"pass_rate={entry['pass_rate']:.4f} ({entry['passed']}/{entry['total']})"
+        + (f" export={entry['export_sha256'][:12]}" if entry["export_sha256"] else "")
+    )
+
+
+@flywheel_app.command(name="status")
+def flywheel_status(
+    cache_path: str = typer.Option(
+        "",
+        "--cache-path",
+        help="Cache dir holding flywheel.json (default: FUSION_TRAINER_CACHE)",
+    ),
+):
+    """Print the pass-rate-vs-round curve (#76 acceptance evidence)."""
+    from fusion_trainer.config import _default_cache_path
+    from fusion_trainer.flywheel import format_status
+
+    typer.echo(format_status(cache_path or _default_cache_path()))
 
 
 # ---------------------------------------------------------------------------
