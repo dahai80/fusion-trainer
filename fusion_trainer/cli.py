@@ -1673,8 +1673,16 @@ def datasets_from_eval(
     dpo_output: str = typer.Option(
         "",
         "--dpo-output",
-        help="Optional: also mine DPO preference pairs to this path (needs an "
-        "--all export with failed trajectories)",
+        help="Optional: also mine DPO preference pairs to this path. Requires a "
+        "MULTI-ARM export (fusion-eval run --arm <a> --arm <b>) so tasks can "
+        "have both a passed and a failed trajectory — a single-arm export is "
+        "structurally empty and raises (#78).",
+    ),
+    dpo_anyway: bool = typer.Option(
+        False,
+        "--dpo-anyway",
+        help="Write the DPO output even when mining is structurally empty "
+        "(single-arm export) — writes a 0-pair file with a loud warning",
     ),
 ):
     """Build an SFT dataset from passed eval trajectories (#76).
@@ -1696,6 +1704,7 @@ def datasets_from_eval(
             Path(export_file),
             Path(output_file),
             Path(dpo_output) if dpo_output else None,
+            dpo_allow_empty=dpo_anyway,
         )
     except EvalIngestError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1705,7 +1714,15 @@ def datasets_from_eval(
         f"({manifest['records_passed']} passed / {manifest['records_total']} records)"
     )
     if manifest["dpo_path"]:
-        typer.echo(f"DPO pairs:    {manifest['dpo_pairs']} -> {manifest['dpo_path']}")
+        note = (
+            " (STRUCTURALLY EMPTY — single-arm export)"
+            if manifest.get("dpo_structurally_empty")
+            else ""
+        )
+        typer.echo(
+            f"DPO pairs:    {manifest['dpo_pairs']} -> {manifest['dpo_path']}{note}"
+        )
+    typer.echo(f"Arms:         {', '.join(manifest.get('arms', []))}")
     typer.echo(f"Export sha256: {manifest['export_sha256']}")
     typer.echo(
         f"Manifest:      {manifest['sft_path']}.from_eval.json "

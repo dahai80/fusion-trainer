@@ -20,7 +20,8 @@ Env:
   FUSION_MLX_MODEL            default base model alias
   FUSION_TRAINER_BRIDGE_PRESETS  preset registry JSON (editable without release)
   FUSION_SHELL_GATEWAY_URL    gateway base — enables shell registration (#72)
-  FUSION_GATEWAY_ADMIN_KEY    gateway key authorized for /api/v1/shell/*
+  FUSION_ADMIN_KEY            gateway key authorized for /api/v1/shell/*
+                              (fusion_core.config.admin_key, #80)
 """
 
 from __future__ import annotations
@@ -55,7 +56,18 @@ BRIDGE_PORT = int(os.environ.get("FUSION_TRAINER_BRIDGE_PORT", "8790"))
 # env var name and never inherits an ambient FUSION_MLX_PORT (which points
 # at the gateway in console shells).
 MLX_PORT = int(os.environ.get("FUSION_TRAINER_MLX_PORT", "11434"))
-BRIDGE_KEY = os.environ.get("FUSION_TRAINER_BRIDGE_KEY", "")
+# Console -> bridge auth: the gateway client key (config-conventions §5.1 —
+# the only credential a business process holds); the legacy
+# FUSION_TRAINER_BRIDGE_KEY is accepted as a transition fallback.
+try:
+    from fusion_core.config import client_key as _client_key
+except ImportError:  # pragma: no cover
+
+    def _client_key() -> str:
+        return ""
+
+
+BRIDGE_KEY = os.environ.get("FUSION_TRAINER_BRIDGE_KEY", "") or _client_key()
 
 # Default tuning target: the assistant base model. The bridge stays
 # generic — any fusion-mlx model alias is accepted per request.
@@ -107,7 +119,7 @@ async def _lifespan(_: Any):
     else:
         logger.info(
             "shell registration disabled — set FUSION_SHELL_GATEWAY_URL + "
-            "FUSION_GATEWAY_ADMIN_KEY to list the console in the shell sidebar"
+            "FUSION_ADMIN_KEY to list the console in the shell sidebar"
         )
     try:
         yield
@@ -715,6 +727,19 @@ async def index():
 
 if __name__ == "__main__":
     import uvicorn
+
+    # Show the product name in ps/Activity Monitor instead of bare "Python"
+    # (#77). setproctitle is the only reliable way on macOS homebrew Python
+    # (exec -a is overwritten by the Python.app argv). Optional dep: keep
+    # running with the default title if it is missing.
+    try:
+        import setproctitle
+
+        setproctitle.setproctitle(f"fusion-trainer bridge :{BRIDGE_PORT}")
+    except Exception as exc:
+        logging.getLogger("fusion_trainer.bridge").warning(
+            "setproctitle unavailable, process title stays default: %s", exc
+        )
 
     logging.basicConfig(
         level=logging.INFO,

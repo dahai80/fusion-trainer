@@ -35,7 +35,8 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FUSION_TRAINER_CACHE", str(tmp_path))
     for var in (
         "FUSION_SHELL_GATEWAY_URL",
-        "FUSION_GATEWAY_ADMIN_KEY",
+        "FUSION_ADMIN_KEY",
+        "FUSION_PROFILE",
         "FUSION_SHELL_UPSTREAM",
         "FUSION_SHELL_MANIFEST",
     ):
@@ -126,8 +127,17 @@ def test_registration_enabled_requires_both_env(clean_env, monkeypatch):
     assert not sr.shell_registration_enabled()
     monkeypatch.setenv("FUSION_SHELL_GATEWAY_URL", "http://127.0.0.1:11432")
     assert not sr.shell_registration_enabled()
-    monkeypatch.setenv("FUSION_GATEWAY_ADMIN_KEY", "fg-key")
+    monkeypatch.setenv("FUSION_ADMIN_KEY", "fg-key")
     assert sr.shell_registration_enabled()
+
+
+def test_prod_missing_admin_key_disables_not_fatal(clean_env, monkeypatch):
+    # #80: fusion_core.config.admin_key raises in prod when unset — the
+    # bridge must degrade to disabled registration with a warning, never die.
+    monkeypatch.setenv("FUSION_SHELL_GATEWAY_URL", "http://127.0.0.1:11432")
+    monkeypatch.setenv("FUSION_PROFILE", "prod")
+    monkeypatch.delenv("FUSION_ADMIN_KEY", raising=False)
+    assert not sr.shell_registration_enabled()
 
 
 def test_default_manifest_is_valid():
@@ -147,7 +157,7 @@ def test_default_manifest_is_valid():
 def _run_loop(client, ticks):
     monkey_env = {
         "FUSION_SHELL_GATEWAY_URL": "http://127.0.0.1:11432",
-        "FUSION_GATEWAY_ADMIN_KEY": "fg-key",
+        "FUSION_ADMIN_KEY": "fg-key",
     }
     old = {}
     for k, v in monkey_env.items():

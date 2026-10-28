@@ -33,11 +33,38 @@ class TestAdminRouteHeader:
         assert client._headers.get("X-Fusion-Route") == "admin"
         assert client._headers.get("Authorization") == "Bearer secret-token"
 
-    def test_no_auth_header_without_token(self, monkeypatch):
+    def test_no_auth_header_without_token(self, monkeypatch, tmp_path):
+        # #80: resolve_api_key falls back to ~/.fusion-mlx/settings.json —
+        # point HOME at an empty tmp dir and clear the fusion_core settings
+        # cache so the test is hermetic on machines that DO have the file.
+        import fusion_core.config as fc_config
+
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.delenv("FUSION_MLX_ADMIN_TOKEN", raising=False)
+        fc_config._SETTINGS_CACHE.clear()
         client = MLXFineTuneClient(port=11434)
         assert client._headers.get("X-Fusion-Route") == "admin"
         assert "Authorization" not in client._headers
+        fc_config._SETTINGS_CACHE.clear()
+
+    def test_settings_json_fallback_auth(self, monkeypatch, tmp_path):
+        # #80: no env token, but ~/.fusion-mlx/settings.json carries
+        # auth.api_key — resolve_api_key picks it up as the Bearer token.
+        import fusion_core.config as fc_config
+
+        settings_dir = tmp_path / ".fusion-mlx"
+        settings_dir.mkdir()
+        (settings_dir / "settings.json").write_text(
+            '{"auth": {"api_key": "settings-json-token"}}'
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("FUSION_MLX_ADMIN_TOKEN", raising=False)
+        fc_config._SETTINGS_CACHE.clear()
+        try:
+            client = MLXFineTuneClient(port=11434)
+            assert client._headers.get("Authorization") == "Bearer settings-json-token"
+        finally:
+            fc_config._SETTINGS_CACHE.clear()
 
     def test_explicit_token_overrides_env(self, monkeypatch):
         monkeypatch.setenv("FUSION_MLX_ADMIN_TOKEN", "env-token")

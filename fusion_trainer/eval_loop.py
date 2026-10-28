@@ -177,9 +177,13 @@ class BenchClient:
         if dataset:
             body["dataset"] = dataset
         url = f"{self._base}{BENCH_TASKS_PATH}"
-        logger.info("bench create_task: POST %s model=%s executor=%s", url, model, executor_key)
+        logger.info(
+            "bench create_task: POST %s model=%s executor=%s", url, model, executor_key
+        )
         try:
-            resp = httpx.post(url, json=body, headers=self._headers, timeout=self._timeout)
+            resp = httpx.post(
+                url, json=body, headers=self._headers, timeout=self._timeout
+            )
         except httpx.HTTPError as exc:
             raise BenchError(f"bench POST transport error: {exc}") from exc
         if resp.status_code >= 400:
@@ -189,7 +193,9 @@ class BenchClient:
         try:
             task = resp.json()
         except ValueError as exc:
-            raise BenchError(f"bench POST {url} returned non-JSON: {resp.text[:200]}") from exc
+            raise BenchError(
+                f"bench POST {url} returned non-JSON: {resp.text[:200]}"
+            ) from exc
         if not task.get("task_id"):
             raise BenchError(f"bench POST {url} returned no task_id: {task}")
         return task
@@ -206,7 +212,9 @@ class BenchClient:
             )
         data = resp.json()
         if not isinstance(data, dict):
-            raise BenchError(f"bench GET {url} returned non-dict: {type(data).__name__}")
+            raise BenchError(
+                f"bench GET {url} returned non-dict: {type(data).__name__}"
+            )
         return data
 
     def wait_for_task(
@@ -235,7 +243,9 @@ class BenchClient:
             if status in _TERMINAL_STATUSES:
                 return task
             time.sleep(poll_interval)
-        raise BenchError(f"bench task {task_id} did not reach terminal status within {timeout}s")
+        raise BenchError(
+            f"bench task {task_id} did not reach terminal status within {timeout}s"
+        )
 
     def run_benchmark(
         self,
@@ -320,7 +330,9 @@ def stage_checkpoint_for_serving(
     dest = stage / "adapters.safetensors"
     shutil.copy2(checkpoint_file, dest)
     logger.info(
-        "staged checkpoint %s -> %s", checkpoint_file, dest,
+        "staged checkpoint %s -> %s",
+        checkpoint_file,
+        dest,
     )
     return str(stage)
 
@@ -411,7 +423,9 @@ def run_checkpoint_eval(
                 except BenchError as exc:
                     # One unreachable bench = every remaining row unscorable.
                     logger.warning(
-                        "checkpoint eval: bench unavailable at %s — %s", row["checkpoint"], exc,
+                        "checkpoint eval: bench unavailable at %s — %s",
+                        row["checkpoint"],
+                        exc,
                     )
                     bench_status = "unavailable"
                     for rest in table:

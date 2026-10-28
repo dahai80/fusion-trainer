@@ -14,7 +14,10 @@ server._auth accepts alongside the static FUSION_TRAINER_BRIDGE_KEY.
 
 Env-gated — requires BOTH:
   FUSION_SHELL_GATEWAY_URL   gateway base, e.g. http://127.0.0.1:11432
-  FUSION_GATEWAY_ADMIN_KEY   a gateway key authorized for /api/v1/shell/*
+  FUSION_ADMIN_KEY           a gateway key authorized for /api/v1/shell/*
+                             (resolved via fusion_core.config.admin_key, #80;
+                             FUSION_PROFILE=prod missing key disables
+                             registration with a loud warning — never fatal)
 
 Optional:
   FUSION_SHELL_UPSTREAM      proxy target override (default
@@ -37,11 +40,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from fusion_core.config import admin_key as fc_admin_key
 
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL_ENV = "FUSION_SHELL_GATEWAY_URL"
-ADMIN_KEY_ENV = "FUSION_GATEWAY_ADMIN_KEY"
+# #80: admin-key resolution lives in fusion_core.config (FUSION_ADMIN_KEY);
+# ADMIN_KEY_ENV kept only as the documented env name for error messages.
+ADMIN_KEY_ENV = "FUSION_ADMIN_KEY"
 MANIFEST_PATH_ENV = "FUSION_SHELL_MANIFEST"
 UPSTREAM_ENV = "FUSION_SHELL_UPSTREAM"
 MODULE_KEY_ENV = "FUSION_TRAINER_BRIDGE_KEY"
@@ -97,6 +103,16 @@ def accepted_bridge_keys() -> list[str]:
     env_key = os.environ.get(MODULE_KEY_ENV, "").strip()
     if env_key:
         keys.append(env_key)
+    # config-conventions §5.1: the gateway client key is the contract
+    # credential business processes hold — the console sends it as Bearer.
+    try:
+        from fusion_core.config import client_key
+
+        ck = client_key().strip()
+        if ck and ck not in keys:
+            keys.append(ck)
+    except ImportError:  # pragma: no cover
+        pass
     issued = load_module_key()
     if issued and issued not in keys:
         keys.append(issued)
@@ -147,10 +163,21 @@ def build_registration_payload(manifest: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _gateway_admin_key() -> str:
+    # #80: single-point resolution via fusion_core.config.admin_key
+    # (env FUSION_ADMIN_KEY; prod-missing raises, dev-missing warns + "").
+    # A prod raise here would kill the bridge, so it degrades to a loud
+    # warning + disabled registration — registration is never fatal.
+    try:
+        return fc_admin_key().strip()
+    except RuntimeError as e:
+        logger.warning("shell registration disabled: %s", e)
+        return ""
+
+
 def shell_registration_enabled() -> bool:
     gateway = os.environ.get(GATEWAY_URL_ENV, "").strip()
-    admin_key = os.environ.get(ADMIN_KEY_ENV, "").strip()
-    return bool(gateway and admin_key)
+    return bool(gateway and _gateway_admin_key())
 
 
 def load_manifest() -> dict[str, Any]:
@@ -181,7 +208,7 @@ async def _registry_loop_body(
 ) -> None:
     module_id = str(manifest["id"])
     gateway = os.environ.get(GATEWAY_URL_ENV, "").strip().rstrip("/")
-    admin_key = os.environ.get(ADMIN_KEY_ENV, "").strip()
+    admin_key = _gateway_admin_key()
     admin_headers = {
         "Authorization": f"Bearer {admin_key}",
         "Content-Type": "application/json",

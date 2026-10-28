@@ -7,6 +7,80 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc20] - 2026-10-28
+
+Patch release: process-title remediation (#77), flywheel round-2 residual
+closure (#78) — single-arm DPO gate, feature-type failure-mode analysis,
+and the round-3 fresh-data experiment — plus dependency hygiene (#79) and
+fusion_core.config single-point env resolution (#80).
+
+### Changed
+- **#80** — env/config resolution adopted from `fusion_core.config` v0.7.0
+  (pin bumped v0.5.0 → v0.7.0). `MLXFineTuneClient` resolves the engine
+  token via `resolve_api_key(env_var="FUSION_MLX_ADMIN_TOKEN")` — env first,
+  then `~/.fusion-mlx/settings.json` `auth.api_key` (the fallback
+  `trainer-bridge.sh` always did by hand, now in-process). `TrainerConfig`
+  port/hub defaults via `service_port`/`get_env` (same env names:
+  `FUSION_MLX_PORT`, `FUSION_MODEL_HUB_URL`, `FUSION_MODEL_HUB_API_KEY` —
+  no behavior change). Shell registration resolves its gateway key via
+  `fusion_core.config.admin_key`, and the legacy `FUSION_GATEWAY_ADMIN_KEY`
+  env name is renamed `FUSION_ADMIN_KEY` everywhere (scripts, docs, tests);
+  a prod-profile missing key disables registration with a loud warning —
+  never fatal to the bridge. `tests/test_mlx_client.py` auth tests made
+  hermetic (HOME → tmp_path + `_SETTINGS_CACHE` cleared) plus a new
+  settings.json-fallback test. Workspace `check-env.py`: zero findings in
+  fusion-trainer source.
+
+### Dependencies
+- **#79** — vision extras: `opencv-python>=4.8.0` →
+  `opencv-python-headless>=4.10.0`. No `cv2` imports exist anywhere in
+  trainer code — pure dependency swap; the headless build does not pull GUI
+  frameworks (wx/qt) onto a headless server Mac.
+
+### Fixed
+- **#77** — bridge server process shows as `fusion-trainer bridge :8790` in
+  ps/Activity Monitor (was bare homebrew `Python`). `setproctitle` (new core
+  dependency, try/except fallback) is set in `bridge/server.py __main__`; the
+  fallback logs a warning and keeps the default title if the package is
+  missing. Launcher pid/pkill/health logic unaffected (verified live).
+- **#78** — `ft datasets from-eval --dpo-output` on a single-arm export (one
+  trajectory per task — every `fusion-eval run --arm <one>` export) now fails
+  loudly with an explanation instead of silently writing a 0-pair file:
+  mining is structurally empty without passed/failed siblings. Escape hatch:
+  `--dpo-anyway` (warns + writes the empty file). The from-eval manifest
+  gains `arms` and `dpo_structurally_empty` so downstream tooling sees WHY a
+  pair file is empty. `--dpo-output` help documents the multi-arm requirement.
+
+### Analyzed (#78 feature type 0/3 across rounds)
+- Round-1 feature failures are spec-gap failures, not code failures: t3
+  wrote only the test file (never implemented `slugify`), t5 implemented
+  `to_roman` correctly for 1-3999 but missed hidden out-of-range/type checks
+  (`to_roman(0)` must raise).
+- Round-2 feature failures are all 900s timeouts with CORRECT diffs (t3
+  slugify, t5 roman implementations both correct; the agent loop over-iterates
+  on the write-tests/run-pytest loop and never terminates) — the same
+  chained-overfit signature as the testwrite 3/3→0/3 regression.
+- Round-3 (fresh round-2-eval data, 19 samples never trained on, chained from
+  fw-round2) ran 2026-10-28: 14/30 = 46.67% pass (eval run `20261028-r3-eval`,
+  export sha `504298d3986c`). Curve: baseline 53.33% → fw-round1 73.33% →
+  fw-round2 63.33% → fw-round3 46.67% (first→last −6.67pp DOWN). Honest negative
+  result — recorded in the curve registry via `ft flywheel record`.
+  - **Hypothesis refuted in part:** testwrite RECOVERED 0/3 → 2/3 (t21, t22
+    pass; t20 agent tests miss one mutation) — the round-2 testwrite collapse
+    was overfit-driven, not capability loss. But feature stays 0/3 across all
+    rounds (t3 still never implements `slugify`, t5 still misses hidden
+    out-of-range checks, t10 emits `BoundedStack` taking no arguments), so
+    feature failure is a persistent spec-gap, not overfit.
+  - **New regressions from fresh-data chaining:** refactor-multi 1.0 → 0.0
+    (t14 IndentationError, t15 forgot to create `user.py`, t16 infinite
+    recursion), configfix 1.0 → 0.0 (t17/t18 900s timeouts, t19 missed a
+    key-rename), long-context 1/1 → 0/1 (one spec violation left), depfix
+    1.0 → 0.6667. dag improved 0.6 → 0.8. Conclusion: degradation is NOT
+    purely overfit to trained data — cumulative over-production from chained
+    SFT rounds degrades multi-file/config tasks on fresh data too. Stop
+    chaining; the flywheel's value (round-1 +20pp) came from the first
+    high-signal round on failure data, not from repeated chaining.
+
 ## [1.0.0rc19] - 2026-10-28
 
 Eval flywheel (#76, items 11+12): consume fusion-eval#6 trajectory exports,

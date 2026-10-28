@@ -46,8 +46,7 @@ def validate_dsl_json(dsl_str: str) -> bool:
         from fusion_core import validate_dsl_str
     except ImportError:
         logger.error(
-            "validate_dsl_json: fusion-core not installed "
-            "(pip install -e fusion-core)"
+            "validate_dsl_json: fusion-core not installed (pip install -e fusion-core)"
         )
         return False
 
@@ -105,9 +104,7 @@ def process_raw_sft(
         raise ValueError(f"input file is not valid JSON: {exc}") from exc
 
     if not isinstance(raw_items, list):
-        raise ValueError(
-            f"expected JSON array, got {type(raw_items).__name__}"
-        )
+        raise ValueError(f"expected JSON array, got {type(raw_items).__name__}")
 
     sft_data: list[dict[str, str]] = []
     skipped = 0

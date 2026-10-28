@@ -36,12 +36,12 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+from fusion_core.config import resolve_api_key
 
 from .config import validate_service_url
 
@@ -87,7 +87,10 @@ class MLXFineTuneClient:
         source: str = "",
     ):
         self._base = f"{validate_service_url(base_url, field_name='base_url')}:{port}"
-        token = admin_token or os.environ.get("FUSION_MLX_ADMIN_TOKEN", "")
+        # #80: single-point resolution via fusion_core.config — env
+        # FUSION_MLX_ADMIN_TOKEN first, then ~/.fusion-mlx/settings.json
+        # auth.api_key (same fallback trainer-bridge.sh always did by hand).
+        token = admin_token or resolve_api_key(env_var="FUSION_MLX_ADMIN_TOKEN")
         self._headers = {"X-Fusion-Route": "admin"}
         # Model-management endpoints (merge/serve/load) are gated on
         # X-Fusion-Source: model-hub (fusion-mlx auth.py:531). A host that

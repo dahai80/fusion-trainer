@@ -166,15 +166,30 @@ def test_mine_pairs_passed_only_yields_none():
 def test_build_dataset_writes_manifest(tmp_path):
     p = _write_export(
         tmp_path,
-        [_rec("t1", True), _rec("t2", True, task_type="feature"), _rec("t3", False)],
+        [
+            _rec("t1", True),
+            _rec(
+                "t1",
+                False,
+                messages=[
+                    {"role": "user", "content": "fix it"},
+                    {"role": "assistant", "content": "broke it"},
+                ],
+            ),
+            _rec("t2", True, task_type="feature"),
+            _rec("t3", False),
+        ],
     )
     out = tmp_path / "ds" / "sft.jsonl"
     dpo_out = tmp_path / "ds" / "dpo.jsonl"
     manifest = build_from_eval_dataset(p, out, dpo_out)
     assert manifest["sft_samples"] == 2
     assert manifest["records_passed"] == 2
-    assert manifest["records_failed"] == 1
-    assert manifest["per_type"]["bugfix"] == {"total": 2, "passed": 1, "failed": 1}
+    assert manifest["records_failed"] == 2
+    assert manifest["dpo_pairs"] == 1
+    assert manifest["dpo_structurally_empty"] is False
+    assert manifest["arms"] == ["fc-local"]
+    assert manifest["per_type"]["bugfix"] == {"total": 3, "passed": 1, "failed": 2}
     assert out.is_file()
     lines = out.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2
@@ -182,6 +197,23 @@ def test_build_dataset_writes_manifest(tmp_path):
     assert len(manifest["export_sha256"]) == 64
     found = find_eval_manifest(out)
     assert found is not None and found["export_sha256"] == manifest["export_sha256"]
+
+
+def test_build_dataset_dpo_gate_single_arm_raises(tmp_path):
+    p = _write_export(tmp_path, [_rec("t1", True), _rec("t2", False)])
+    with pytest.raises(EvalIngestError, match="single-arm"):
+        build_from_eval_dataset(p, tmp_path / "sft.jsonl", tmp_path / "dpo.jsonl")
+    assert not (tmp_path / "dpo.jsonl").exists()
+
+
+def test_build_dataset_dpo_gate_allow_empty(tmp_path):
+    p = _write_export(tmp_path, [_rec("t1", True), _rec("t2", False)])
+    out = tmp_path / "sft.jsonl"
+    dpo_out = tmp_path / "dpo.jsonl"
+    manifest = build_from_eval_dataset(p, out, dpo_out, dpo_allow_empty=True)
+    assert manifest["dpo_pairs"] == 0
+    assert manifest["dpo_structurally_empty"] is True
+    assert dpo_out.read_text(encoding="utf-8").strip() == ""
 
 
 def test_build_dataset_no_passed_raises(tmp_path):

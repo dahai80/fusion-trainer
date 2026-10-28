@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
+# #80: single-point env/config resolution lives in fusion_core.config.
+from fusion_core.config import get_env, service_port
+
 
 class URLGuardError(ValueError):
     """Raised when a configured service URL fails the scheme/host allow-list."""
@@ -93,16 +96,16 @@ def _default_mlx_port() -> int:
     # the gateway path works — but the default stays 11434: one hop less and
     # the trainer's own admin key. FUSION_MLX_PORT=11432 routes everything
     # through the gateway (auth chain = gateway key, injected upstream).
-    return int(os.environ.get("FUSION_MLX_PORT", "11434"))
+    return service_port("MLX", default=11434)
 
 
 def _default_hub_url() -> str:
     # fusion-gateway (:11432) proxies /api/v1/* to fusion-model-hub.
-    return os.environ.get("FUSION_MODEL_HUB_URL", "http://localhost:11432")
+    return get_env("FUSION_MODEL_HUB_URL", "http://localhost:11432")
 
 
 def _default_hub_api_key() -> str:
-    return os.environ.get("FUSION_MODEL_HUB_API_KEY", "")
+    return get_env("FUSION_MODEL_HUB_API_KEY", "")
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,12 @@ from typing import Any
 
 from ._version import __version__
 from .audit import ApiKeyGate, AuditLog, PermissionDeniedError
-from .config import TrainerConfig, _default_mlx_port
+from .config import (
+    TrainerConfig,
+    _default_hub_api_key,
+    _default_hub_url,
+    _default_mlx_port,
+)
 from .mlx_client import MLXFineTuneClient
 
 logger = logging.getLogger(__name__)
@@ -1040,10 +1045,10 @@ class RunManager:
         from .config import URLGuardError
         from .hub_client import HubPublishError, ModelHubClient
 
-        url = hub_url or os.environ.get(
-            "FUSION_MODEL_HUB_URL", "http://localhost:11432"
-        )
-        key = api_key or os.environ.get("FUSION_MODEL_HUB_API_KEY", "")
+        # #80: hub url/key defaults single-sourced in config.py
+        # (get_env on FUSION_MODEL_HUB_URL / FUSION_MODEL_HUB_API_KEY).
+        url = hub_url or _default_hub_url()
+        key = api_key or _default_hub_api_key()
         try:
             client = ModelHubClient(base_url=url, api_key=key)
         except URLGuardError as exc:
@@ -1160,7 +1165,7 @@ class RunManager:
                 return
             try:
                 client = MLXFineTuneClient(
-                    port=int(mlx_port or os.environ.get("FUSION_MLX_PORT", "11434"))
+                    port=int(mlx_port) if mlx_port else _default_mlx_port()
                 )
                 if kind in ("dpo", "orpo"):
                     client.cancel_dpo_job(job_id)

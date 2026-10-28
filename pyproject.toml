@@ -27,10 +27,12 @@ classifiers = [
 dependencies = [
     # fusion-mlx HTTP client (talks to localhost:11434, no in-process MLX)
     "httpx>=0.27.0",
-    # fusion-core (shared library: DSL schema validation for bnup_prep, #56)
-    # Pinned to v0.5.0 (adds dsl_schema module, fusion-core #26/#27).
+    # fusion-core (shared library: DSL schema validation for bnup_prep, #56;
+    # single-point env/config resolution, #80)
+    # Pinned to v0.7.0 (adds config module get_env/resolve_api_key/
+    # client_key/admin_key/service_port, fusion-core #80).
     # Not on PyPI — in-tree monorepo dependency, installed via git.
-    "fusion-core @ git+https://github.com/dahai80/fusion-core.git@v0.5.0",
+    "fusion-core @ git+https://github.com/dahai80/fusion-core.git@v0.7.0",
     # JSON schema validation (fusion-core dsl_schema dep)
     "jsonschema>=4.0.0",
     # Data processing
@@ -56,6 +58,8 @@ dependencies = [
     # Utility
     "psutil>=5.9.0",
     "tabulate>=0.9.0",
+    # Process title (bridge server shows as "fusion-trainer bridge" in ps, #77)
+    "setproctitle>=1.3.0",
 ]
 
 [project.optional-dependencies]
@@ -76,7 +80,9 @@ audio = [
     "mlx-audio[tts,stt,sts]>=0.1.0",
 ]
 vision = [
-    "opencv-python>=4.8.0",
+    # #79: headless build — no GUI framework deps (wx/qt) pulled onto a
+    # server Mac; no cv2 imports in trainer code, pure dependency swap.
+    "opencv-python-headless>=4.10.0",
 ]
 
 [project.urls]

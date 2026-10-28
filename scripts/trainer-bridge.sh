@@ -9,7 +9,7 @@
 # Required env: FUSION_TRAINER_BRIDGE_KEY  (bearer token browser -> bridge)
 # Optional env: FUSION_MLX_ADMIN_TOKEN, FUSION_TRAINER_MLX_PORT (11434),
 #               FUSION_TRAINER_BRIDGE_PORT (8790), FUSION_MLX_MODEL,
-#               FUSION_SHELL_GATEWAY_URL + FUSION_GATEWAY_ADMIN_KEY (shell
+#               FUSION_SHELL_GATEWAY_URL + FUSION_ADMIN_KEY (shell
 #               registration, issue #72 — admin key auto-read from the
 #               gateway config when unset)
 set -euo pipefail
@@ -59,17 +59,20 @@ case "${1:-status}" in
         # same pattern as the fusion-mlx settings.json read above). Without
         # both, the console stays a standalone page — warn, never fail.
         export FUSION_SHELL_GATEWAY_URL="${FUSION_SHELL_GATEWAY_URL:-http://127.0.0.1:11432}"
-        if [ -z "${FUSION_GATEWAY_ADMIN_KEY:-}" ]; then
+        # #80: fusion_core.config.admin_key reads FUSION_ADMIN_KEY; fall
+        # back to the gateway's own config (read-only, same pattern as the
+        # fusion-mlx settings.json read above).
+        if [ -z "${FUSION_ADMIN_KEY:-}" ]; then
             GW_CONFIG="${FUSION_GATEWAY_CONFIG:-$HOME/fusion/fusion-gateway/config.yaml}"
-            FUSION_GATEWAY_ADMIN_KEY="$("$PY" -c \
+            FUSION_ADMIN_KEY="$("$PY" -c \
                 "import yaml;print(yaml.safe_load(open('$GW_CONFIG'))['web_shell']['admin_key'])" \
                 2>/dev/null || true)"
         fi
-        if [ -n "${FUSION_GATEWAY_ADMIN_KEY:-}" ]; then
-            export FUSION_GATEWAY_ADMIN_KEY
+        if [ -n "${FUSION_ADMIN_KEY:-}" ]; then
+            export FUSION_ADMIN_KEY
             echo "shell registration: gateway=${FUSION_SHELL_GATEWAY_URL}"
         else
-            echo "WARN: FUSION_GATEWAY_ADMIN_KEY unset — console will NOT appear in the shell sidebar" >&2
+            echo "WARN: FUSION_ADMIN_KEY unset — console will NOT appear in the shell sidebar" >&2
         fi
         cd "$ROOT"
         nohup "$PY" -m bridge.server >>"$LOG_FILE" 2>&1 &

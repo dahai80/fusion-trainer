@@ -13,10 +13,17 @@ class TestRLSLPresets:
         assert len(RLSL_PRESETS) >= 3
 
     def test_required_fields(self):
-        common_required = {"description", "method", "learning_rate", "memory_estimate_gb"}
+        common_required = {
+            "description",
+            "method",
+            "learning_rate",
+            "memory_estimate_gb",
+        }
         grpo_required = common_required | {"grpo_backend", "group_size"}
         for name, preset in RLSL_PRESETS.items():
-            required = grpo_required if preset.get("method") == "grpo" else common_required
+            required = (
+                grpo_required if preset.get("method") == "grpo" else common_required
+            )
             missing = required - preset.keys()
             assert not missing, f"{name} missing: {missing}"
 
@@ -25,7 +32,9 @@ class TestRLSLPresets:
         # check that GRPO-method presets are actually grpo.
         for name, preset in RLSL_PRESETS.items():
             if preset.get("grpo_backend"):
-                assert preset["method"] == "grpo", f"{name} has grpo_backend but method={preset['method']}"
+                assert preset["method"] == "grpo", (
+                    f"{name} has grpo_backend but method={preset['method']}"
+                )
 
     def test_positive_group_size(self):
         for name, preset in RLSL_PRESETS.items():

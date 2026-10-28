@@ -219,16 +219,41 @@ def _per_type_counts(records: list[dict[str, Any]]) -> dict[str, dict[str, int]]
     return counts
 
 
+def export_arms(records: list[dict[str, Any]]) -> list[str]:
+    """Distinct arm names in an export (sorted; missing arm -> 'unknown')."""
+    return sorted({str(r.get("arm") or "unknown") for r in records})
+
+
+def dpo_structurally_empty(records: list[dict[str, Any]]) -> bool:
+    """True when the export can never yield a DPO pair: every task_id has
+    exactly one trajectory, so no task has a passed+failed sibling (#78).
+    This is the shape of every single-arm fusion-eval export — one run of
+    one arm executes each task once.
+    """
+    counts: dict[str, int] = {}
+    for rec in records:
+        counts[str(rec.get("task_id", ""))] = (
+            counts.get(str(rec.get("task_id", "")), 0) + 1
+        )
+    return bool(counts) and all(c == 1 for c in counts.values())
+
+
 def build_from_eval_dataset(
     export_path: Path,
     output_path: Path,
     dpo_output_path: Path | None = None,
+    dpo_allow_empty: bool = False,
 ) -> dict[str, Any]:
     """Full ingestion: export -> SFT dataset (+ optional DPO pairs) + manifest.
 
     The manifest is written next to the SFT dataset as `<output>.from_eval.json`
     and carries the export sha256 — SFTTrainer picks it up automatically so
     every eval-fed run records its source (#76 requirement 3).
+
+    DPO gate (#78): a single-arm export (one trajectory per task) is
+    structurally unable to produce preference pairs, so `dpo_output_path`
+    on such an export raises — pass `dpo_allow_empty=True` (CLI
+    `--dpo-anyway`) to write the empty output anyway.
     """
     records, digest = load_eval_export(export_path)
     sft_samples = eval_records_to_sft(records)
@@ -244,7 +269,23 @@ def build_from_eval_dataset(
     logger.info("wrote %d SFT samples to %s", len(sft_samples), output_path)
 
     dpo_pairs: list[dict[str, Any]] = []
+    dpo_empty = False
     if dpo_output_path is not None:
+        if dpo_structurally_empty(records) and not dpo_allow_empty:
+            raise EvalIngestError(
+                "DPO output requested but this export is single-arm "
+                f"(arms: {export_arms(records)}) — every task has exactly one "
+                "trajectory, so no passed/failed siblings exist and mining is "
+                "structurally empty. Re-run the eval with multiple arms "
+                "(fusion-eval run --arm <a> --arm <b>) or pass --dpo-anyway "
+                "to write the empty DPO file anyway."
+            )
+        dpo_empty = dpo_structurally_empty(records)
+        if dpo_empty:
+            logger.warning(
+                "single-arm export: DPO output will be empty by construction "
+                "(no task has a passed+failed sibling pair)"
+            )
         dpo_pairs = mine_preference_pairs(records)
         dpo_output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(dpo_output_path, "w", encoding="utf-8") as fh:
@@ -260,6 +301,8 @@ def build_from_eval_dataset(
         "sft_samples": len(sft_samples),
         "dpo_path": str(dpo_output_path) if dpo_output_path else "",
         "dpo_pairs": len(dpo_pairs),
+        "dpo_structurally_empty": dpo_empty,
+        "arms": export_arms(records),
         "records_total": len(records),
         "records_passed": sum(1 for r in records if r.get("passed")),
         "records_failed": sum(1 for r in records if not r.get("passed")),

@@ -81,7 +81,7 @@ fusion-* 产品（消费层）
 > `--publish` 需要可访问的 Hub（`--hub-url` / `FUSION_MODEL_HUB_URL`）。自 fusion-gateway#316 起，gateway（`:11432`）已代理 Hub 的 `/api/v1/models`（已实测：注册 201、409 幂等、列表可经 gateway 查询），默认 `http://localhost:11432` + gateway API key 即可，无需单独的 Hub key。直连 Hub（`:11444` + `FUSION_MODEL_HUB_API_KEY`）也仍然可用。
 
 ### 评测飞轮：数据摄取 + 曲线（issue #76）
-- **轨迹摄取** ✅ —— `ft datasets from-eval --export <trajectories.jsonl> --output <sft.jsonl> [--dpo-output <dpo.jsonl>]` 消费 fusion-eval 轨迹导出（[fusion-eval#6](https://github.com/dahai80/fusion-eval/issues/6)）：通过的轨迹转为 `{"messages": [...]}` SFT 样本（多轮保留，现有 `load_messages` 路径直接可训）；配合 `--all` 导出时，同一任务同时有通过+失败轨迹的样本被挖掘为 `{"prompt","chosen","rejected"}` DPO 偏好对（无通过对照的失败只大声计数，绝不伪造对）。
+- **轨迹摄取** ✅ —— `ft datasets from-eval --export <trajectories.jsonl> --output <sft.jsonl> [--dpo-output <dpo.jsonl>]` 消费 fusion-eval 轨迹导出（[fusion-eval#6](https://github.com/dahai80/fusion-eval/issues/6)）：通过的轨迹转为 `{"messages": [...]}` SFT 样本（多轮保留，现有 `load_messages` 路径直接可训）；配合 `--all` 导出时，同一任务同时有通过+失败轨迹的样本被挖掘为 `{"prompt","chosen","rejected"}` DPO 偏好对（无通过对照的失败只大声计数，绝不伪造对）。**DPO 多臂门控（#78）：** 单臂导出（每任务仅一条轨迹 —— 所有 `fusion-eval run --arm <单个>` 的导出都是这个形状）结构上不可能产出偏好对，此时 `--dpo-output` 会带解释大声报错；需用多臂评测（`fusion-eval run --arm <a> --arm <b>`）重跑，或传 `--dpo-anyway` 强制写出空对文件。清单记录 `arms` 与 `dpo_structurally_empty`，下游可据此看出对文件为空的原因。
 - **来源可追溯** ✅ —— 每个 from-eval 数据集在旁边原子写入清单 `<output>.from_eval.json`（含导出 sha256）。`ft sft` 自动识别并在运行结果里记录 `source_export_sha256` / `source_export_path` —— 每个由评测数据喂养的训练运行都可追溯到其评测来源。
 - **轮次注册表 + 曲线** ✅ —— `ft flywheel record --label <名称> --summary <fusion-eval summary.json> --checkpoint <adapter 目录或底座模型 id> [--export <jsonl>] [--dataset <路径>]` 追加一轮记录（通过率、分类型通过率、导出哈希、评测 run id）到 `{cache_path}/flywheel.json`（原子写）。`ft flywheel status` 打印通过率-轮次曲线（含增量）、分类型通过率表与趋势线 —— 即验收证据：每轮均可由导出哈希追溯。
 - **轮次串联** ✅ —— `ft sft --init-adapter-path <adapter 目录>` 从上一轮的适配器目录初始化新 LoRA（最终权重或最新编号 checkpoint，走 #65 resume 路径暂存；步数计数从 0 开始）。用于飞轮训练轮次串联：第 N+1 轮在第 N 轮权重之上、以第 N 轮评测数据继续训练。
@@ -213,6 +213,8 @@ fusion-trainer publish <run_id>
 | `hub_api_key` | `FUSION_MODEL_HUB_API_KEY` | `""`（无鉴权） |
 | `publish_adapter` | `FUSION_TRAINER_PUBLISH=1` | `False` |
 
+自 #80 起，服务默认值统一经 `fusion_core.config`（v0.7.0+，钉子从 v0.5.0 上调）单点解析，环境变量名不变。`MLXFineTuneClient` 引擎令牌经 `resolve_api_key(env_var="FUSION_MLX_ADMIN_TOKEN")` 解析 —— 先环境变量，再回退 `~/.fusion-mlx/settings.json` 的 `auth.api_key`（与 `scripts/trainer-bridge.sh` 一直在做的回退一致，现在进了进程内）—— 已有 fusion-mlx settings 文件的机器上，CLI 作业无需导出令牌即可通过鉴权。
+
 `FUSION_TRAINER_PUBLISH=1` 环境变量覆盖可无条件强制发布。**GUI 路径**现已原生转发发布字段（[fusion-agent-studio#277](https://github.com/dahai80/fusion-agent-studio/issues/277) + [fusion-studio#390](https://github.com/dahai80/fusion-studio/issues/390) 已关闭）：fusion-agent-studio `TrainingService._build_trainer_config` 透传 `publish_adapter`/`hub_url`/`hub_api_key`，训练面板也暴露了这些字段，GUI 触发的 run 可原生发布。环境变量覆盖保留为兜底。CLI `--publish` 路径不受影响。
 
 #### 审计日志与 api-key 网关（企业级）
@@ -332,7 +334,7 @@ export FUSION_TRAINER_BRIDGE_KEY=<token>     # 浏览器直连 bridge 的令牌
 ./scripts/trainer-bridge.sh stop
 ```
 
-**Shell 模块注册（#72）：** bridge 启动时向 fusion-gateway shell 注册表登记 `bridge/manifest.json` 并每 15 秒心跳，fusion-web-shell 侧边栏由此出现 **训练控制台** 一级入口，网关代理 `http://127.0.0.1:11432/shell/fusion-trainer/` 成为唯一用户入口（bridge 停止 → 侧边栏条目置灰 unreachable）。注册走 K1 网关签发密钥：注册体不带 `api_key`，网关签发 `fm-` 模块密钥（仅返回一次），bridge 落盘到 `~/.fusion-trainer-bridge/web_module_key`（0600），心跳与代理请求均以它鉴权（入站同时接受静态 bridge 令牌供环回直连）。由 `FUSION_SHELL_GATEWAY_URL` + `FUSION_GATEWAY_ADMIN_KEY` 环境变量开启；`trainer-bridge.sh` 默认指向本机网关并自动从网关配置读取管理密钥。
+**Shell 模块注册（#72）：** bridge 启动时向 fusion-gateway shell 注册表登记 `bridge/manifest.json` 并每 15 秒心跳，fusion-web-shell 侧边栏由此出现 **训练控制台** 一级入口，网关代理 `http://127.0.0.1:11432/shell/fusion-trainer/` 成为唯一用户入口（bridge 停止 → 侧边栏条目置灰 unreachable）。注册走 K1 网关签发密钥：注册体不带 `api_key`，网关签发 `fm-` 模块密钥（仅返回一次），bridge 落盘到 `~/.fusion-trainer-bridge/web_module_key`（0600），心跳与代理请求均以它鉴权（入站同时接受静态 bridge 令牌供环回直连）。由 `FUSION_SHELL_GATEWAY_URL` + `FUSION_ADMIN_KEY` 环境变量开启；`trainer-bridge.sh` 默认指向本机网关并自动从网关配置读取管理密钥。
 
 ---
 
