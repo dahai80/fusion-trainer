@@ -56,6 +56,9 @@ jobs:
           # "No module named 'mlx_vlm'" (run 40196088382). Running slim
           # here keeps the slim path regression-covered in CI.
           pip install "fusion-mlx>=0.10.17"
+          # fusion-core is not on PyPI — install the pinned git tag before
+          # the package so the version-only constraint resolves (#81).
+          pip install "fusion-core @ git+https://github.com/dahai80/fusion-core.git@v0.10.0"
           pip install -e ".[dev]"
 
       - name: Pull test model

@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc21] - 2026-10-31
+
+Patch release: dependency-metadata hygiene (#81).
+
+### Fixed (#81)
+- `pyproject.toml` pinned fusion-core as a direct URL reference
+  (`fusion-core @ git+https://github.com/dahai80/fusion-core.git@v0.7.0`).
+  fusion-core is not on PyPI; in the shared workspace venv (editable 0.10.0
+  via `pip install -e fusion-core`), `uv pip install -e fusion-trainer`
+  treated the exact git pin as a different distribution and silently
+  replaced the editable install with a stale non-editable v0.7.0 — breaking
+  downstream consumers that need `>=0.8.0` (fusion-agent-studio) and
+  reintroducing fixed-in-0.8/0.9 bugs (e.g. missing `service_port`
+  config-key prefix normalization). Replaced with the version-only
+  constraint `fusion-core>=0.9.0` — sources resolve per environment:
+  workspace venv = editable install (source == lock), CI = explicit
+  `git+...@v0.10.0` install step added to both `ci.yml` and `nightly.yml`.
+  Verified: after the fix, `uv pip install -e fusion-trainer` leaves
+  fusion-core editable at 0.10.0 untouched.
+
 ## [1.0.0rc20] - 2026-10-28
 
 Patch release: process-title remediation (#77), flywheel round-2 residual
