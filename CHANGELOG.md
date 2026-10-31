@@ -40,6 +40,40 @@ eval-gated promotion.
   is genuinely fresh training data for round-4. Backup at
   `flywheel.json.pre-82-fix`.
 
+### Live evidence (#82, 2026-10-31, Qwen3.8-27B-8bit, 30-task set)
+- **Round-4 trained and gated live.** Fresh data (14 passed samples from the
+  round-3 eval export, sha `504298d3…` — verified not in the consumed set),
+  chained from the *incumbent* fw-round1 adapter (LoRA rank 16, 39 iters,
+  `--grad-checkpoint`). Result: 13/30 = **43.33%** (eval run
+  `20261031-r4-eval2`), a −30.00pp regression vs the incumbent 73.33% — the
+  gate **discarded** the round and the checkpoint was NOT promoted.
+- **Flywheel claim re-scoped (honest negative result).** Chaining SFT from
+  the *best* adapter on *fresh* failure data still regresses (43.33% <
+  53.33% baseline). Across rounds 2/3/4, every chained round degraded; the
+  flywheel's measured value is the **first high-signal round on failure
+  data** (+20pp, fw-round1), not repeated chaining. Repeated SFT chaining on
+  eval-fed data does not compound — cumulative over-production, not
+  fixable by data freshness or a better starting checkpoint. The gate now
+  enforces this mechanically: regressing rounds are discarded, only the
+  first round's +20pp stands as promoted.
+- **Comparability caveat:** the 30 task ids are identical to round-3's, but
+  fusion-eval's task yaml files were touched upstream after 2026-10-28
+  (round-4 `task_set_sha` `bbb519a1…` vs round-3 `5151e824…`); the
+  regression margin (−30pp) is far larger than any plausible task-set
+  drift.
+- **Per-type:** bugfix 1.0 held; depfix recovered 0.67→1.0;
+  long-context 1.0 recovered; refactor-multi 0.67 partial recovery;
+  testwrite collapsed again 0.67→0.0 (over-production signature);
+  multi-turn-repair 1.0→0.0; configfix and feature stay 0.0 (persistent
+  spec-gap classes, unchanged since #78).
+- **Ops notes:** fusion-eval auth broke mid-cycle — a stale
+  `FUSION_CLIENT_KEY` in the shell profile loses to the current engine admin
+  key; the eval script now pins `FUSION_CLIENT_KEY` from
+  `~/.fusion-mlx/settings.json` and pins the 30-task id list explicitly
+  (the fusion-eval task dir grew 30→60 since round-3; `--task all` would
+  have produced an incomparable 60-task score). fusion-eval's instant-fail
+  recovery (3×120s) absorbed 8 transient engine stalls during the run.
+
 ## [1.0.0rc21] - 2026-10-31
 
 Patch release: dependency-metadata hygiene (#81).
