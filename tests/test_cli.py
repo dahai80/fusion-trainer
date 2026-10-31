@@ -77,4 +77,10 @@ def test_cli_sft_init_adapter_path_flag():
     """#76: `ft sft --init-adapter-path` exists for flywheel round chaining."""
     result = runner.invoke(app, ["sft", "--help"])
     assert result.exit_code == 0
-    assert "--init-adapter-path" in result.stdout
+    # Rich wraps help text at the console width (80 cols in CI, no TTY),
+    # splitting long option names across lines — strip ANSI + newlines
+    # before matching or the assert fails only in narrow terminals.
+    import re
+
+    flat = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout).replace("\n", "")
+    assert "--init-adapter-path" in flat
