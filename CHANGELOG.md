@@ -7,6 +7,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc22] - 2026-10-31
+
+Patch release: flywheel discipline (#82) — fresh-data enforcement and
+eval-gated promotion.
+
+### Added (#82)
+- **Fresh-data discipline** — `record_round` tracks which export sha each
+  training round consumed (`consumed` field on entries; historical entries
+  without the field count as consumed unless labelled baseline). Recording a
+  round whose export was already consumed by another round raises
+  `FlywheelError` (exit 1 from the CLI); `--allow-reconsume` overrides with a
+  loud warning and flags the entry `reconsumed` — never silent.
+- **Eval-gated promotion** — `ft flywheel record --gate` compares the
+  candidate's pass_rate against the incumbent (best prior non-discarded
+  round; historical entries without a status field count as promoted).
+  Regression marks the round `discarded` — the checkpoint is NOT promoted,
+  and the CLI prints the verdict with the regression delta. `ft flywheel
+  mark --label X --status promoted|discarded` backfills status for rounds
+  recorded before the gate existed.
+- **Curve rendering** — `ft flywheel status` gains a status column, a
+  promoted-only trend line (discarded rounds excluded from the first→last
+  acceptance delta), a discarded-rounds summary, and a `*` marker for
+  re-consumed exports.
+- **Registry data correction** — historical rounds fw-round1/2/3 had
+  `export_sha256` pointing at each round's *own post-training eval export*
+  (the data the *next* round trains on) instead of the export the round
+  actually trained on. Corrected from the `from_eval.json` manifest sidecars:
+  fw-round1 ← baseline-eval (`c1ba5557…`), fw-round2 ← round-1-eval
+  (`7ce288f7…`), fw-round3 ← round-2-eval (`a54a6ce9…`). With the true
+  consumed set in place, the round-3-eval export (`504298d3…`, 14 passed)
+  is genuinely fresh training data for round-4. Backup at
+  `flywheel.json.pre-82-fix`.
+
 ## [1.0.0rc21] - 2026-10-31
 
 Patch release: dependency-metadata hygiene (#81).

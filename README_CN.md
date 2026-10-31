@@ -86,6 +86,7 @@ fusion-* 产品（消费层）
 - **轮次注册表 + 曲线** ✅ —— `ft flywheel record --label <名称> --summary <fusion-eval summary.json> --checkpoint <adapter 目录或底座模型 id> [--export <jsonl>] [--dataset <路径>]` 追加一轮记录（通过率、分类型通过率、导出哈希、评测 run id）到 `{cache_path}/flywheel.json`（原子写）。`ft flywheel status` 打印通过率-轮次曲线（含增量）、分类型通过率表与趋势线 —— 即验收证据：每轮均可由导出哈希追溯。
 - **轮次串联** ✅ —— `ft sft --init-adapter-path <adapter 目录>` 从上一轮的适配器目录初始化新 LoRA（最终权重或最新编号 checkpoint，走 #65 resume 路径暂存；步数计数从 0 开始）。用于飞轮训练轮次串联：第 N+1 轮在第 N 轮权重之上、以第 N 轮评测数据继续训练。
 - **真实轮次证据** ✅ —— Qwen3.8-27B-8bit、30 任务集：baseline 53.33% → fw-round1 73.33%（+20pp）→ fw-round2 63.33%（−10pp，testwrite 类型回归 3/3→0/3，全部 900s 超时 —— 链式过拟合信号）；`long-context` 与 `multi-turn-repair` 两个基线零分类型转非零并保持。完整曲线：`ft flywheel status`。
+- **新鲜数据纪律 + 评测门控晋级** ✅（issue #82）—— `ft flywheel record` 追踪每个训练轮消费的导出 sha；在已被消费的导出上再记一轮会大声报错（exit 1），除非传 `--allow-reconsume`（条目标记 `reconsumed`，绝不静默）。`--baseline` 标记种子轮（其导出从未被训练过）。`--gate` 开启评测门控：通过率相对现任（此前未被废弃轮次中的最优）回退的轮记为 `discarded` —— 其 checkpoint 不晋级 —— `ft flywheel status` 渲染仅含晋级轮的趋势线（废弃轮排除）及废弃轮汇总。`ft flywheel mark --label X --status promoted|discarded` 为门控存在前的历史轮回填状态。
 
 ---
 

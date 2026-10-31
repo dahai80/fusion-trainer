@@ -84,3 +84,27 @@ def test_cli_sft_init_adapter_path_flag():
 
     flat = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout).replace("\n", "")
     assert "--init-adapter-path" in flat
+
+
+def _flat_help(args):
+    """Help text with ANSI + newlines stripped (rich wraps at 80 cols in CI)."""
+    import re
+
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0
+    return re.sub(r"\x1b\[[0-9;]*m", "", result.stdout).replace("\n", "")
+
+
+def test_cli_flywheel_record_gate_flags():
+    """#82: `ft flywheel record` exposes --gate / --baseline / --allow-reconsume."""
+    flat = _flat_help(["flywheel", "record", "--help"])
+    assert "--gate" in flat
+    assert "--baseline" in flat
+    assert "--allow-reconsume" in flat
+
+
+def test_cli_flywheel_mark_subcommand():
+    """#82: `ft flywheel mark --label X --status promoted|discarded` exists."""
+    flat = _flat_help(["flywheel", "mark", "--help"])
+    assert "--label" in flat
+    assert "--status" in flat

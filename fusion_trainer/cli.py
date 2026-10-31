@@ -1759,6 +1759,23 @@ def flywheel_record(
     run_id: str = typer.Option(
         "", "--run-id", help="fusion-trainer run id for this round"
     ),
+    baseline: bool = typer.Option(
+        False,
+        "--baseline",
+        help="Baseline round: its export is the seed, not consumed training data (#82)",
+    ),
+    gate: bool = typer.Option(
+        False,
+        "--gate",
+        help="Eval-gated promotion (#82): discard the round if pass_rate regresses "
+        "vs the incumbent (best prior non-discarded round)",
+    ),
+    allow_reconsume: bool = typer.Option(
+        False,
+        "--allow-reconsume",
+        help="Override the fresh-data check: re-train on an already-consumed "
+        "export (entry flagged reconsumed, never silent)",
+    ),
     cache_path: str = typer.Option(
         "",
         "--cache-path",
@@ -1781,6 +1798,9 @@ def flywheel_record(
             export_path=export,
             dataset_path=dataset,
             run_id=run_id,
+            baseline=baseline,
+            gate=gate,
+            allow_reconsume=allow_reconsume,
         )
     except FlywheelError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1789,6 +1809,45 @@ def flywheel_record(
         f"Recorded round {label!r}: eval_run={entry['eval_run_id']} "
         f"pass_rate={entry['pass_rate']:.4f} ({entry['passed']}/{entry['total']})"
         + (f" export={entry['export_sha256'][:12]}" if entry["export_sha256"] else "")
+    )
+    if entry.get("status") == "discarded":
+        typer.echo(
+            f"GATE DISCARDED round {label!r}: pass_rate {entry['pass_rate']:.4f} "
+            f"regresses vs incumbent {entry['incumbent_pass_rate']:.4f} "
+            f"({entry['regression']:+.4f}) — checkpoint NOT promoted (#82)"
+        )
+    elif entry.get("status") == "promoted":
+        typer.echo(f"Gate PROMOTED round {label!r}")
+
+
+@flywheel_app.command(name="mark")
+def flywheel_mark(
+    label: str = typer.Option(
+        ..., "--label", help="Round label to mark (must be unique)"
+    ),
+    status: str = typer.Option(
+        ..., "--status", help="promoted | discarded"
+    ),
+    cache_path: str = typer.Option(
+        "",
+        "--cache-path",
+        help="Cache dir holding flywheel.json (default: FUSION_TRAINER_CACHE)",
+    ),
+):
+    """Set a round's promotion status (#82) — backfill for pre-gate rounds."""
+    from fusion_trainer.config import _default_cache_path
+    from fusion_trainer.flywheel import FlywheelError, mark_round_status
+
+    try:
+        entry = mark_round_status(
+            cache_path or _default_cache_path(), label=label, status=status
+        )
+    except FlywheelError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"Marked round {label!r} status={status} "
+        f"(pass_rate={entry['pass_rate']:.4f})"
     )
 
 

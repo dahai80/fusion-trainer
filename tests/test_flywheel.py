@@ -20,7 +20,9 @@ from fusion_trainer.dataset.eval_ingest import (
 from fusion_trainer.flywheel import (
     FlywheelError,
     format_status,
+    incumbent_pass_rate,
     load_registry,
+    mark_round_status,
     parse_eval_summary,
     record_round,
 )
@@ -340,6 +342,285 @@ def test_registry_corrupt_raises(tmp_path):
     (cache / "flywheel.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(FlywheelError):
         load_registry(str(cache))
+
+
+# ---------------------------------------------------------------------------
+# fresh-data discipline + eval-gated promotion (#82)
+# ---------------------------------------------------------------------------
+
+
+def test_reconsume_rejected(tmp_path):
+    cache = str(tmp_path / "cache")
+    export = _write_export(tmp_path, [_rec("t1", True)])
+    record_round(
+        cache,
+        label="round-1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.6),
+        export_path=str(export),
+    )
+    with pytest.raises(FlywheelError, match="fresh-data"):
+        record_round(
+            cache,
+            label="round-2",
+            checkpoint="c2",
+            summary_path=_summary(tmp_path, "r2", 0.7),
+            export_path=str(export),
+        )
+    assert len(load_registry(cache)["rounds"]) == 1
+
+
+def test_reconsume_allowed_and_flagged(tmp_path):
+    cache = str(tmp_path / "cache")
+    export = _write_export(tmp_path, [_rec("t1", True)])
+    record_round(
+        cache,
+        label="round-1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.6),
+        export_path=str(export),
+    )
+    entry = record_round(
+        cache,
+        label="round-2",
+        checkpoint="c2",
+        summary_path=_summary(tmp_path, "r2", 0.7),
+        export_path=str(export),
+        allow_reconsume=True,
+    )
+    assert entry["reconsumed"] is True
+    assert entry["consumed"] is True
+    text = format_status(cache)
+    assert "re-consumed an already-consumed export" in text
+    assert "round-2" in text.split("re-consumed")[0]
+
+
+def test_baseline_export_not_consumed(tmp_path):
+    cache = str(tmp_path / "cache")
+    export = _write_export(tmp_path, [_rec("t1", True)])
+    entry = record_round(
+        cache,
+        label="seed",
+        checkpoint="base-model",
+        summary_path=_summary(tmp_path, "r0", 0.5),
+        export_path=str(export),
+        baseline=True,
+    )
+    assert entry["consumed"] is False
+    # A training round may consume the seed export — it was never trained on.
+    entry2 = record_round(
+        cache,
+        label="round-1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.6),
+        export_path=str(export),
+    )
+    assert entry2["reconsumed"] is False
+
+
+def test_historical_entry_counts_as_consumed(tmp_path):
+    # Pre-#82 registry: entries with no consumed field, non-baseline label.
+    cache = tmp_path
+    (cache / "flywheel.json").write_text(
+        json.dumps(
+            {
+                "rounds": [
+                    {
+                        "label": "baseline",
+                        "pass_rate": 0.5,
+                        "export_sha256": "a" * 64,
+                    },
+                    {
+                        "label": "fw-round1",
+                        "pass_rate": 0.6,
+                        "export_sha256": "b" * 64,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(FlywheelError, match="fw-round1"):
+        record_round(
+            str(cache),
+            label="round-2",
+            checkpoint="c2",
+            summary_path=_summary(tmp_path, "r2", 0.7),
+            export_sha256="b" * 64,
+        )
+    # Baseline's export is not consumed (label check on legacy entries).
+    record_round(
+        str(cache),
+        label="round-3",
+        checkpoint="c3",
+        summary_path=_summary(tmp_path, "r3", 0.7),
+        export_sha256="a" * 64,
+    )
+
+
+def test_gate_promotes_on_improvement(tmp_path):
+    cache = str(tmp_path / "cache")
+    record_round(
+        cache,
+        label="round-1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.6),
+    )
+    entry = record_round(
+        cache,
+        label="round-2",
+        checkpoint="c2",
+        summary_path=_summary(tmp_path, "r2", 0.7),
+        gate=True,
+    )
+    assert entry["status"] == "promoted"
+    assert entry["incumbent_pass_rate"] == pytest.approx(0.6)
+    assert entry["regression"] == pytest.approx(0.1)
+
+
+def test_gate_discards_on_regression(tmp_path):
+    cache = str(tmp_path / "cache")
+    record_round(
+        cache,
+        label="round-1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.7),
+    )
+    entry = record_round(
+        cache,
+        label="round-2",
+        checkpoint="c2",
+        summary_path=_summary(tmp_path, "r2", 0.6),
+        gate=True,
+    )
+    assert entry["status"] == "discarded"
+    assert entry["regression"] == pytest.approx(-0.1)
+    # Discarded round no longer sets the incumbent for the next gate.
+    reg = load_registry(cache)
+    assert incumbent_pass_rate(reg) == pytest.approx(0.7)
+    text = format_status(cache)
+    assert "discarded" in text
+    assert "Discarded rounds" in text
+    assert "round-2" in text.split("Discarded rounds")[1]
+
+
+def test_gate_promotes_when_no_prior_rounds(tmp_path):
+    cache = str(tmp_path / "cache")
+    entry = record_round(
+        cache,
+        label="round-1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.5),
+        gate=True,
+    )
+    assert entry["status"] == "promoted"
+    assert entry["incumbent_pass_rate"] is None
+    assert entry["regression"] is None
+
+
+def test_incumbent_historical_no_status_counts_promoted(tmp_path):
+    cache = tmp_path
+    (cache / "flywheel.json").write_text(
+        json.dumps(
+            {
+                "rounds": [
+                    {"label": "baseline", "pass_rate": 0.5},
+                    {"label": "fw-round1", "pass_rate": 0.7},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert incumbent_pass_rate(load_registry(str(cache))) == pytest.approx(0.7)
+
+
+def test_mark_round_status_valid(tmp_path):
+    cache = str(tmp_path / "cache")
+    record_round(
+        cache,
+        label="fw-round2",
+        checkpoint="c2",
+        summary_path=_summary(tmp_path, "r2", 0.6),
+    )
+    entry = mark_round_status(cache, label="fw-round2", status="discarded")
+    assert entry["status"] == "discarded"
+    reg = load_registry(cache)
+    assert reg["rounds"][0]["status"] == "discarded"
+    mark_round_status(cache, label="fw-round2", status="promoted")
+    assert load_registry(cache)["rounds"][0]["status"] == "promoted"
+
+
+def test_mark_round_status_invalid_status(tmp_path):
+    cache = str(tmp_path / "cache")
+    record_round(
+        cache,
+        label="r1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path),
+    )
+    with pytest.raises(FlywheelError, match="promoted"):
+        mark_round_status(cache, label="r1", status="kept")
+
+
+def test_mark_round_status_missing_label(tmp_path):
+    with pytest.raises(FlywheelError, match="no flywheel round"):
+        mark_round_status(str(tmp_path / "cache"), label="ghost", status="promoted")
+
+
+def test_mark_round_status_duplicate_label(tmp_path):
+    cache = str(tmp_path / "cache")
+    record_round(
+        cache,
+        label="dup",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.5),
+    )
+    record_round(
+        cache,
+        label="dup",
+        checkpoint="c2",
+        summary_path=_summary(tmp_path, "r2", 0.6),
+    )
+    with pytest.raises(FlywheelError, match="unique"):
+        mark_round_status(cache, label="dup", status="discarded")
+
+
+def test_status_promoted_trend_excludes_discarded(tmp_path):
+    cache = str(tmp_path / "cache")
+    record_round(
+        cache,
+        label="baseline",
+        checkpoint="base",
+        summary_path=_summary(tmp_path, "r0", 0.5333),
+    )
+    record_round(
+        cache,
+        label="fw-round1",
+        checkpoint="c1",
+        summary_path=_summary(tmp_path, "r1", 0.7333),
+    )
+    entry = record_round(
+        cache,
+        label="fw-round2",
+        checkpoint="c2",
+        summary_path=_summary(tmp_path, "r2", 0.6333),
+        gate=True,
+    )
+    assert entry["status"] == "discarded"
+    entry = record_round(
+        cache,
+        label="fw-round3",
+        checkpoint="c3",
+        summary_path=_summary(tmp_path, "r3", 0.7333),
+        gate=True,
+    )
+    assert entry["status"] == "promoted"
+    assert entry["incumbent_pass_rate"] == pytest.approx(0.7333)
+    text = format_status(cache)
+    assert "Promoted trend" in text
+    # baseline 0.5333 -> fw-round3 0.7333 = +0.2 UP; discarded round excluded.
+    assert "UP" in text
+    assert "+0.2000" in text
 
 
 # ---------------------------------------------------------------------------

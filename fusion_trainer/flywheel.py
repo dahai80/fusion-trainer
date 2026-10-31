@@ -128,8 +128,23 @@ def record_round(
     export_path: str = "",
     dataset_path: str = "",
     run_id: str = "",
+    baseline: bool = False,
+    gate: bool = False,
+    allow_reconsume: bool = False,
 ) -> dict[str, Any]:
-    """Append a flywheel round parsed from a fusion-eval summary."""
+    """Append a flywheel round parsed from a fusion-eval summary.
+
+    Fresh-data discipline (#82): a training round (baseline=False) records
+    the export it consumed; re-consuming an export another training round
+    already consumed raises FlywheelError unless allow_reconsume=True (then
+    the entry is flagged reconsumed, never silently accepted).
+
+    Eval-gated promotion (#82): with gate=True the candidate is compared
+    against the incumbent — the best pass_rate among prior non-discarded
+    rounds. Regression -> status="discarded" (checkpoint NOT promoted,
+    loud log); otherwise status="promoted". Historical rounds without a
+    status field count as promoted.
+    """
     parsed = parse_eval_summary(summary_path, arm=arm)
     if not parsed["eval_run_id"]:
         raise FlywheelError(f"eval summary {summary_path} carries no run_id")
@@ -141,6 +156,24 @@ def record_round(
             raise FlywheelError(f"export not found: {export}")
         export_sha256 = sha256_file(export)
     registry = load_registry(cache_path)
+    if not baseline and export_sha256:
+        consumed_by = _consumed_export_shas(registry)
+        if export_sha256 in consumed_by:
+            if not allow_reconsume:
+                raise FlywheelError(
+                    f"export {export_sha256[:12]} already consumed by round "
+                    f"{consumed_by[export_sha256]!r} — fresh-data discipline "
+                    "(#82) forbids re-training on consumed data. Mine a new "
+                    "eval export or pass --allow-reconsume to override "
+                    "(flagged, never silent)."
+                )
+            logger.warning(
+                "round %r re-consumes export %s (already used by %r) — "
+                "OVERRIDE via allow_reconsume, entry flagged reconsumed",
+                label,
+                export_sha256[:12],
+                consumed_by[export_sha256],
+            )
     entry = {
         "label": label,
         "checkpoint": checkpoint,
@@ -156,8 +189,46 @@ def record_round(
         "export_path": str(export_path),
         "dataset_path": dataset_path,
         "summary_path": str(summary_path),
+        "baseline": baseline,
+        "consumed": not baseline,
+        "reconsumed": (
+            bool(export_sha256)
+            and not baseline
+            and export_sha256 in _consumed_export_shas(registry)
+        ),
         "recorded_at": datetime.now(UTC).isoformat(),
     }
+    if gate:
+        incumbent = incumbent_pass_rate(registry)
+        if incumbent is None:
+            entry["status"] = "promoted"
+            entry["incumbent_pass_rate"] = None
+            entry["regression"] = None
+            logger.info(
+                "gate: no prior rounds — round %r promoted by default", label
+            )
+        else:
+            regression = entry["pass_rate"] - incumbent
+            entry["incumbent_pass_rate"] = incumbent
+            entry["regression"] = regression
+            if regression < 0:
+                entry["status"] = "discarded"
+                logger.warning(
+                    "gate DISCARDED round %r: pass_rate %.4f regresses vs "
+                    "incumbent %.4f (%+.4f) — checkpoint NOT promoted (#82)",
+                    label,
+                    entry["pass_rate"],
+                    incumbent,
+                    regression,
+                )
+            else:
+                entry["status"] = "promoted"
+                logger.info(
+                    "gate PROMOTED round %r: pass_rate %.4f >= incumbent %.4f",
+                    label,
+                    entry["pass_rate"],
+                    incumbent,
+                )
     if entry["export_sha256"]:
         for existing in registry["rounds"]:
             if (
@@ -181,6 +252,72 @@ def record_round(
     return entry
 
 
+def _consumed_export_shas(registry: dict[str, Any]) -> dict[str, str]:
+    """Map consumed export sha -> consuming round label.
+
+    A round consumed its export when it trained on it: entries with
+    consumed=True. Historical entries (pre-#82, no field) count as
+    consumed unless labelled baseline — every pre-#82 non-baseline round
+    trained on its recorded export.
+    """
+    consumed: dict[str, str] = {}
+    for r in registry.get("rounds", []):
+        sha = r.get("export_sha256") or ""
+        if not sha:
+            continue
+        is_consumed = r.get("consumed")
+        if is_consumed is None:
+            is_consumed = r.get("label") != "baseline" and not r.get("baseline")
+        if is_consumed:
+            consumed.setdefault(sha, r.get("label", ""))
+    return consumed
+
+
+def incumbent_pass_rate(registry: dict[str, Any]) -> float | None:
+    """Best pass_rate among prior non-discarded rounds (None = no rounds).
+
+    Historical entries without a status field count as promoted.
+    """
+    best: float | None = None
+    for r in registry.get("rounds", []):
+        if r.get("status") == "discarded":
+            continue
+        rate = float(r.get("pass_rate", 0.0))
+        if best is None or rate > best:
+            best = rate
+    return best
+
+
+def mark_round_status(
+    cache_path: str, *, label: str, status: str
+) -> dict[str, Any]:
+    """Set a recorded round's promotion status (promoted|discarded).
+
+    Operational backfill for rounds recorded before the #82 gate existed,
+    so the curve reflects which checkpoints were actually kept.
+    """
+    if status not in ("promoted", "discarded"):
+        raise FlywheelError(f"status must be 'promoted' or 'discarded', got {status!r}")
+    registry = load_registry(cache_path)
+    matches = [r for r in registry["rounds"] if r.get("label") == label]
+    if not matches:
+        raise FlywheelError(f"no flywheel round labelled {label!r}")
+    if len(matches) > 1:
+        raise FlywheelError(
+            f"{len(matches)} rounds labelled {label!r} — label must be unique to mark"
+        )
+    entry = matches[0]
+    entry["status"] = status
+    save_registry(cache_path, registry)
+    logger.info(
+        "marked flywheel round %r status=%s (pass_rate=%.4f)",
+        label,
+        status,
+        float(entry.get("pass_rate", 0.0)),
+    )
+    return entry
+
+
 def curve_rows(cache_path: str) -> list[dict[str, Any]]:
     """Rounds with pass_rate + delta vs previous round (trend evidence)."""
     rounds = load_registry(cache_path)["rounds"]
@@ -200,6 +337,8 @@ def curve_rows(cache_path: str) -> list[dict[str, Any]]:
                 "delta": delta,
                 "export_sha256": r.get("export_sha256", ""),
                 "by_type": r.get("by_type", {}),
+                "status": r.get("status", ""),
+                "reconsumed": bool(r.get("reconsumed")),
                 "recorded_at": r.get("recorded_at", ""),
             }
         )
@@ -219,14 +358,17 @@ def format_status(cache_path: str) -> str:
     lines = []
     lines.append(f"Flywheel curve ({len(rows)} round{'s' if len(rows) != 1 else ''}):")
     lines.append(
-        f"  {'#':>2}  {'label':<18}  {'pass_rate':>9}  {'delta':>7}  "
+        f"  {'#':>2}  {'label':<18}  {'status':<10}  {'pass_rate':>9}  {'delta':>7}  "
         f"{'export':<12}  eval_run / checkpoint"
     )
     for row in rows:
         delta = "" if row["delta"] is None else f"{row['delta']:+.4f}"
         export = row["export_sha256"][:12] if row["export_sha256"] else "(baseline)"
+        if row["reconsumed"]:
+            export += "*"
+        status = row["status"] or "-"
         lines.append(
-            f"  {row['index']:>2}  {row['label']:<18}  {row['pass_rate']:>9.4f}  {delta:>7}  "
+            f"  {row['index']:>2}  {row['label']:<18}  {status:<10}  {row['pass_rate']:>9.4f}  {delta:>7}  "
             f"{export:<12}  {row['eval_run_id']} / {row['checkpoint'] or row['model']}"
         )
     first_types = rows[0]["by_type"]
@@ -245,11 +387,23 @@ def format_status(cache_path: str) -> str:
                 cells.append(f"{stats['pass_rate']:>14.4f}" if stats else f"{'-':>14}")
             lines.append(f"  {ttype:<20}" + "".join(f"  {c:>14}" for c in cells))
     if len(rows) >= 2:
-        trend = rows[-1]["pass_rate"] - rows[0]["pass_rate"]
-        direction = "UP" if trend > 0 else ("DOWN" if trend < 0 else "FLAT")
+        promoted = [r for r in rows if r["status"] != "discarded"]
+        if len(promoted) >= 2:
+            trend = promoted[-1]["pass_rate"] - promoted[0]["pass_rate"]
+            direction = "UP" if trend > 0 else ("DOWN" if trend < 0 else "FLAT")
+            lines.append("")
+            lines.append(
+                f"Promoted trend (first -> last promoted, discarded excluded): "
+                f"{trend:+.4f} ({direction}). "
+                "If not up, the experiment report must say why not (#76/#82 acceptance)."
+            )
+    discarded = [r["label"] for r in rows if r["status"] == "discarded"]
+    if discarded:
         lines.append("")
         lines.append(
-            f"Trend (first -> last): {trend:+.4f} ({direction}). "
-            "If not up, the experiment report must say why not (#76 acceptance)."
+            f"Discarded rounds (gate rejected, checkpoints NOT promoted): "
+            f"{', '.join(discarded)}"
         )
+    if any(r["reconsumed"] for r in rows):
+        lines.append("* = round re-consumed an already-consumed export (override).")
     return "\n".join(lines)
