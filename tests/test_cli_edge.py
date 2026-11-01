@@ -478,3 +478,76 @@ class TestDPOAdapterChaining:
         )
         assert result.exit_code == 0, result.output
         assert captured["rlsl"].init_adapter_path == ""
+
+    def test_rlsl_yaml_hyperparams_flow_to_config(self, monkeypatch, tmp_path):
+        # #83: YAML rlsl section must reach RLSLConfig — num_epochs: 2 used to
+        # be silently dropped (dataclass default 1 ran; live-observed iters 22
+        # not 44 on the round-5 DPO flywheel).
+        captured: dict = {}
+        cfg_file = tmp_path / "rlsl.yaml"
+        cfg_file.write_text(
+            "rlsl:\n"
+            "  method: dpo\n"
+            "  num_epochs: 2\n"
+            "  beta: 0.2\n"
+            "  batch_size: 3\n"
+            "  learning_rate: 1.0e-5\n"
+            "  log_every: 5\n"
+            "  save_every: 50\n"
+            "  run_name: yaml-run\n"
+            "dataset:\n"
+            "  max_seq_length: 1024\n"
+        )
+
+        class FakeEngine:
+            def __init__(self, cfg):
+                captured["rlsl"] = cfg.rlsl
+
+            def run(self):
+                return {"status": "completed", "adapter_name": "x"}
+
+        monkeypatch.setattr("fusion_trainer.rlsl.pipeline.RLSLEngine", FakeEngine)
+        result = runner.invoke(
+            app,
+            [
+                "rlsl",
+                "--config",
+                str(cfg_file),
+                "--model",
+                "m",
+                "--dataset",
+                "/x.jsonl",
+                "--method",
+                "dpo",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        r = captured["rlsl"]
+        assert r.num_epochs == 2
+        assert r.beta == 0.2
+        assert r.batch_size == 3
+        assert r.learning_rate == 1.0e-5
+        assert r.log_every == 5
+        assert r.save_every == 50
+
+    def test_rlsl_defaults_without_yaml(self, monkeypatch, tmp_path):
+        # No YAML/preset → dataclass defaults unchanged (backward compat).
+        captured: dict = {}
+
+        class FakeEngine:
+            def __init__(self, cfg):
+                captured["rlsl"] = cfg.rlsl
+
+            def run(self):
+                return {"status": "completed", "adapter_name": "x"}
+
+        monkeypatch.setattr("fusion_trainer.rlsl.pipeline.RLSLEngine", FakeEngine)
+        result = runner.invoke(
+            app,
+            ["rlsl", "--model", "m", "--dataset", "/x.jsonl", "--method", "dpo"],
+        )
+        assert result.exit_code == 0, result.output
+        r = captured["rlsl"]
+        assert r.num_epochs == 1
+        assert r.beta == 0.1
+        assert r.batch_size == 1

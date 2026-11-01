@@ -73,6 +73,23 @@ class ORPOTrainer:
                 "ORPO: chaining on SFT adapter %s (fusion-mlx #1149)",
                 self.rlsl_cfg.init_adapter_path,
             )
+        # #83: same ~2x activation memory as DPO (chosen+rejected forwards in
+        # one graph) — pass recompute through when asked (fusion-mlx #1460).
+        # Key only when on: older fusion-mlx 400s on unknown keys.
+        if self.rlsl_cfg.gradient_checkpointing:
+            cfg["gradient_checkpointing"] = True
+            logger.info(
+                "ORPO: gradient_checkpointing=True: activation recompute on "
+                "(fusion-mlx #1460)"
+            )
+        # #83/#1472: keep_ref_resident is DPO-only — ORPO has no reference
+        # model (odds ratio replaces the ref subtraction). Guard: refuse the
+        # combination loudly instead of silently dropping the user's flag.
+        if self.rlsl_cfg.keep_ref_resident:
+            logger.warning(
+                "ORPO: keep_ref_resident=True ignored — ORPO has no reference "
+                "model (fusion-mlx #1472)"
+            )
         return cfg
 
     def train(

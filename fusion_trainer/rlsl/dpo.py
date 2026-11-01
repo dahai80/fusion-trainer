@@ -78,6 +78,25 @@ class DPOTrainer:
                 "DPO: chaining on SFT adapter %s (fusion-mlx #1149)",
                 self.rlsl_cfg.init_adapter_path,
             )
+        # #83: DPO loss graph holds chosen+rejected forwards at once (~2x SFT
+        # activation memory) — pass recompute through when asked (fusion-mlx
+        # DPOConfig.gradient_checkpointing, #1460). Key only when on: older
+        # fusion-mlx 400s on unknown keys.
+        if self.rlsl_cfg.gradient_checkpointing:
+            cfg["gradient_checkpointing"] = True
+            logger.info(
+                "DPO: gradient_checkpointing=True: activation recompute on "
+                "(fusion-mlx #1460)"
+            )
+        # #83: resident reference model — the per-pair load-and-evict does 2
+        # full base loads per pair and the Metal churn fatals the enforcer on
+        # large bases (fusion-mlx #1472). Key only when on.
+        if self.rlsl_cfg.keep_ref_resident:
+            cfg["keep_ref_resident"] = True
+            logger.info(
+                "DPO: keep_ref_resident=True: one ref model held for the "
+                "whole job (fusion-mlx #1472)"
+            )
         return cfg
 
     def train(

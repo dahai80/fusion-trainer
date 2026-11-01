@@ -7,6 +7,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc23] - 2026-11-01
+
+Patch release: multi-arm DPO flywheel round (#83) — the DPO lever from #82's
+re-scope, plus the DPO memory-safety passthroughs it took to run DPO on a
+27B-8bit base at all.
+
+### Added (#83)
+- **Multi-arm DPO mining → training → eval gate** — merged the 4 existing
+  30-task eval exports (structurally multi-arm: 120 trajectories) into one
+  JSONL, mined 22 `chosen`/`rejected` pairs (chosen lineage 19/22 from the
+  incumbent fw-round1 adapter — true on-policy preference data; 30 unpaired
+  failures counted loudly, never fabricated; 6 never-passed tasks excluded),
+  DPO-trained chained on the incumbent fw-round1 (73.33%), eval-gated via
+  `ft flywheel record --gate`. **Round-5 result (run `20261101-r5-eval`):
+  17/30 = 56.67% — gate verdict DISCARDED (−16.67pp vs incumbent), checkpoint
+  not promoted.** Honest negative: 22 pairs from 4 exports is too thin a
+  preference signal to beat the incumbent — `testwrite` regressed 2/3→0/3
+  (agent wrote no runnable tests; hidden mutations all survived) while
+  `configfix`/`depfix`/`bugfix` held 3/3 and `feature` stayed 0/3 (persistent
+  spec-gap). Failure modes are spec-gap/implementation-miss, one 900s timeout.
+  Multi-arm DPO scores above every discarded SFT chain round (43.33%/46.67%)
+  and preserves more of round-1's per-type strength, but the flywheel remains
+  a one-high-signal-round tool until a larger multi-arm export corpus exists.
+- **`RLSLConfig.gradient_checkpointing`** (DPO/ORPO passthrough) — the DPO
+  loss graph holds the chosen AND rejected forwards simultaneously (~2x an
+  SFT step's activation memory); 27B-8bit + seq 1024 OOM'd the engine's
+  memory_enforcer without recompute (live-verified). Maps to fusion-mlx
+  `DPOConfig.gradient_checkpointing` (#1460). Key sent only when True.
+- **`RLSLConfig.keep_ref_resident`** (DPO passthrough) — fusion-mlx's per-pair
+  reference load-and-evict performs TWO full base loads per pair (chosen +
+  rejected); on a 27B-8bit base the repeated same-size Metal allocations
+  churned phys_footprint to 165.9GB over the 120GB ceiling and the enforcer
+  fatal-exited the engine ~90s after job start (fusion-mlx #1472, fixed
+  upstream v0.10.36 — the engine now also auto-enables a resident reference
+  for param_bytes >= 16GB). Key sent only when True.
+
+### Fixed (#83)
+- **`ft rlsl` dropped YAML alignment hyperparams** — `num_epochs`, `beta`,
+  `batch_size`, `learning_rate`, `log_every`, `save_every`, `output_dir` from
+  the YAML `rlsl:` section (and presets) never reached `RLSLConfig`; the
+  dataclass defaults ran silently (live-observed: YAML `num_epochs: 2`
+  trained 1 epoch — iters 22, not 44; `beta`/`lr`/`batch` matched only by
+  coincidence). Resolution order now mirrors bnup-train: preset > YAML >
+  dataclass default.
+- **`--dpo-output` single-arm gate message** (#78 residual) — the remediation
+  text referenced a nonexistent `--arm` CLI form; now says to merge several
+  single-arm exports into one JSONL (or wait for fusion-eval#17 multi-arm).
+
+### Upstream (fusion-mlx)
+- #1461 DPO `init_adapter_path` double-apply ("Can't convert layer of type
+  LoRALinear to LoRA") — fixed, v0.10.34.
+- #1463 in-process trainers never called `model.train()` — hybrid
+  linear-attention models (qwen3_5/qwen3_next, incl. Qwen3.8-27B-8bit) routed
+  the backward through a no-vjp CustomKernel; first backward raised
+  "[Primitive::vjp] Not implemented for CustomKernel" — fixed, v0.10.35.
+- #1472 DPO per-pair ref load-and-evict Metal churn (this repo's round-5
+  live evidence) — `DPOConfig.keep_ref_resident` + auto-enable, v0.10.36.
+- #1473 fail-closed training memory preflight — v0.10.38.
+
 ## [1.0.0rc22] - 2026-10-31
 
 Patch release: flywheel discipline (#82) — fresh-data enforcement and

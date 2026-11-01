@@ -293,6 +293,38 @@ class TestDPOTrainer:
         trainer.train(_make_preference_data(2))
         assert "init_adapter_path" not in calls[0]["config"]
 
+    def test_grad_checkpointing_included_when_on(self, monkeypatch):
+        # #83: gradient_checkpointing=True flows into the fusion-mlx DPO job
+        # config (DPO loss graph holds chosen+rejected forwards, ~2x SFT
+        # activation memory — 27B-8bit OOMs without recompute).
+        calls = _patch_pref_client(monkeypatch)
+        trainer = DPOTrainer(_make_config("dpo", gradient_checkpointing=True))
+        trainer.train(_make_preference_data(2))
+        assert calls[0]["config"]["gradient_checkpointing"] is True
+
+    def test_grad_checkpointing_omitted_when_off(self, monkeypatch):
+        # Default off: key must NOT appear (older fusion-mlx 400s on unknown keys).
+        calls = _patch_pref_client(monkeypatch)
+        trainer = DPOTrainer(_make_config("dpo"))
+        trainer.train(_make_preference_data(2))
+        assert "gradient_checkpointing" not in calls[0]["config"]
+
+    def test_keep_ref_resident_included_when_on(self, monkeypatch):
+        # #83: keep_ref_resident=True flows into the fusion-mlx DPO job config
+        # (per-pair ref load-and-evict churns Metal allocations until the
+        # memory_enforcer fatal-exits on large bases — fusion-mlx #1472).
+        calls = _patch_pref_client(monkeypatch)
+        trainer = DPOTrainer(_make_config("dpo", keep_ref_resident=True))
+        trainer.train(_make_preference_data(2))
+        assert calls[0]["config"]["keep_ref_resident"] is True
+
+    def test_keep_ref_resident_omitted_when_off(self, monkeypatch):
+        # Default off: key must NOT appear (older fusion-mlx 400s on unknown keys).
+        calls = _patch_pref_client(monkeypatch)
+        trainer = DPOTrainer(_make_config("dpo"))
+        trainer.train(_make_preference_data(2))
+        assert "keep_ref_resident" not in calls[0]["config"]
+
 
 # ===========================================================================
 # ORPOTrainer
@@ -324,6 +356,19 @@ class TestORPOTrainer:
         trainer = ORPOTrainer(config)
         with pytest.raises(ValueError, match="sft.model"):
             trainer.train(_make_preference_data(2))
+
+    def test_grad_checkpointing_included_when_on(self, monkeypatch):
+        # #83: same ~2x activation memory as DPO — passthrough mirrors DPO.
+        calls = _patch_pref_client(monkeypatch)
+        trainer = ORPOTrainer(_make_config("orpo", gradient_checkpointing=True))
+        trainer.train(_make_preference_data(2))
+        assert calls[0]["config"]["gradient_checkpointing"] is True
+
+    def test_grad_checkpointing_omitted_when_off(self, monkeypatch):
+        calls = _patch_pref_client(monkeypatch)
+        trainer = ORPOTrainer(_make_config("orpo"))
+        trainer.train(_make_preference_data(2))
+        assert "gradient_checkpointing" not in calls[0]["config"]
 
     def test_train_empty(self):
         trainer = ORPOTrainer(_make_config("orpo"))

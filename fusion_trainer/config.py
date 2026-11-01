@@ -314,6 +314,25 @@ class RLSLConfig:
     DPO training — enabling the two-stage SFT→DPO pipeline. The reference
     model stays base-only (DPO theory). Empty = fresh LoRA (backward compat)."""
 
+    gradient_checkpointing: bool = False
+    """Activation recompute for DPO/ORPO. The DPO loss graph holds the chosen
+    AND rejected forwards simultaneously (~2x an SFT step's activation memory
+    at the same seq length), so large 8-bit bases that train SFT fine without
+    checkpointing can OOM on DPO — live-verified on 27B-8bit + seq 1024
+    (fusion-mlx memory_enforcer fatal_exit, issue #83). Maps to fusion-mlx
+    DPOConfig.gradient_checkpointing (>= 0.10.34, #1460). Key sent only when
+    True (older fusion-mlx 400s on unknown keys)."""
+
+    keep_ref_resident: bool = False
+    """Hold ONE reference model resident for the whole DPO job instead of
+    fusion-mlx's per-pair load-and-evict (2 full base loads per pair — chosen
+    + rejected). The repeated same-size Metal allocations churn phys_footprint
+    until the memory_enforcer fatal-exits the engine — live-verified on
+    27B-8bit at 165.9GB over the 120GB ceiling ~90s after job start
+    (fusion-mlx #1472). Resident = steady policy+ref (~2x model bytes), no
+    churn. Default False preserves load-and-evict for shared deployments.
+    Key sent only when True (older fusion-mlx 400s on unknown keys)."""
+
     # RLSL (PPO-light) parameters
     clip_epsilon: float = 0.2
     ppo_epochs: int = 4

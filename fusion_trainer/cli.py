@@ -653,6 +653,25 @@ def rlsl(
     if init_adapter_path:
         rlsl_kwargs["init_adapter_path"] = init_adapter_path
 
+    # #83: alignment hyperparams have no CLI flags, so they must flow from
+    # preset/YAML — the old code never forwarded them and RLSLConfig ran on
+    # dataclass defaults (live-observed: YAML num_epochs: 2 trained 1 epoch,
+    # iters 22 not 44; beta/lr/batch only matched by coincidence). Resolution
+    # order mirrors bnup-train's _pick: preset > YAML > dataclass default.
+    for _key, _caster, _default in (
+        ("beta", float, 0.1),
+        ("batch_size", int, 1),
+        ("learning_rate", float, 5e-6),
+        ("num_epochs", int, 1),
+        ("log_every", int, 10),
+        ("save_every", int, 200),
+        ("output_dir", str, ""),
+    ):
+        if _key in preset_vals:
+            rlsl_kwargs[_key] = _caster(preset_vals[_key])
+        elif _key in yaml_vals:
+            rlsl_kwargs[_key] = _caster(yaml_vals[_key])
+
     cfg = TrainerConfig(
         seed=seed,
         model_hub_path=model_hub_path or os.environ.get("FUSION_MODEL_HUB", ""),
@@ -1673,10 +1692,11 @@ def datasets_from_eval(
     dpo_output: str = typer.Option(
         "",
         "--dpo-output",
-        help="Optional: also mine DPO preference pairs to this path. Requires a "
-        "MULTI-ARM export (fusion-eval run --arm <a> --arm <b>) so tasks can "
-        "have both a passed and a failed trajectory — a single-arm export is "
-        "structurally empty and raises (#78).",
+        help="Optional: also mine DPO preference pairs to this path. Requires "
+        "multiple trajectories per task (passed + failed siblings) — merge "
+        "several single-arm exports into one JSONL, or run a multi-arm eval "
+        "once fusion-eval supports it (fusion-eval#17). A one-trajectory-"
+        "per-task export is structurally empty and raises (#78).",
     ),
     dpo_anyway: bool = typer.Option(
         False,

@@ -276,8 +276,10 @@ def build_from_eval_dataset(
                 "DPO output requested but this export is single-arm "
                 f"(arms: {export_arms(records)}) — every task has exactly one "
                 "trajectory, so no passed/failed siblings exist and mining is "
-                "structurally empty. Re-run the eval with multiple arms "
-                "(fusion-eval run --arm <a> --arm <b>) or pass --dpo-anyway "
+                "structurally empty. Merge several single-arm exports into "
+                "one JSONL (tasks then have passed/failed siblings across "
+                "runs), or run a multi-arm eval once fusion-eval supports "
+                "it (fusion-eval#17), or pass --dpo-anyway "
                 "to write the empty DPO file anyway."
             )
         dpo_empty = dpo_structurally_empty(records)
