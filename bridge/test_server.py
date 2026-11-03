@@ -292,6 +292,56 @@ def test_index_serves_console_page(client):
     assert b"Model Trainer" in resp.content
 
 
+class _FakeCatalogMLX:
+    def __init__(self, data=None, raise_exc=None):
+        self._data = data
+        self._raise = raise_exc
+
+    def health(self):
+        if self._raise:
+            raise self._raise
+        return {"object": "list", "data": self._data}
+
+    def close(self):
+        pass
+
+
+def test_catalog_lists_models(client, monkeypatch):
+    monkeypatch.setattr(
+        bs,
+        "_mlx",
+        lambda: _FakeCatalogMLX(
+            data=[{"id": "b-model"}, {"id": "a-model"}, {"no-id": True}]
+        ),
+    )
+    resp = client.get("/catalog", headers=AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["models"] == ["a-model", "b-model"]
+    assert body["default_base_model"] == bs.DEFAULT_BASE_MODEL
+
+
+def test_catalog_mlx_unreachable_502(client, monkeypatch):
+    monkeypatch.setattr(
+        bs, "_mlx", lambda: _FakeCatalogMLX(raise_exc=ConnectionError("down"))
+    )
+    resp = client.get("/catalog", headers=AUTH)
+    assert resp.status_code == 502
+
+
+def test_catalog_unexpected_reply_502(client, monkeypatch):
+    monkeypatch.setattr(bs, "_mlx", lambda: _FakeCatalogMLX(data="garbage"))
+    resp = client.get("/catalog", headers=AUTH)
+    assert resp.status_code == 502
+
+
+def test_console_has_model_select(client):
+    html = client.get("/").content.decode()
+    assert 'id="run-model"' in html
+    assert '"catalog"' in html
+    assert "model: " in html
+
+
 def test_console_theme_follows_shell(client):
     # issue #73: class-based theming + shell theme event + no-flash boot.
     html = client.get("/").content.decode()

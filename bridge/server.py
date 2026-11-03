@@ -475,6 +475,28 @@ async def presets() -> dict[str, Any]:
     }
 
 
+@app.get("/catalog", dependencies=[Depends(_require_auth)])
+async def catalog() -> dict[str, Any]:
+    logger.info("GET /catalog: listing fusion-mlx model catalog")
+    client = _mlx()
+    try:
+        info = client.health()
+    except Exception as e:
+        logger.warning(f"GET /catalog: fusion-mlx unreachable: {e}")
+        raise HTTPException(502, f"fusion-mlx unreachable: {e}")
+    finally:
+        client.close()
+    data = info.get("data") if isinstance(info, dict) else None
+    if not isinstance(data, list):
+        logger.warning(f"GET /catalog: unexpected /v1/models reply: {str(info)[:200]}")
+        raise HTTPException(502, f"unexpected /v1/models reply: {str(info)[:200]}")
+    ids = sorted(
+        str(m.get("id", "")) for m in data if isinstance(m, dict) and m.get("id")
+    )
+    logger.info(f"GET /catalog: {len(ids)} models in catalog")
+    return {"models": ids, "default_base_model": DEFAULT_BASE_MODEL}
+
+
 @app.post("/datasets", dependencies=[Depends(_require_auth)])
 async def upload_dataset(body: DatasetUpload) -> dict[str, Any]:
     return _validate_and_store(body.name, body.content, body.fmt)

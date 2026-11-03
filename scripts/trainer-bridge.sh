@@ -35,9 +35,17 @@ case "${1:-status}" in
             exit 0
         fi
         if [ -z "${FUSION_TRAINER_BRIDGE_KEY:-}" ]; then
-            echo "ERROR: FUSION_TRAINER_BRIDGE_KEY is required" >&2
+            # Fallback: persisted key file (0600), same read-only pattern
+            # as the settings.json reads below. Generate with:
+            #   python3 -c "import secrets;print(secrets.token_urlsafe(32))" \
+            #     > ~/.fusion-trainer-bridge/bridge_key
+            FUSION_TRAINER_BRIDGE_KEY="$(cat "$HOME/.fusion-trainer-bridge/bridge_key" 2>/dev/null || true)"
+        fi
+        if [ -z "${FUSION_TRAINER_BRIDGE_KEY:-}" ]; then
+            echo "ERROR: FUSION_TRAINER_BRIDGE_KEY is required (env or ~/.fusion-trainer-bridge/bridge_key)" >&2
             exit 1
         fi
+        export FUSION_TRAINER_BRIDGE_KEY
         if [ ! -x "$PY" ]; then
             echo "ERROR: venv python not found: $PY" >&2
             exit 1

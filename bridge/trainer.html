@@ -102,6 +102,7 @@ or JSONL: {"messages": [...]}'></textarea>
   <p>
     <label>Run name <input id="run-name" placeholder="my-first-tune" style="width:150px"></label>
     <label>Dataset <select id="run-dataset"></select></label>
+    <label>Base model <select id="run-model"><option value="">loading…</option></select></label>
     <label>Preset <select id="run-preset"><option value="">4B defaults (rank 16 · lr 2e-4 · 3 epochs)</option></select></label>
     <label>Epochs <input id="run-epochs" type="number" min="1" max="20" value="3" style="width:60px"></label>
     <button class="primary" id="run-start">Start Training</button>
@@ -245,6 +246,7 @@ $("run-start").addEventListener("click", async () => {
       name: $("run-name").value.trim() ||
         `tune-${new Date().toISOString().slice(5, 16).replace(/[^0-9T-]/g, "")}`,
       dataset: $("run-dataset").value,
+      model: $("run-model").value,
       preset: $("run-preset").value,
       num_epochs: parseInt($("run-epochs").value, 10) || 3,
     };
@@ -344,8 +346,23 @@ async function loadConn() {
       `<span class="dot bad"></span> model training platform down — ${e.message}`;
   }
 }
+async function loadModels() {
+  // Base-model catalog straight from fusion-mlx /v1/models via the bridge.
+  const sel = $("run-model");
+  try {
+    const c = await api("GET", "catalog");
+    const cur = sel.value;
+    sel.innerHTML = c.models.map(m => `<option>${esc(m)}</option>`).join("");
+    const want = cur || c.default_base_model;
+    if (c.models.includes(want)) sel.value = want;
+    else if (c.models.includes(c.default_base_model)) sel.value = c.default_base_model;
+  } catch (e) {
+    sel.innerHTML = `<option value="">catalog unavailable — ${esc(e.message)}</option>`;
+  }
+}
+
 loadConn();
-loadDatasets(); loadPresets(); loadRuns(); loadPublished();
+loadDatasets(); loadModels(); loadPresets(); loadRuns(); loadPublished();
 setInterval(loadRuns, 4000);
 setInterval(loadConn, 15000);
 </script>
