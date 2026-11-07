@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/gui-spec
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: guide
+title: { zh: "fusion-trainer GUI 需求与原型", en: "fusion-trainer GUI mockup spec" }
+audience: engineer
+status: draft
+version: 1.0.0rc23
+updated: 2026-11-07
+owner: @dahai
+source_of_truth:
+  - architecture/fusion-trainer-gui.md
+---
+
 # Fusion-Trainer GUI 需求与高保真原型
 
 > 目标:梳理 fusion-trainer 需要的 GUI,形成 md 格式高保真原型,向 fusion-studio 提需求落地,完成集成。
@@ -228,7 +244,7 @@ Inspector(Column 4)超参摘要:
 | Precision | `sft.use_mxfp8` | bool | true | **显示 ⏳ 上游阻塞提示**(fail-visible) |
 | Checkpoint | `sft.save_every` | int | 500 | |
 | | `sft.save_total_limit` | int | 3 | |
-| Run | `sft.run_name` | text | sft_<ts> | |
+| Run | `sft.run_name` | text | sft_20261107 | |
 | | `seed` | int | 42 | |
 | Preset | `--preset` | select(10 SFT presets) | — | 选中后填充上面字段,可覆盖 |
 

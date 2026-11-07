@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/readme
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: readme
+title: { zh: "fusion-trainer 说明", en: "fusion-trainer readme" }
+audience: engineer
+status: draft
+version: 1.0.0rc23
+updated: 2026-11-07
+owner: @dahai
+source_of_truth:
+  - README.md
+---
+
 # Fusion-Trainer
 
 **[English](README.md)** | **[中文](README_CN.md)**

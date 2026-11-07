@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/release-process
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: guide
+title: { zh: "fusion-trainer 发布流程", en: "fusion-trainer release process" }
+audience: engineer
+status: draft
+version: 1.0.0rc23
+updated: 2026-11-07
+owner: @dahai
+source_of_truth:
+  - docs/RELEASE_PROCESS.md
+---
+
 # Release Process — fusion-trainer
 
 This document defines how a fusion-trainer release is cut, reviewed, tagged,

@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/changelog
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: changelog
+title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
+audience: engineer
+status: draft
+version: 1.0.0rc23
+updated: 2026-11-07
+owner: @dahai
+source_of_truth:
+  - CHANGELOG.md
+---
+
 # Changelog
 
 All notable changes to fusion-trainer are documented here. The format is based
