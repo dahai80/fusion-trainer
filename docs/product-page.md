@@ -9,7 +9,7 @@ audience: engineer
 status: draft
 version: 1.0.0rc23
 updated: 2026-11-07
-owner: @dahai
+owner: "@dahai"
 source_of_truth:
   - docs/product-page.md
 ---

@@ -10,7 +10,7 @@ status: deprecated
 superseded_by: docs/guides/grpo-sandbox-reward.md
 version: 1.0.0
 updated: 2026-09-02
-owner: @dahai
+owner: "@dahai"
 source_of_truth:
   - docs/superpowers/specs/2026-09-02-seatbelt-sandbox-isolation-design.md
 ---
