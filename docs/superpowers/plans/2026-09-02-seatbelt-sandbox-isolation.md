@@ -1,3 +1,20 @@
+---
+doc_id: fusion-trainer/seatbelt-sandbox-isolation-plan
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: guide
+title: { zh: "Seatbelt 沙箱隔离实施计划（历史存档）", en: "Seatbelt sandbox isolation implementation plan (archived)" }
+audience: engineer
+status: deprecated
+superseded_by: docs/guides/grpo-sandbox-reward.md
+version: 1.0.0
+updated: 2026-09-02
+owner: @dahai
+source_of_truth:
+  - docs/superpowers/plans/2026-09-02-seatbelt-sandbox-isolation.md
+---
+
 # Seatbelt Sandbox Isolation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

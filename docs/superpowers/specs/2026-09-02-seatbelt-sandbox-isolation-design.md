@@ -1,3 +1,20 @@
+---
+doc_id: fusion-trainer/seatbelt-sandbox-isolation-design
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: guide
+title: { zh: "Seatbelt 沙箱隔离设计规格（历史存档）", en: "Seatbelt sandbox isolation design spec (archived)" }
+audience: engineer
+status: deprecated
+superseded_by: docs/guides/grpo-sandbox-reward.md
+version: 1.0.0
+updated: 2026-09-02
+owner: @dahai
+source_of_truth:
+  - docs/superpowers/specs/2026-09-02-seatbelt-sandbox-isolation-design.md
+---
+
 # Seatbelt Sandbox Isolation — Design Spec (issue #53)
 
 **Date:** 2026-09-02
