@@ -23,6 +23,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are tracked by the `__version__` in `fusion_trainer/_version.py` and
 by git tags of the form `v<version>`.
 
+## [1.0.0rc24] - 2026-11-07
+
+Docs release: adopted the fusion docs-system v1.1 contract (platform x
+service, PR #84) — added ci/validate_docs.py + docs workflow gating,
+Tier 0 docs (product-page / get-started / architecture / api-reference /
+troubleshooting), contract frontmatter on first-party markdown, and
+frontmatter for the archived seatbelt-sandbox plan/spec (status:
+deprecated, superseded_by the grpo-sandbox-reward guide). ruff UP
+modernization of the validator itself. No frozen-surface change.
+
 ## [1.0.0rc23] - 2026-11-01
 
 Patch release: multi-arm DPO flywheel round (#83) — the DPO lever from #82's
