@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/api-stability
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: guide
+title: { zh: "fusion-trainer API 稳定性契约", en: "fusion-trainer API stability contract" }
+audience: engineer
+status: draft
+version: 1.0.0rc23
+updated: 2026-11-07
+owner: @dahai
+source_of_truth:
+  - docs/API_STABILITY.md
+---
+
 # API Stability Contract — fusion-trainer 1.0
 
 **Frozen at:** v1.0.0
