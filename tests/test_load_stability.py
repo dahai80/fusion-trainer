@@ -49,7 +49,10 @@ def _server_reachable() -> bool:
         headers["Authorization"] = f"Bearer {token}"
     try:
         resp = httpx.get(
-            f"http://localhost:{port}/v1/models", timeout=20.0, headers=headers
+            f"http://localhost:{port}/v1/models",
+            timeout=20.0,
+            headers=headers,
+            trust_env=False,
         )
         return resp.status_code == 200
     except Exception:

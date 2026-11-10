@@ -1750,6 +1750,82 @@ def datasets_from_eval(
     )
 
 
+@datasets_app.command(name="from-rollouts")
+def datasets_from_rollouts(
+    sink_file: str = typer.Option(
+        ...,
+        "--sink",
+        "-s",
+        help="Gateway rollout-tap sink JSONL (schema: docs/rollout-tap.md, #86)",
+    ),
+    output_file: str = typer.Option(
+        "",
+        "--output",
+        "-o",
+        help="Output SFT dataset path (positive rollouts -> messages-JSONL, "
+        "fed to `ft sft --dataset`)",
+    ),
+    grpo_output: str = typer.Option(
+        "",
+        "--grpo-output",
+        help="Optional: also write a GRPO prompt set (every record with a "
+        "prompt -> {prompt, reward, metadata}) for `ft rlsl --method grpo`",
+    ),
+    min_score: float = typer.Option(
+        1.0,
+        "--min-score",
+        help="Minimum reward for the SFT positive set (default 1.0: "
+        "task_success/user_accepted only)",
+    ),
+):
+    """Build RFT/GRPO datasets from a gateway rollout-tap sink (#86).
+
+    Positive rollouts (reward >= min-score) become {"messages": [...]}
+    SFT samples; all prompted records become GRPO prompts with the
+    observed outcome carried as the reward ref field. A sidecar manifest
+    `<output>.from_rollouts.json` records the sink sha256 — `ft sft`
+    picks it up automatically and reports the run's rollout source.
+    """
+    from pathlib import Path
+
+    from fusion_trainer.dataset.rollout_ingest import (
+        RolloutIngestError,
+        build_from_rollouts,
+    )
+
+    if not output_file and not grpo_output:
+        typer.echo(
+            "Error: nothing to write — pass --output (SFT) and/or --grpo-output (GRPO prompts)",
+            err=True,
+        )
+        raise typer.Exit(1)
+    try:
+        manifest = build_from_rollouts(
+            Path(sink_file),
+            Path(output_file) if output_file else None,
+            Path(grpo_output) if grpo_output else None,
+            min_score=min_score,
+        )
+    except RolloutIngestError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    if manifest["sft_path"]:
+        typer.echo(
+            f"SFT dataset:  {manifest['sft_samples']} samples -> {manifest['sft_path']}"
+        )
+    if manifest["grpo_path"]:
+        typer.echo(
+            f"GRPO prompts: {manifest['grpo_prompts']} -> {manifest['grpo_path']}"
+        )
+    typer.echo(f"Signals:      {manifest['signals']}")
+    typer.echo(f"Sink sha256:  {manifest['sink_sha256']}")
+    typer.echo(
+        f"Manifest:     {manifest['sft_path'] or manifest['grpo_path']}"
+        ".from_rollouts.json "
+        "(ft sft records this run's rollout source automatically)"
+    )
+
+
 @flywheel_app.command(name="record")
 def flywheel_record(
     label: str = typer.Option(

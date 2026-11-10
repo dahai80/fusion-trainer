@@ -438,6 +438,9 @@ class TestRewardServer:
                     "completions": ["<answer>5</answer>", "<answer>7</answer>"],
                 },
                 timeout=5.0,
+                # Loopback must bypass the macOS system proxy (env/scproxy
+                # picks it up and 502s random local ports)
+                trust_env=False,
             )
             assert resp.status_code == 200
             rewards = resp.json()["rewards"]
@@ -457,6 +460,7 @@ class TestRewardServer:
                 endpoint,
                 json={"prompt": "unknown prompt", "completions": ["x", "y"]},
                 timeout=5.0,
+                trust_env=False,
             )
             assert resp.status_code == 200
             # auto/math with no reference sample -> 0.5 per completion
@@ -528,6 +532,7 @@ class TestRMRewardServer:
                 endpoint,
                 json={"prompt": "2+3=?", "completions": ["5", "7"]},
                 timeout=5.0,
+                trust_env=False,
             )
             assert resp.status_code == 200
             assert resp.json()["rewards"] == [0.9, 0.1]
@@ -554,6 +559,7 @@ class TestRMRewardServer:
                 endpoint,
                 json={"prompt": "p", "completions": ["c"]},
                 timeout=5.0,
+                trust_env=False,
             )
             assert resp.status_code == 500
             # A2 (round-2 audit): 500 must NOT echo the internal exception
@@ -602,12 +608,18 @@ class TestRMRewardServer:
             try:
                 # Below threshold: fail-visible 500.
                 r1 = httpx.post(
-                    endpoint, json={"prompt": "p", "completions": ["c"]}, timeout=5.0
+                    endpoint,
+                    json={"prompt": "p", "completions": ["c"]},
+                    timeout=5.0,
+                    trust_env=False,
                 )
                 assert r1.status_code == 500
                 # 2nd consecutive failure trips the breaker -> baseline 200.
                 r2 = httpx.post(
-                    endpoint, json={"prompt": "p", "completions": ["c"]}, timeout=5.0
+                    endpoint,
+                    json={"prompt": "p", "completions": ["c"]},
+                    timeout=5.0,
+                    trust_env=False,
                 )
                 assert r2.status_code == 200
                 assert r2.json()["rewards"] == [0.0]

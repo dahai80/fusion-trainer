@@ -7,14 +7,53 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc23
-updated: 2026-11-07
+version: 1.0.0rc25
+updated: 2026-11-10
 owner: "@dahai"
 source_of_truth:
   - CHANGELOG.md
 ---
 
 # Changelog
+
+## [1.0.0rc25] - 2026-11-10
+
+Patch release: rollout-sink ingestion (#86) + a test-suite fix for the
+macOS system-proxy environment.
+
+### Added (#86)
+- **Rollout tap design doc** — `docs/rollout-tap.md`: adopts the
+  microsoft/agent-lightning v1.0 proxy-side rollout-collection pattern onto
+  the fusion topology. Seams split by repo ownership: tap middleware + sink
+  belong to fusion-gateway (tracked upstream, fusion-gateway#608); the
+  trainer-side consumption ships here. Covers the rollout record schema v1,
+  the opt-in matrix (tenant/key/routes/PII gate, redact by default), the
+  deterministic reward-signal mapping (task_success/user_accepted 1.0,
+  user_edited 0.5, user_rejected/error 0.0, unobserved excluded), the
+  reward-hacking countermeasures, and the #86 acceptance mapping.
+- **`ft datasets from-rollouts`** (`dataset/rollout_ingest.py`) — consumes a
+  gateway rollout-tap sink JSONL into trainer datasets: positive rollouts
+  (reward >= `--min-score`, default 1.0) become `{"messages": [...]}` SFT
+  samples via the existing `ft sft` path; every prompted record becomes a
+  GRPO prompt (`{"prompt", "reward", "metadata"}`, prompt falls back to the
+  first user turn) for `ft rlsl --method grpo`. Bad lines skipped loudly,
+  zero-record sinks raise fail-visible, prompts without outcomes can never
+  enter the positive SFT set. Sidecar manifest `<output>.from_rollouts.json`
+  (atomic) carries the sink sha256 + per-signal counts.
+- **Rollout-fed run traceability** — `SFTTrainer._find_eval_manifest` now
+  falls through to the from-rollouts sidecar, so `ft sft` records
+  `source_export_sha256`/`source_export_path` for rollout-fed runs too
+  (same mechanism as eval-fed runs, #76 requirement 3).
+- Tests: `tests/test_rollout_ingest.py` (19 cases, fully offline).
+
+### Fixed
+- **Loopback tests vs macOS system proxy** — `tests/test_grpo.py` +
+  `tests/test_load_stability.py` real-HTTP call sites now pass
+  `trust_env=False`: with a system proxy enabled (e.g. 127.0.0.1:7897),
+  httpx picks it up via `getproxies()`/`_scproxy` and 502s loopback calls to
+  the in-process reward servers. Environment change, not a code regression
+  (CI unaffected — no system proxy on runners).
+
 
 All notable changes to fusion-trainer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project

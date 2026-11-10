@@ -177,7 +177,16 @@ class SFTTrainer:
             return None
         from ..dataset.eval_ingest import find_eval_manifest
 
-        return find_eval_manifest(resolved)
+        manifest = find_eval_manifest(resolved)
+        if manifest is None:
+            # Rollout-fed dataset (#86): from_rollouts sidecar beside the file
+            from ..dataset.rollout_ingest import find_rollout_manifest
+
+            manifest = find_rollout_manifest(resolved)
+            if manifest is not None:
+                manifest.setdefault("export_sha256", manifest.get("sink_sha256", ""))
+                manifest.setdefault("export_path", manifest.get("sink_path", ""))
+        return manifest
 
     def _load_model(self) -> tuple[Any, Any]:
         """Verify the base model is available via fusion-mlx HTTP API.
