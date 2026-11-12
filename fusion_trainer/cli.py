@@ -535,6 +535,13 @@ def rlsl(
         "policy model loads with this adapter before alignment training; "
         "reference model stays base-only. Empty = fresh LoRA.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume an interrupted RL run from the newest numbered checkpoint "
+        "(capability plan T1). DPO/ORPO load it via init_adapter_path; GRPO "
+        "warns and starts fresh (no upstream resume field).",
+    ),
 ):
     """Run RLSL / DPO / ORPO alignment.
 
@@ -652,6 +659,9 @@ def rlsl(
     # #1149: DPO/ORPO adapter chaining on a prior SFT adapter.
     if init_adapter_path:
         rlsl_kwargs["init_adapter_path"] = init_adapter_path
+    # T1: resume interrupted RL run (pipeline stages newest checkpoint).
+    if resume:
+        rlsl_kwargs["resume"] = True
 
     # #83: alignment hyperparams have no CLI flags, so they must flow from
     # preset/YAML — the old code never forwarded them and RLSLConfig ran on

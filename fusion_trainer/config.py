@@ -314,6 +314,14 @@ class RLSLConfig:
     DPO training — enabling the two-stage SFT→DPO pipeline. The reference
     model stays base-only (DPO theory). Empty = fresh LoRA (backward compat)."""
 
+    resume: bool = False
+    """Resume an interrupted RL run from the newest numbered checkpoint
+    (capability plan T1). Resolves ~/.fusion-mlx/adapters/<model>/<run_name>/
+    via find_latest_checkpoint, stages it to {output_dir}/resume_stage/
+    adapters.safetensors, and sets init_adapter_path (DPO/ORPO). Weight
+    resume only — optimizer state is not persisted upstream. GRPO warns
+    loudly and starts fresh (no init_adapter_path field upstream)."""
+
     gradient_checkpointing: bool = False
     """Activation recompute for DPO/ORPO. The DPO loss graph holds the chosen
     AND rejected forwards simultaneously (~2x an SFT step's activation memory

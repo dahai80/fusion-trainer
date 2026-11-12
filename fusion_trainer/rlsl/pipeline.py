@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,13 @@ class RLSLEngine:
                 )
             )
 
+        # Capability plan T1: resume an interrupted RL run from the newest
+        # numbered checkpoint (DPO/ORPO consume init_adapter_path upstream).
+        from ..mlx_client import MLXFineTuneError
+
+        if self.rlsl_cfg.resume:
+            self._resolve_rl_resume()
+
         # Step 1: Load dataset — GRPO uses prompt data, others use preference pairs
         if method == "grpo":
             print("[1/4] Loading GRPO prompt dataset...")
@@ -123,16 +131,39 @@ class RLSLEngine:
 
         # Step 2: Run alignment
         try:
-            if method == "dpo":
-                result = self._run_dpo(dataset)
-            elif method == "orpo":
-                result = self._run_orpo(dataset)
-            elif method == "rlsl":
-                result = self._run_rlsl(dataset)
-            elif method == "grpo":
-                result = self._run_grpo(dataset)
-            else:
-                raise ValueError(f"Unknown alignment method: {method}")
+            try:
+                if method == "dpo":
+                    result = self._run_dpo(dataset)
+                elif method == "orpo":
+                    result = self._run_orpo(dataset)
+                elif method == "rlsl":
+                    result = self._run_rlsl(dataset)
+                elif method == "grpo":
+                    result = self._run_grpo(dataset)
+                else:
+                    raise ValueError(f"Unknown alignment method: {method}")
+            except MLXFineTuneError as exc:
+                # Capability plan T1: engine-restart detection — a lost job
+                # (404) or upstream-cancelled job yields an `interrupted`
+                # result with a resume hint, never a zombie failure.
+                if getattr(exc, "status_code", None) in (404, 409):
+                    checkpoint = self._latest_checkpoint()
+                    logger.error(
+                        "RL job lost during %s (status_code=%s): %s",
+                        method,
+                        getattr(exc, "status_code", None),
+                        exc,
+                    )
+                    result = {
+                        "status": "interrupted",
+                        "method": method,
+                        "error": str(exc),
+                        "resume_checkpoint": str(checkpoint[0]) if checkpoint else "",
+                        "resume_step": checkpoint[1] if checkpoint else 0,
+                        "resume_hint": "ft rlsl --resume",
+                    }
+                else:
+                    raise
 
             # Step 3: Save experiment log (success path)
             self._logger.save()
@@ -154,6 +185,59 @@ class RLSLEngine:
             )
 
         return result
+
+    def _latest_checkpoint(self) -> tuple[Path, int] | None:
+        """Newest numbered checkpoint for this run's adapter dir, or None."""
+        from ..sft.trainer import find_latest_checkpoint
+
+        adapter_dir = (
+            Path.home()
+            / ".fusion-mlx"
+            / "adapters"
+            / self.config.sft.model
+            / (self.rlsl_cfg.run_name or "rlsl_default")
+        )
+        if not adapter_dir.is_dir():
+            return None
+        return find_latest_checkpoint(adapter_dir)
+
+    def _resolve_rl_resume(self) -> None:
+        """Resolve --resume: stage the newest checkpoint as init_adapter_path.
+
+        Weight resume only (optimizer state is not persisted upstream).
+        DPO/ORPO consume init_adapter_path; GRPO has no upstream field and
+        warns loudly + starts fresh (fail-visible, not silent).
+        """
+        checkpoint = self._latest_checkpoint()
+        if checkpoint is None:
+            logger.warning(
+                "rlsl --resume: no numbered checkpoint found for model=%s "
+                "run_name=%s — starting a fresh run",
+                self.config.sft.model,
+                self.rlsl_cfg.run_name,
+            )
+            return
+        ckpt_path, step = checkpoint
+        staged_dir = Path(self.rlsl_cfg.output_dir) / "resume_stage"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        staged = staged_dir / "adapters.safetensors"
+        shutil.copyfile(ckpt_path, staged)
+        if self.rlsl_cfg.method == "grpo":
+            logger.warning(
+                "GRPO resume is not supported upstream (no init_adapter_path "
+                "field) — ignoring checkpoint %s (step %d), starting fresh",
+                ckpt_path,
+                step,
+            )
+            return
+        self.rlsl_cfg.init_adapter_path = str(staged)
+        logger.info(
+            "rlsl --resume: continuing from checkpoint step %d (%s)",
+            step,
+            staged,
+        )
+        if self.on_event is not None:
+            self.on_event({"type": "resume", "resume_step": step, "checkpoint": str(staged)})
 
     def _run_dpo(self, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run DPO alignment."""
