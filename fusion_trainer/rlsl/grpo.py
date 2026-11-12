@@ -280,8 +280,29 @@ class GRPOTrainer:
         from ..hacking_monitor import HackingMonitor
 
         monitor = HackingMonitor()
+        bench_client = None
+        if mode == "bench":
+            # 3.1 bench-as-GRPO-verifier: score completions via fusion-bench.
+            # BenchClient construction validates the URL — a bad bench_url
+            # fails visibly here, before any job submission.
+            from ..eval_loop import BenchClient
+
+            bench_client = BenchClient(
+                base_url=self.config.sft.bench_url,
+                api_key=self.config.sft.bench_api_key,
+                tenant_id=self.config.sft.bench_tenant_id,
+            )
+            logger.info(
+                "GRPO(grpo): bench reward backend enabled (bench_url=%s)",
+                self.config.sft.bench_url,
+            )
         reward_server = RewardServer(
-            dataset, mode=mode, scale=scale, prompt_miss_action=miss_action, monitor=monitor
+            dataset,
+            mode=mode,
+            scale=scale,
+            prompt_miss_action=miss_action,
+            monitor=monitor,
+            bench_client=bench_client,
         )
         endpoint = reward_server.start()
         final_status = "completed"
@@ -379,6 +400,7 @@ class GRPOTrainer:
             "adapter_name": self._adapter_name,
             "output_dir": str(self._output_dir),
             "hacking_metrics": monitor.snapshot(),
+            "bench_degraded": bool(reward_server.bench_degraded),
             "note": "true policy-gradient GRPO via fusion-mlx #363 Phase 2",
         }
 

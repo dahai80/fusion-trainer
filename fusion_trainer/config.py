@@ -352,8 +352,11 @@ class RLSLConfig:
     grpo_iterations: int = 1
     """Number of GRPO outer iterations (sample → score → SFT-update)."""
 
-    sandbox_mode: Literal["off", "code", "math", "auto"] = "off"
-    """Sandbox reward source. 'code' executes tests, 'math' compares answers, 'auto' picks by dataset field."""
+    sandbox_mode: Literal["off", "code", "math", "auto", "bench"] = "off"
+    """Sandbox reward source. 'code' executes tests, 'math' compares answers,
+    'auto' picks by dataset field. 'bench' (capability plan 3.1): fusion-bench
+    task API scores each completion (bench-as-GRPO-verifier); bench outage
+    degrades fail-visibly to the sandbox reward with a loud warning."""
 
     grpo_backend: Literal["rft", "grpo", "policy_gradient"] = "rft"
     """GRPO execution backend. NOTE (issue #75 honesty): the DEFAULT 'rft' is
