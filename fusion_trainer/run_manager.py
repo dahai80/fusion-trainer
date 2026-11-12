@@ -113,6 +113,17 @@ class RunManager:
         # happens once the inner `with` returns (still held by the caller for
         # those paths, lock-free for direct _persist_meta callers).
         self._lock = threading.RLock()
+        # T2 (capability plan §1.2): cross-process run mutex + in-process
+        # priority queue. agent-studio (in-process), CLI and bridge (separate
+        # processes) previously raced on fusion-mlx when two hosts submitted
+        # at once. The flock serializes across processes crash-safely; the
+        # pending heap keeps same-process submissions queued instead of
+        # colliding. Queue discipline: lower priority number runs first.
+        from .run_queue import RunLock
+
+        self._run_lock = RunLock(Path(self.cache_path) / "run.lock")
+        self._pending: list[tuple[int, int, float, str, Any, str, Any, Path]] = []
+        self._pending_seq = 0
         # A3: defense-in-depth against the singleton being bypassed. The
         # production GUI path (fusion-agent-studio TrainingService) used to
         # construct RunManager() directly, creating a second registry that the
@@ -345,6 +356,11 @@ class RunManager:
             "warnings": warnings,
             "api_key_required": self._api_key_gate.enabled,
             "audit_log": str(Path(self.cache_path) / "audit.jsonl"),
+            "queue": {
+                "lock_path": str(self._run_lock.path),
+                "pending": len(self._pending),
+                "lock_holder": self._run_lock.holder(),
+            },
         }
 
     @staticmethod
@@ -562,21 +578,23 @@ class RunManager:
         self._audit.record(action, run_id=run_id, detail=detail, ok=ok)
 
     def start_sft(
-        self, config: TrainerConfig, api_key: str | None = None
+        self, config: TrainerConfig, api_key: str | None = None, priority: int = 5
     ) -> dict[str, Any]:
         """Start an SFT run in a worker thread; return {run_id, status}."""
         self._audit_op("start_sft", "", "sft run requested", True, api_key)
-        return self._start(config, method="sft")
+        return self._start(config, method="sft", priority=priority)
 
     def start_rlsl(
-        self, config: TrainerConfig, api_key: str | None = None
+        self, config: TrainerConfig, api_key: str | None = None, priority: int = 5
     ) -> dict[str, Any]:
         """Start an RLSL/alignment run (method in dpo|orpo|grpo|rlsl)."""
         method = getattr(config.rlsl, "method", "rlsl")
         self._audit_op("start_rlsl", "", f"rlsl/{method} run requested", True, api_key)
-        return self._start(config, method="rlsl")
+        return self._start(config, method="rlsl", priority=priority)
 
-    def _start(self, config: TrainerConfig, method: str) -> dict[str, Any]:
+    def _start(
+        self, config: TrainerConfig, method: str, priority: int = 5
+    ) -> dict[str, Any]:
         # R5: run_id was a ms-timestamp ({method}_{ms}); two runs started in
         # the same millisecond collided on run_dir. Use a uuid4 suffix for
         # collision-proof uniqueness while keeping the method prefix for
@@ -609,6 +627,8 @@ class RunManager:
             "adapter_name": "",
             "metrics": {},
             "canceled": False,
+            "queue_position": 0,
+            "priority": priority,
             "events_buffer": deque(maxlen=1000),
             "events_path": str(events_path),
             "log_path": str(log_path),
@@ -627,8 +647,46 @@ class RunManager:
             self._persist_meta(run_id)
 
         sink = _RunSink(record, self._lock)
-        self._active_sinks[run_id] = sink
+        # T2: if a run is already active in this process, queue instead of
+        # spawning a second concurrent worker (they would contend for fusion-mlx
+        # and the unified-memory budget). Dispatch happens from the terminal
+        # path of the current run.
+        with self._lock:
+            active = any(
+                r["status"] in ("running", "queued")
+                for rid, r in self._runs.items()
+                if rid != run_id
+            )
+            if active:
+                self._pending_seq += 1
+                self._pending.append(
+                    (priority, self._pending_seq, time.time(), run_id, config, method, sink, log_path)
+                )
+                record["status"] = "queued"
+                record["queue_position"] = len(self._pending)
+                self._persist_meta(run_id)
+                logger.info(
+                    "run %s queued (position=%d priority=%d)", run_id, len(self._pending), priority
+                )
+                return {
+                    "run_id": run_id,
+                    "status": "queued",
+                    "queue_position": len(self._pending),
+                }
+        self._spawn(run_id, config, method, sink, log_path, record)
+        return {"run_id": run_id, "status": "running"}
 
+    def _spawn(
+        self,
+        run_id: str,
+        config: TrainerConfig,
+        method: str,
+        sink: Any,
+        log_path: Path,
+        record: dict[str, Any],
+    ) -> None:
+        """Spawn the worker thread for a run (shared by _start and queue dispatch)."""
+        self._active_sinks[run_id] = sink
         thread = threading.Thread(
             target=self._run_thread,
             args=(run_id, config, method, sink, log_path),
@@ -646,7 +704,34 @@ class RunManager:
         logger.info(
             "started run %s method=%s model=%s", run_id, method, config.sft.model
         )
-        return {"run_id": run_id, "status": "running"}
+
+    def _dispatch_next(self) -> None:
+        """Pop the highest-priority queued run and spawn it (T2)."""
+        while True:
+            with self._lock:
+                if not self._pending:
+                    return
+                entry = min(self._pending, key=lambda e: (e[0], e[1]))
+                self._pending.remove(entry)
+                (
+                    priority,
+                    seq,
+                    enqueued,
+                    run_id,
+                    config,
+                    method,
+                    sink,
+                    log_path,
+                ) = entry
+                rec = self._runs.get(run_id)
+                if rec is None or rec.get("status") == "cancelled":
+                    # canceled while queued — drop and keep dispatching
+                    continue
+                rec["status"] = "running"
+                rec["queue_position"] = 0
+                self._persist_meta(run_id)
+            self._spawn(run_id, config, method, sink, log_path, rec)
+            return
 
     def _run_thread(
         self,
@@ -669,6 +754,18 @@ class RunManager:
         # time in practice, and each handler is removed in the finally below.)
         pkg_logger = logging.getLogger("fusion_trainer")
         pkg_logger.addHandler(fh)
+        # T2: cross-process mutual exclusion — block until run.lock is free.
+        # flock is crash-safe (kernel releases on holder death), so a SIGKILLed
+        # sibling process cannot wedge the queue. While waiting, the record
+        # shows status=queued with a wait detail so GUIs see the backpressure.
+        while not self._run_lock.acquire(timeout=5.0):
+            sink.emit(
+                {
+                    "type": "status",
+                    "status": "queued",
+                    "detail": "waiting for cross-process run lock",
+                }
+            )
         sink.emit({"type": "status", "status": "running"})
 
         result: dict[str, Any]
@@ -695,6 +792,7 @@ class RunManager:
             logger.exception("run %s crashed", run_id)
             result = {"status": "failed", "error": str(exc)}
         finally:
+            self._run_lock.release()
             pkg_logger.removeHandler(fh)
             fh.close()
 
@@ -783,6 +881,8 @@ class RunManager:
         # (fusion-agent-studio); this is a file export, deterministic (Rule 5).
         self._export_run_metrics(run_id, final_status)
         logger.info("run %s ended: %s", run_id, final_status)
+        # T2: a slot freed — start the next queued run if any.
+        self._dispatch_next()
 
     # ------------------------------------------------------------------
     # Run queries
@@ -928,6 +1028,17 @@ class RunManager:
                     "stop_run", run_id, f"already {r['status']}", False, api_key
                 )
                 return {"run_id": run_id, "status": r["status"]}
+            if r.get("status") == "queued":
+                # T2: cancel before the worker even spawns — drop from the
+                # pending queue and mark terminal; dispatch skips it.
+                r["status"] = "cancelled"
+                r["canceled"] = True
+                r["finished"] = time.time()
+                self._pending = [e for e in self._pending if e[3] != run_id]
+                self._persist_meta(run_id)
+                self._audit_op("stop_run", run_id, "cancelled while queued", True, api_key)
+                logger.info("run %s cancelled while queued", run_id)
+                return {"run_id": run_id, "status": "cancelled"}
             r["canceled"] = True
             thread = r.get("thread")
         sink = self._active_sinks.get(run_id)
