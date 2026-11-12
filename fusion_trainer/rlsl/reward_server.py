@@ -32,6 +32,61 @@ logger = logging.getLogger(__name__)
 
 _REWARD_PATH = "/reward"
 
+# Capability plan 3.1: sandbox_mode="bench" routes scoring through the
+# fusion-bench task API (bench-as-GRPO-verifier). A sample must carry a
+# `bench_task` id; the per-completion scoring call goes through the
+# injected bench client (eval_loop.BenchClient-compatible: run_benchmark).
+# Bench outage degrades fail-visibly to the sandbox reward for that batch
+# (same fallback semantics as eval_loop #75) and sets .bench_degraded.
+
+
+class _BenchScorer:
+    """Score one completion against its dataset sample's bench task.
+
+    Deterministic adapter (Rule 5): no model routing here — the bench task
+    definition owns the scoring logic. Per-(task, completion) cache keeps
+    repeat completions from re-billing a bench run. Upstream gap: fusion-bench
+    has no first-class per-item scoring endpoint yet (tracked in the plan's
+    U5 issue) — this adapter speaks the generic task API with the completion
+    in params, which U5 will make first-class.
+    """
+
+    def __init__(self, bench_client: Any, executor_key: str = "accuracy"):
+        self._client = bench_client
+        self._executor = executor_key
+        self._cache: dict[tuple[str, str], float] = {}
+
+    def score(self, sample: dict[str, Any], completion: str, scale: float) -> float:
+        bench_task = str(sample.get("bench_task", "") or "")
+        if not bench_task:
+            logger.warning(
+                "bench scorer: sample has no bench_task field — reward 0.0 "
+                "(fail-visible: bench mode requires bench_task on every sample)"
+            )
+            return 0.0
+        key = (bench_task, hashlib.sha1(completion.encode("utf-8")).hexdigest())
+        if key in self._cache:
+            return self._cache[key] * scale
+        params = dict(sample.get("bench_params") or {})
+        params["bench_task"] = bench_task
+        if sample.get("prompt"):
+            params["prompt"] = sample["prompt"]
+        params["completion"] = completion
+        out = self._client.run_benchmark(
+            model=str(sample.get("bench_model", "grpo-verifier")),
+            executor_key=str(sample.get("bench_executor", self._executor)),
+            params=params,
+            poll_interval=1.0,
+            wait_timeout=float(sample.get("bench_timeout", 300)),
+        )
+        score = out.get("score")
+        if score is None:
+            raise ValueError(
+                f"bench task {bench_task} returned no score (status={out.get('status')})"
+            )
+        self._cache[key] = float(score)
+        return float(score) * scale
+
 
 class RewardServer:
     """Thread-safe local reward endpoint for fusion-mlx GRPO callback.
@@ -58,9 +113,17 @@ class RewardServer:
         host: str = "127.0.0.1",
         port: int = 0,
         prompt_miss_action: str = "warn",
+        monitor: Any = None,
+        bench_client: Any = None,
     ):
         self._mode = mode
         self._scale = scale
+        # T7/3.1: bench-mode scorer. None + mode="bench" raises at start() —
+        # fail-visible before fusion-mlx ever submits a job against us.
+        self._bench_scorer = (
+            _BenchScorer(bench_client) if mode == "bench" and bench_client else None
+        )
+        self.bench_degraded = False
         # P2: index by a short hash of the prompt, not the full prompt text.
         # Avoids the memory double-up of storing full prompts here AND in the
         # dataset, and makes the lookup robust to tiny whitespace diffs that
@@ -95,6 +158,10 @@ class RewardServer:
             os.environ.get("FUSION_REWARD_LATENCY_TRIP_AFTER", "3")
         )
         self._breaker = _LatencyBreaker(self._latency_budget, self._latency_trip_after)
+        # T7 (capability plan): optional HackingMonitor — every scoring batch
+        # feeds the reward-drift / length-inflation / format-gaming detectors.
+        self.monitor = monitor
+        self._batch_count = 0
 
     @property
     def endpoint(self) -> str:
@@ -117,6 +184,16 @@ class RewardServer:
         index = self._sample_index
         breaker = self._breaker
         miss_action = self._prompt_miss_action
+        monitor = self.monitor
+        batch_no = [0]  # T7: mutable batch counter for the closure
+        scorer = self._bench_scorer
+        server_ref = self  # 3.1: bench degradation flag lives on the instance
+        if mode == "bench" and scorer is None:
+            raise ValueError(
+                "RewardServer mode='bench' requires a bench_client "
+                "(eval_loop.BenchClient or compatible) — refusing to start "
+                "with a silent uniform reward"
+            )
         # Generate a fresh unguessable token per server instance; embed it in
         # the URL the caller (fusion-mlx) POSTs back to verbatim.
         token = secrets.token_urlsafe(32)
@@ -205,11 +282,37 @@ class RewardServer:
                             # Local copy only — do NOT mutate the captured
                             # `scale` (it would persist across calls).
                             call_scale = 0.0
-                    rewards = [
-                        reward_completion(sample, c, mode=mode, scale=call_scale)
-                        for c in completions
-                    ]
+                    if scorer is not None:
+                        # 3.1 bench-as-verifier: score via the bench task API.
+                        # Any bench failure degrades the WHOLE batch to the
+                        # sandbox reward with a loud warning (fail-visible,
+                        # same semantics as eval_loop #75) — never a silent
+                        # constant.
+                        try:
+                            rewards = [
+                                scorer.score(sample, c, call_scale)
+                                for c in completions
+                            ]
+                        except Exception as exc:
+                            server_ref.bench_degraded = True
+                            logger.error(
+                                "bench scoring failed (%s) — degrading batch to "
+                                "sandbox reward (fail-visible)",
+                                exc,
+                            )
+                            rewards = [
+                                reward_completion(sample, c, mode="auto", scale=call_scale)
+                                for c in completions
+                            ]
+                    else:
+                        rewards = [
+                            reward_completion(sample, c, mode=mode, scale=call_scale)
+                            for c in completions
+                        ]
                     breaker.record(time.monotonic() - _t0)
+                    if monitor is not None:
+                        batch_no[0] += 1
+                        monitor.observe(batch_no[0], rewards, completions)
                     payload = json.dumps({"rewards": rewards}).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")

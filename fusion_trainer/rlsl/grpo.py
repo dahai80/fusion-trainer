@@ -41,6 +41,7 @@ import contextlib
 import json
 import logging
 import math
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -140,6 +141,10 @@ class GRPOTrainer:
         reward_trajectory: list[float] = []
         final_status = "completed"
         last_adapter = ""
+        # T7 (capability plan): reward-hacking detectors over the scored batches.
+        from ..hacking_monitor import HackingMonitor
+
+        monitor = HackingMonitor()
 
         for it in range(iters):
             print(f"\n  [GRPO iter {it + 1}/{iters}]")
@@ -148,7 +153,9 @@ class GRPOTrainer:
             # instead of `continue`-ing every iteration into a zero-training
             # fake "completed".
             try:
+                _t_sample = time.monotonic()
                 samples = self._sample_and_score(dataset, g, mode, scale)
+                _sample_sec = time.monotonic() - _t_sample
             except MLXFineTuneError as exc:
                 logger.error("GRPO iter %d sampling failed: %s", it, exc)
                 final_status = "failed"
@@ -167,6 +174,9 @@ class GRPOTrainer:
             mean_r = sum(s["reward"] for s in samples) / len(samples)
             self._mean_reward = mean_r
             reward_trajectory.append(mean_r)
+            monitor.observe(
+                it, [s["reward"] for s in samples], [s.get("completion", "") for s in samples]
+            )
             exp.log_metrics(
                 step=it,
                 metrics={
@@ -174,6 +184,13 @@ class GRPOTrainer:
                     "mean_reward": mean_r,
                     "kept_samples": len(kept),
                     "total_samples": len(samples),
+                    # T9 (capability plan 3.2): rollout throughput — the metric
+                    # that quantifies fusion-mlx prefix-cache/continuous-batching
+                    # gains on the sampling path.
+                    "rollout_samples_per_second": (
+                        round(len(samples) / _sample_sec, 4) if _sample_sec > 0 else 0.0
+                    ),
+                    "rollout_seconds": round(_sample_sec, 4),
                 },
             )
             print(f"      mean_reward={mean_r:.4f} kept={len(kept)}/{len(samples)}")
@@ -186,6 +203,9 @@ class GRPOTrainer:
             last_adapter = job_result.get("adapter_path", "")
             self._adapter_name = job_result.get("adapter_name", self._adapter_name)
 
+        prom = monitor.prom_series()
+        if prom:
+            exp.log_metrics(step=max(1, len(reward_trajectory)), metrics=prom)
         exp.save()
         if final_status == "completed":
             print("\n      ✓ GRPO complete!")
@@ -207,6 +227,7 @@ class GRPOTrainer:
             "final_mean_reward": reward_trajectory[-1] if reward_trajectory else 0.0,
             "adapter_path": last_adapter,
             "adapter_name": self._adapter_name,
+            "hacking_metrics": monitor.snapshot(),
             "note": "reward-filtered SFT approx (backend=rft); use grpo_backend=grpo for true policy-gradient",
         }
 
@@ -265,8 +286,33 @@ class GRPOTrainer:
         import os as _os
 
         miss_action = _os.environ.get("FUSION_REWARD_PROMPT_MISS", "warn")
+        # T7 (capability plan): hacking detectors fed by the reward callback.
+        from ..hacking_monitor import HackingMonitor
+
+        monitor = HackingMonitor()
+        bench_client = None
+        if mode == "bench":
+            # 3.1 bench-as-GRPO-verifier: score completions via fusion-bench.
+            # BenchClient construction validates the URL — a bad bench_url
+            # fails visibly here, before any job submission.
+            from ..eval_loop import BenchClient
+
+            bench_client = BenchClient(
+                base_url=self.config.sft.bench_url,
+                api_key=self.config.sft.bench_api_key,
+                tenant_id=self.config.sft.bench_tenant_id,
+            )
+            logger.info(
+                "GRPO(grpo): bench reward backend enabled (bench_url=%s)",
+                self.config.sft.bench_url,
+            )
         reward_server = RewardServer(
-            dataset, mode=mode, scale=scale, prompt_miss_action=miss_action
+            dataset,
+            mode=mode,
+            scale=scale,
+            prompt_miss_action=miss_action,
+            monitor=monitor,
+            bench_client=bench_client,
         )
         endpoint = reward_server.start()
         final_status = "completed"
@@ -340,6 +386,9 @@ class GRPOTrainer:
         finally:
             reward_server.stop()
 
+        prom = monitor.prom_series()
+        if prom:
+            exp.log_metrics(step=iters, metrics=prom)
         exp.save()
         if final_status == "completed":
             print("\n      ✓ GRPO complete!")
@@ -360,6 +409,8 @@ class GRPOTrainer:
             "adapter_path": last_adapter,
             "adapter_name": self._adapter_name,
             "output_dir": str(self._output_dir),
+            "hacking_metrics": monitor.snapshot(),
+            "bench_degraded": bool(reward_server.bench_degraded),
             "note": "true policy-gradient GRPO via fusion-mlx #363 Phase 2",
         }
 

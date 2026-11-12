@@ -548,6 +548,18 @@ async def list_runs(limit: int = 20) -> dict[str, Any]:
     return {"runs": _rm().list_runs(limit=min(limit, 50))}
 
 
+@app.get("/runs/compare", dependencies=[Depends(_require_auth)])
+async def compare_runs(run_ids: str) -> dict[str, Any]:
+    # T3 (capability plan 2.1): cross-run curve overlay + config diff.
+    # Declared BEFORE /runs/{run_id} so "compare" isn't swallowed as an id.
+    ids = [s.strip() for s in run_ids.split(",") if s.strip()]
+    if len(ids) < 2:
+        raise HTTPException(400, "run_ids must list at least 2 runs")
+    if len(ids) > 6:
+        raise HTTPException(400, "compare at most 6 runs at once")
+    return _rm().compare_runs(ids)
+
+
 @app.get("/runs/{run_id}", dependencies=[Depends(_require_auth)])
 async def run_detail(run_id: str) -> dict[str, Any]:
     status = _rm().run_status(run_id)

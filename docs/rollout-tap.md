@@ -3,7 +3,7 @@ doc_id: fusion-trainer/rollout-tap
 product: fusion-trainer
 class: platform
 entry: service
-doc_type: design
+doc_type: guide
 title: { zh: "Gateway rollout tap 设计（RFT/GRPO 数据源）", en: "Gateway rollout tap design (RFT/GRPO data source)" }
 audience: engineer
 status: draft

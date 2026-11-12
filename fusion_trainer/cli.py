@@ -535,6 +535,13 @@ def rlsl(
         "policy model loads with this adapter before alignment training; "
         "reference model stays base-only. Empty = fresh LoRA.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume an interrupted RL run from the newest numbered checkpoint "
+        "(capability plan T1). DPO/ORPO load it via init_adapter_path; GRPO "
+        "warns and starts fresh (no upstream resume field).",
+    ),
 ):
     """Run RLSL / DPO / ORPO alignment.
 
@@ -652,6 +659,9 @@ def rlsl(
     # #1149: DPO/ORPO adapter chaining on a prior SFT adapter.
     if init_adapter_path:
         rlsl_kwargs["init_adapter_path"] = init_adapter_path
+    # T1: resume interrupted RL run (pipeline stages newest checkpoint).
+    if resume:
+        rlsl_kwargs["resume"] = True
 
     # #83: alignment hyperparams have no CLI flags, so they must flow from
     # preset/YAML — the old code never forwarded them and RLSLConfig ran on
@@ -1824,6 +1834,121 @@ def datasets_from_rollouts(
         ".from_rollouts.json "
         "(ft sft records this run's rollout source automatically)"
     )
+
+
+@datasets_app.command(name="from-cowork")
+def datasets_from_cowork(
+    export_file: str = typer.Option(
+        ...,
+        "--export",
+        "-e",
+        help="fusion-cowork flow export JSONL (one record per DAG node run)",
+    ),
+    output_file: str = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="Output SFT dataset path (messages-JSONL, fed to `ft sft --dataset`)",
+    ),
+    dpo_output: str = typer.Option(
+        "",
+        "--dpo-output",
+        help="Optional: also mine DPO preference pairs (needs passed/failed "
+        "sibling nodes). Same gate as from-eval (#78).",
+    ),
+    dpo_anyway: bool = typer.Option(
+        False,
+        "--dpo-anyway",
+        help="Write the DPO output even when mining is structurally empty",
+    ),
+):
+    """Build SFT/DPO datasets from cowork flow exports (flywheel entry 3).
+
+    Cowork node runs are mapped to eval-trajectory shape (task_id =
+    "<flow_id>/<node_id>") and mined by the same path as from-eval —
+    passed nodes become SFT samples, passed/failed siblings become DPO
+    pairs (#83 showed DPO is data-thin, not algorithm-thin; multi-node
+    flows are the volume source). Sidecar manifest carries the export
+    sha256 + lineage chain.
+    """
+    from pathlib import Path
+
+    from fusion_trainer.dataset.cowork_ingest import (
+        CoworkIngestError,
+        build_from_cowork_dataset,
+    )
+    from fusion_trainer.dataset.eval_ingest import EvalIngestError
+
+    try:
+        manifest = build_from_cowork_dataset(
+            Path(export_file),
+            Path(output_file),
+            Path(dpo_output) if dpo_output else None,
+            dpo_allow_empty=dpo_anyway,
+        )
+    except (CoworkIngestError, EvalIngestError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"SFT dataset: {manifest['sft_samples']} samples -> {manifest['sft_path']} "
+        f"({manifest['records_passed']} passed / {manifest['records_total']} records)"
+    )
+    if manifest["dpo_path"]:
+        typer.echo(f"DPO pairs:    {manifest['dpo_pairs']} -> {manifest['dpo_path']}")
+    typer.echo(f"Cowork sha256: {manifest['cowork_export_sha256']}")
+    typer.echo(f"Lineage:      {manifest['lineage']['transforms']}")
+    typer.echo(
+        f"Manifest:     {manifest['sft_path']}.from_cowork.json"
+    )
+
+
+@datasets_app.command(name="info")
+def datasets_info(
+    dataset_file: str = typer.Argument(..., help="Dataset file (.jsonl) to inspect"),
+):
+    """Inspect a dataset: schema, sample count, lineage sidecars (T4).
+
+    Prints the detected schema, sample count, and any from-eval /
+    from-rollouts / from-cowork sidecar lineage found beside the file —
+    the traceability read side of the flywheel.
+    """
+    from pathlib import Path
+
+    from fusion_trainer.dataset.cowork_ingest import find_cowork_manifest
+    from fusion_trainer.dataset.eval_ingest import find_eval_manifest
+    from fusion_trainer.dataset.formats import detect_dataset_schema, load_dataset_file
+    from fusion_trainer.dataset.rollout_ingest import find_rollout_manifest
+
+    path = Path(dataset_file)
+    if not path.is_file():
+        typer.echo(f"Error: dataset not found: {path}", err=True)
+        raise typer.Exit(1)
+    data = load_dataset_file(path)
+    schema = detect_dataset_schema(data[0]) if data else "unknown"
+    typer.echo(f"Dataset:  {path}")
+    typer.echo(f"Samples:  {len(data)}")
+    typer.echo(f"Schema:   {schema}")
+    for name, finder in (
+        ("eval", find_eval_manifest),
+        ("rollouts", find_rollout_manifest),
+        ("cowork", find_cowork_manifest),
+    ):
+        manifest = finder(path)
+        if manifest is None:
+            continue
+        lineage = manifest.get("lineage") or {}
+        sha = (
+            manifest.get("export_sha256")
+            or manifest.get("sink_sha256")
+            or manifest.get("cowork_export_sha256")
+            or ""
+        )
+        typer.echo(f"Lineage[{name}]:")
+        typer.echo(f"  source:    {lineage.get('source', manifest.get('source', '?'))}")
+        typer.echo(f"  source_path: {lineage.get('source_path', manifest.get('export_path') or manifest.get('sink_path') or manifest.get('cowork_export_path', '?'))}")
+        typer.echo(f"  sha256:    {sha[:12]}")
+        typer.echo(f"  transforms: {' -> '.join(lineage.get('transforms', []))}")
+        typer.echo(f"  output:    {lineage.get('output', str(path))}")
 
 
 @flywheel_app.command(name="record")

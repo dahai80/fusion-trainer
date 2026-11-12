@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -432,3 +433,227 @@ class TestRunRecordFields:
             assert rec["status"] == "completed"
             assert rec["model"] == cfg.sft.model
             assert rec["step"] == rec["total_steps"] > 0
+
+
+# ===========================================================================
+# T2 (capability plan): cross-process run lock + priority queue
+# ===========================================================================
+
+
+class TestRunLock:
+    def test_exclusive_and_crash_safe(self, tmp_path):
+        from fusion_trainer.run_queue import RunLock
+
+        lock_path = tmp_path / "run.lock"
+        a = RunLock(lock_path)
+        b = RunLock(lock_path)
+        assert a.acquire(timeout=1.0)
+        assert b.acquire(timeout=0.3) is False  # busy
+        a.release()
+        assert b.acquire(timeout=1.0)
+        b.release()
+
+    def test_holder_info(self, tmp_path):
+        from fusion_trainer.run_queue import RunLock
+
+        lock = RunLock(tmp_path / "run.lock")
+        with lock:
+            holder = lock.holder()
+            assert holder.get("pid") == os.getpid()
+        assert lock.holder() == {} or "pid" in lock.holder()
+
+    def test_release_idempotent(self, tmp_path):
+        from fusion_trainer.run_queue import RunLock
+
+        lock = RunLock(tmp_path / "run.lock")
+        lock.release()  # no acquire yet — must not raise
+        assert lock.acquire(timeout=1.0)
+        lock.release()
+        lock.release()
+
+
+class TestRunQueue:
+    def test_second_run_queues_then_runs(self, monkeypatch, tmp_path):
+        _patch_sft_client(monkeypatch)
+        import fusion_trainer.run_manager as rm_mod
+
+        release_a = threading.Event()
+
+        def _slow_wait(job_id, on_progress=None, **kw):
+            release_a.wait(timeout=15)
+            return {
+                "status": "completed",
+                "adapter_path": "/fake/a",
+                "events": [],
+                "error": "",
+            }
+
+        # patch the fake client's wait_for_job for the first run only via
+        # run-order: run A uses slow waiter, run B uses the default one.
+        calls = {"n": 0}
+        orig_wait = rm_mod.MLXFineTuneClient.wait_for_job
+
+        def _ordered_wait(self, job_id, on_progress=None, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _slow_wait(job_id, on_progress, **kw)
+            return orig_wait(self, job_id, on_progress, **kw)
+
+        monkeypatch.setattr(rm_mod.MLXFineTuneClient, "wait_for_job", _ordered_wait)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg_a = _make_sft_config(tmp, dataset_path=_make_dataset_file(tmp))
+            cfg_b = _make_sft_config(tmp, dataset_path=_make_dataset_file(tmp))
+            ra = rm.start_sft(cfg_a)
+            assert ra["status"] == "running"
+            rb = rm.start_sft(cfg_b)
+            assert rb["status"] == "queued"
+            assert rb["queue_position"] == 1
+            assert rm.run_status(rb["run_id"])["status"] == "queued"
+            release_a.set()
+            _wait_terminal(rm, ra["run_id"])
+            _wait_terminal(rm, rb["run_id"])
+            assert rm.run_status(ra["run_id"])["status"] == "completed"
+            assert rm.run_status(rb["run_id"])["status"] == "completed"
+
+    def test_priority_order(self, monkeypatch, tmp_path):
+        _patch_sft_client(monkeypatch)
+        order = []
+        import fusion_trainer.run_manager as rm_mod
+
+        release = threading.Event()
+
+        def _slow_wait(self, job_id, on_progress=None, **kw):
+            order.append("first")
+            release.wait(timeout=15)
+            return {"status": "completed", "adapter_path": "/x", "events": [], "error": ""}
+
+        monkeypatch.setattr(rm_mod.MLXFineTuneClient, "wait_for_job", _slow_wait)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg = _make_sft_config(tmp, dataset_path=_make_dataset_file(tmp))
+            first = rm.start_sft(cfg)
+            hi = rm.start_sft(cfg, priority=1)
+            lo = rm.start_sft(cfg, priority=9)
+            # stop the low-priority one while queued — high-priority must run
+            rm.stop_run(lo["run_id"])
+            assert rm.run_status(lo["run_id"])["status"] == "cancelled"
+            release.set()
+            _wait_terminal(rm, first["run_id"])
+            _wait_terminal(rm, hi["run_id"])
+            assert rm.run_status(hi["run_id"])["status"] == "completed"
+
+    def test_stop_queued_never_spawns(self, monkeypatch, tmp_path):
+        _patch_sft_client(monkeypatch)
+        import fusion_trainer.run_manager as rm_mod
+
+        release = threading.Event()
+
+        def _slow_wait(job_id, on_progress=None, **kw):
+            release.wait(timeout=15)
+            return {"status": "completed", "adapter_path": "/x", "events": [], "error": ""}
+
+        monkeypatch.setattr(rm_mod.MLXFineTuneClient, "wait_for_job", _slow_wait)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg = _make_sft_config(tmp, dataset_path=_make_dataset_file(tmp))
+            first = rm.start_sft(cfg)
+            second = rm.start_sft(cfg)
+            stopped = rm.stop_run(second["run_id"])
+            assert stopped["status"] == "cancelled"
+            release.set()
+            _wait_terminal(rm, first["run_id"])
+            time.sleep(0.3)
+            # cancelled-while-queued run must stay terminal
+            assert rm.run_status(second["run_id"])["status"] == "cancelled"
+            assert rm._pending == []
+
+    def test_info_reports_queue(self, tmp_path):
+        with tempfile.TemporaryDirectory() as tmp:
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            info = rm.info()
+            assert info["queue"]["lock_path"].endswith("run.lock")
+            assert info["queue"]["pending"] == 0
+
+
+# ===========================================================================
+# T3: compare_runs (capability plan 2.1)
+# ===========================================================================
+
+
+def _write_run_dir(tmp: Path, rid: str, losses, config=None) -> None:
+    d = tmp / "runs" / rid
+    d.mkdir(parents=True)
+    (d / "run_meta.json").write_text(
+        json.dumps(
+            {
+                "run_id": rid,
+                "name": rid,
+                "model": "test-model",
+                "status": "completed",
+                "events_path": str(d / "events.jsonl"),
+                "config": config or {"lora_rank": 16, "model": "test-model"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with open(d / "events.jsonl", "w") as f:
+        for i, v in enumerate(losses, 1):
+            f.write(json.dumps({"step": i, "train_loss": v}) + "\n")
+
+
+class TestCompareRuns:
+    def test_compare_from_disk(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        _write_run_dir(tmp_path, "sft_a", [2.0, 1.5, 1.0])
+        _write_run_dir(tmp_path, "sft_b", [2.0, 1.8, 1.6], config={"lora_rank": 8, "model": "test-model"})
+        out = rm.compare_runs(["sft_a", "sft_b"])
+        assert len(out["runs"]) == 2
+        assert out["runs"][0]["series"]["train_loss"] == [[1.0, 2.0], [2.0, 1.5], [3.0, 1.0]]
+        diff = {d["field"]: d for d in out["diff"]}
+        assert diff["lora_rank"]["same"] is False
+        assert diff["model"]["same"] is True
+
+    def test_compare_missing_run_is_visible(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        _write_run_dir(tmp_path, "sft_a", [1.0])
+        out = rm.compare_runs(["sft_a", "sft_ghost"])
+        assert out["runs"][1]["error"] == "run not found"
+
+    def test_compare_downsamples(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        _write_run_dir(tmp_path, "sft_big", list(range(300)))
+        out = rm.compare_runs(["sft_big"], max_points=50)
+        pts = out["runs"][0]["series"]["train_loss"]
+        assert len(pts) <= 50
+        assert pts[0][1] == 0.0
+        assert pts[-1][1] == 299.0
+
+    def test_compare_ignores_malformed_lines(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        d = tmp_path / "runs" / "sft_bad"
+        d.mkdir(parents=True)
+        (d / "run_meta.json").write_text(
+            json.dumps({"run_id": "sft_bad", "config": {}}), encoding="utf-8"
+        )
+        (d / "events.jsonl").write_text(
+            '{"step": 1, "train_loss": 2.0}\nnot-json\n\n{"step": 2, "train_loss": 1.0}\n',
+            encoding="utf-8",
+        )
+        out = rm.compare_runs(["sft_bad"])
+        assert out["runs"][0]["series"]["train_loss"] == [[1.0, 2.0], [2.0, 1.0]]
+
+    def test_start_records_config_summary(self, monkeypatch, tmp_path):
+        with tempfile.TemporaryDirectory() as tmp:
+            _patch_sft_client(monkeypatch)
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg = _make_sft_config(tmp)
+            run_id = rm.start_sft(cfg)["run_id"]
+            _wait_terminal(rm, run_id)
+            st = rm.run_status(run_id)
+            assert st["config"]["model"] == "test-model"
+            assert st["config"]["lora_rank"] == 16
+            assert st["config"]["max_seq_length"] == 128

@@ -727,7 +727,31 @@ class SFTTrainer:
           4. Records the adapter path returned by fusion-mlx
         """
         from ..experiment import ExperimentLogger
-        from ..mlx_client import MLXFineTuneClient
+        from ..memory_guard import precheck
+        from ..mlx_client import MLXFineTuneClient, MLXFineTuneError
+
+        # Capability plan §1.3: unified-memory admission gate. Deterministic
+        # estimate vs psutil available memory; fail-visible BEFORE submission
+        # with concrete de-escalation suggestions — the guard never mutates
+        # the config itself.
+        guard = precheck(
+            model=self.sft_cfg.model,
+            quant_bits=self.sft_cfg.quant_bits,
+            batch_size=self.sft_cfg.batch_size,
+            max_seq_length=self.dataset_cfg.max_seq_length,
+            gradient_checkpointing=self.sft_cfg.gradient_checkpointing,
+            memory_limit_gb=self.sft_cfg.memory_limit_gb,
+        )
+        if not guard["ok"]:
+            raise MLXFineTuneError(
+                "memory admission gate: estimated {:.1f}GB > available {:.1f}GB "
+                "(budget {:.1f}GB). Suggestions: {}".format(
+                    guard["estimate_gb"],
+                    guard["available_gb"],
+                    guard["budget_gb"],
+                    "; ".join(guard["suggestions"]) or "none",
+                )
+            )
 
         self._train_samples = train_loader
         exp_logger = ExperimentLogger(

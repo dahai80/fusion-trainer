@@ -113,6 +113,17 @@ class RunManager:
         # happens once the inner `with` returns (still held by the caller for
         # those paths, lock-free for direct _persist_meta callers).
         self._lock = threading.RLock()
+        # T2 (capability plan §1.2): cross-process run mutex + in-process
+        # priority queue. agent-studio (in-process), CLI and bridge (separate
+        # processes) previously raced on fusion-mlx when two hosts submitted
+        # at once. The flock serializes across processes crash-safely; the
+        # pending heap keeps same-process submissions queued instead of
+        # colliding. Queue discipline: lower priority number runs first.
+        from .run_queue import RunLock
+
+        self._run_lock = RunLock(Path(self.cache_path) / "run.lock")
+        self._pending: list[tuple[int, int, float, str, Any, str, Any, Path]] = []
+        self._pending_seq = 0
         # A3: defense-in-depth against the singleton being bypassed. The
         # production GUI path (fusion-agent-studio TrainingService) used to
         # construct RunManager() directly, creating a second registry that the
@@ -345,6 +356,11 @@ class RunManager:
             "warnings": warnings,
             "api_key_required": self._api_key_gate.enabled,
             "audit_log": str(Path(self.cache_path) / "audit.jsonl"),
+            "queue": {
+                "lock_path": str(self._run_lock.path),
+                "pending": len(self._pending),
+                "lock_holder": self._run_lock.holder(),
+            },
         }
 
     @staticmethod
@@ -562,21 +578,23 @@ class RunManager:
         self._audit.record(action, run_id=run_id, detail=detail, ok=ok)
 
     def start_sft(
-        self, config: TrainerConfig, api_key: str | None = None
+        self, config: TrainerConfig, api_key: str | None = None, priority: int = 5
     ) -> dict[str, Any]:
         """Start an SFT run in a worker thread; return {run_id, status}."""
         self._audit_op("start_sft", "", "sft run requested", True, api_key)
-        return self._start(config, method="sft")
+        return self._start(config, method="sft", priority=priority)
 
     def start_rlsl(
-        self, config: TrainerConfig, api_key: str | None = None
+        self, config: TrainerConfig, api_key: str | None = None, priority: int = 5
     ) -> dict[str, Any]:
         """Start an RLSL/alignment run (method in dpo|orpo|grpo|rlsl)."""
         method = getattr(config.rlsl, "method", "rlsl")
         self._audit_op("start_rlsl", "", f"rlsl/{method} run requested", True, api_key)
-        return self._start(config, method="rlsl")
+        return self._start(config, method="rlsl", priority=priority)
 
-    def _start(self, config: TrainerConfig, method: str) -> dict[str, Any]:
+    def _start(
+        self, config: TrainerConfig, method: str, priority: int = 5
+    ) -> dict[str, Any]:
         # R5: run_id was a ms-timestamp ({method}_{ms}); two runs started in
         # the same millisecond collided on run_dir. Use a uuid4 suffix for
         # collision-proof uniqueness while keeping the method prefix for
@@ -609,12 +627,16 @@ class RunManager:
             "adapter_name": "",
             "metrics": {},
             "canceled": False,
+            "queue_position": 0,
+            "priority": priority,
             "events_buffer": deque(maxlen=1000),
             "events_path": str(events_path),
             "log_path": str(log_path),
             "run_dir": str(run_dir),
             "mlx_port": self.mlx_port,
             "error": "",
+            # T3: compact config snapshot for cross-run diff (compare_runs).
+            "config": _config_summary(config),
         }
         with self._lock:
             self._runs[run_id] = record
@@ -627,8 +649,46 @@ class RunManager:
             self._persist_meta(run_id)
 
         sink = _RunSink(record, self._lock)
-        self._active_sinks[run_id] = sink
+        # T2: if a run is already active in this process, queue instead of
+        # spawning a second concurrent worker (they would contend for fusion-mlx
+        # and the unified-memory budget). Dispatch happens from the terminal
+        # path of the current run.
+        with self._lock:
+            active = any(
+                r["status"] in ("running", "queued")
+                for rid, r in self._runs.items()
+                if rid != run_id
+            )
+            if active:
+                self._pending_seq += 1
+                self._pending.append(
+                    (priority, self._pending_seq, time.time(), run_id, config, method, sink, log_path)
+                )
+                record["status"] = "queued"
+                record["queue_position"] = len(self._pending)
+                self._persist_meta(run_id)
+                logger.info(
+                    "run %s queued (position=%d priority=%d)", run_id, len(self._pending), priority
+                )
+                return {
+                    "run_id": run_id,
+                    "status": "queued",
+                    "queue_position": len(self._pending),
+                }
+        self._spawn(run_id, config, method, sink, log_path, record)
+        return {"run_id": run_id, "status": "running"}
 
+    def _spawn(
+        self,
+        run_id: str,
+        config: TrainerConfig,
+        method: str,
+        sink: Any,
+        log_path: Path,
+        record: dict[str, Any],
+    ) -> None:
+        """Spawn the worker thread for a run (shared by _start and queue dispatch)."""
+        self._active_sinks[run_id] = sink
         thread = threading.Thread(
             target=self._run_thread,
             args=(run_id, config, method, sink, log_path),
@@ -646,7 +706,34 @@ class RunManager:
         logger.info(
             "started run %s method=%s model=%s", run_id, method, config.sft.model
         )
-        return {"run_id": run_id, "status": "running"}
+
+    def _dispatch_next(self) -> None:
+        """Pop the highest-priority queued run and spawn it (T2)."""
+        while True:
+            with self._lock:
+                if not self._pending:
+                    return
+                entry = min(self._pending, key=lambda e: (e[0], e[1]))
+                self._pending.remove(entry)
+                (
+                    priority,
+                    seq,
+                    enqueued,
+                    run_id,
+                    config,
+                    method,
+                    sink,
+                    log_path,
+                ) = entry
+                rec = self._runs.get(run_id)
+                if rec is None or rec.get("status") == "cancelled":
+                    # canceled while queued — drop and keep dispatching
+                    continue
+                rec["status"] = "running"
+                rec["queue_position"] = 0
+                self._persist_meta(run_id)
+            self._spawn(run_id, config, method, sink, log_path, rec)
+            return
 
     def _run_thread(
         self,
@@ -669,6 +756,18 @@ class RunManager:
         # time in practice, and each handler is removed in the finally below.)
         pkg_logger = logging.getLogger("fusion_trainer")
         pkg_logger.addHandler(fh)
+        # T2: cross-process mutual exclusion — block until run.lock is free.
+        # flock is crash-safe (kernel releases on holder death), so a SIGKILLed
+        # sibling process cannot wedge the queue. While waiting, the record
+        # shows status=queued with a wait detail so GUIs see the backpressure.
+        while not self._run_lock.acquire(timeout=5.0):
+            sink.emit(
+                {
+                    "type": "status",
+                    "status": "queued",
+                    "detail": "waiting for cross-process run lock",
+                }
+            )
         sink.emit({"type": "status", "status": "running"})
 
         result: dict[str, Any]
@@ -695,6 +794,7 @@ class RunManager:
             logger.exception("run %s crashed", run_id)
             result = {"status": "failed", "error": str(exc)}
         finally:
+            self._run_lock.release()
             pkg_logger.removeHandler(fh)
             fh.close()
 
@@ -783,6 +883,8 @@ class RunManager:
         # (fusion-agent-studio); this is a file export, deterministic (Rule 5).
         self._export_run_metrics(run_id, final_status)
         logger.info("run %s ended: %s", run_id, final_status)
+        # T2: a slot freed — start the next queued run if any.
+        self._dispatch_next()
 
     # ------------------------------------------------------------------
     # Run queries
@@ -832,6 +934,109 @@ class RunManager:
             )
         return out
 
+    def compare_runs(
+        self, run_ids: list[str], max_points: int = 200
+    ) -> dict[str, Any]:
+        """T3 (capability plan 2.1): cross-run comparison payload.
+
+        Per run: meta snapshot + downsampled metric series from
+        events.jsonl (train_loss / val_loss / mean_reward) + the compact
+        config summary recorded at start. Plus a field-level config diff
+        across the runs (deterministic, Rule 5). Missing runs come back
+        with an "error" entry — never silently skipped.
+        """
+        metric_keys = ("train_loss", "val_loss", "mean_reward")
+        runs: list[dict[str, Any]] = []
+        for rid in run_ids:
+            with self._lock:
+                r = self._runs.get(rid)
+            if r is not None:
+                meta = {
+                    k: v
+                    for k, v in r.items()
+                    if k not in ("events_buffer", "thread")
+                }
+            else:
+                meta_path = self._runs_root / rid / "run_meta.json"
+                if not meta_path.is_file():
+                    runs.append({"run_id": rid, "error": "run not found"})
+                    continue
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    runs.append({"run_id": rid, "error": f"meta unreadable: {exc}"})
+                    continue
+            events_path = Path(
+                meta.get("events_path") or (self._runs_root / rid / "events.jsonl")
+            )
+            series: dict[str, list[list[float]]] = {}
+            if events_path.is_file():
+                raw: dict[str, list[list[float]]] = {k: [] for k in metric_keys}
+                try:
+                    with open(events_path, encoding="utf-8") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                ev = json.loads(line)
+                            except ValueError:
+                                continue
+                            step = ev.get("step")
+                            if not isinstance(step, (int, float)):
+                                continue
+                            for key in metric_keys:
+                                val = ev.get(key)
+                                if isinstance(val, (int, float)):
+                                    raw[key].append([float(step), float(val)])
+                except Exception as exc:
+                    logger.warning("compare_runs: read %s failed: %s", events_path, exc)
+                for key, pts in raw.items():
+                    if len(pts) > max_points:
+                        idx = sorted(
+                            set(
+                                round(i * (len(pts) - 1) / (max_points - 1))
+                                for i in range(max_points)
+                            )
+                        )
+                        pts = [pts[i] for i in idx]
+                    series[key] = pts
+            runs.append(
+                {
+                    "run_id": rid,
+                    "name": meta.get("name", ""),
+                    "model": meta.get("model", ""),
+                    "method": meta.get("method_kind", meta.get("method", "")),
+                    "status": meta.get("status", ""),
+                    "created": meta.get("created", 0),
+                    "metrics": meta.get("metrics", {}) or {},
+                    "config": meta.get("config", {}) or {},
+                    "series": series,
+                }
+            )
+        # Field-level diff across the configs (+ status/model for context).
+        fields = sorted(
+            {k for r in runs for k in (r.get("config") or {})}
+            | {"model", "status"}
+        )
+        diff = []
+        for f in fields:
+            vals = [
+                (r.get("config") or {}).get(f, r.get(f, ""))
+                if f in (r.get("config") or {}) or f in ("model", "status")
+                else ""
+                for r in runs
+            ]
+            vals = [v if isinstance(v, (str, int, float, bool)) else str(v) for v in vals]
+            diff.append(
+                {
+                    "field": f,
+                    "values": vals,
+                    "same": len(set(map(str, vals))) <= 1,
+                }
+            )
+        return {"runs": runs, "diff": diff}
+
     def run_status(self, run_id: str) -> dict[str, Any]:
         with self._lock:
             r = self._runs.get(run_id)
@@ -868,6 +1073,7 @@ class RunManager:
                 "created": r.get("created", 0),
                 "job_id": r.get("job_id", ""),
                 "events_path": r.get("events_path", ""),
+                "config": r.get("config", {}),
             }
 
     def run_progress(self, run_id: str, since_step: int = -1) -> dict[str, Any]:
@@ -928,6 +1134,17 @@ class RunManager:
                     "stop_run", run_id, f"already {r['status']}", False, api_key
                 )
                 return {"run_id": run_id, "status": r["status"]}
+            if r.get("status") == "queued":
+                # T2: cancel before the worker even spawns — drop from the
+                # pending queue and mark terminal; dispatch skips it.
+                r["status"] = "cancelled"
+                r["canceled"] = True
+                r["finished"] = time.time()
+                self._pending = [e for e in self._pending if e[3] != run_id]
+                self._persist_meta(run_id)
+                self._audit_op("stop_run", run_id, "cancelled while queued", True, api_key)
+                logger.info("run %s cancelled while queued", run_id)
+                return {"run_id": run_id, "status": "cancelled"}
             r["canceled"] = True
             thread = r.get("thread")
         sink = self._active_sinks.get(run_id)
@@ -1482,6 +1699,31 @@ def config_to_dict(config: TrainerConfig) -> dict[str, Any]:
     if is_dataclass(config):
         return asdict(config)
     return {}
+
+
+# T3 (capability plan 2.1): compact hyperparam snapshot recorded per run for
+# the compare/diff view. Key hyperparams only — the full config stays
+# available via config_to_dict on the RPC surface.
+def _config_summary(config: TrainerConfig) -> dict[str, Any]:
+    return {
+        "model": config.sft.model,
+        "model_type": config.sft.model_type,
+        "sft_method": config.sft.method,
+        "lora_rank": config.sft.lora_rank,
+        "lora_alpha": config.sft.lora_alpha,
+        "learning_rate": config.sft.learning_rate,
+        "batch_size": config.sft.batch_size,
+        "num_epochs": config.sft.num_epochs,
+        "max_seq_length": config.dataset.max_seq_length,
+        "quant_bits": config.sft.quant_bits,
+        "pack_sequences": config.sft.pack_sequences,
+        "gradient_checkpointing": config.sft.gradient_checkpointing,
+        "memory_limit_gb": config.sft.memory_limit_gb,
+        "publish_adapter": config.publish_adapter,
+        "rlsl_method": config.rlsl.method,
+        "grpo_backend": config.rlsl.grpo_backend,
+        "group_size": config.rlsl.group_size,
+    }
 
 
 __all__ = ["RunManager", "config_to_dict"]

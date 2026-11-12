@@ -7,14 +7,105 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc25
-updated: 2026-11-10
+version: 1.0.0rc26
+updated: 2026-11-12
 owner: "@dahai"
 source_of_truth:
   - CHANGELOG.md
 ---
 
 # Changelog
+
+## [1.0.0rc26] - 2026-11-12
+
+Capability-plan implementation release: RL resume, job queue/mutex, memory
+admission gate, dataset lineage + cowork ingestion, reward-hacking monitors,
+bench-as-GRPO-verifier reward backend, cross-run comparison, distributed
+orchestration surface, rollout throughput metric. Branch
+`plan/evolution-2026-11` (plan doc:
+`docs/superpowers/plans/2026-11-12-capability-plan.md`).
+
+### Added (capability plan 2026-11)
+- **T1 — RL run resume** (#plan 1.1): `ft rlsl --resume` resolves the newest
+  numbered checkpoint under `~/.fusion-mlx/adapters/<model>/<run_name>/`,
+  stages it to `{output_dir}/resume_stage/adapters.safetensors`, and sets
+  `RLSLConfig.init_adapter_path` (DPO/ORPO; GRPO warns loudly and starts
+  fresh — no upstream resume field). Engine-restart detection: a lost job
+  (404) or upstream-cancelled job (409) during alignment yields an
+  `interrupted` result with `resume_checkpoint`/`resume_step`/`resume_hint`
+  instead of a zombie failure. Tests: `tests/test_rlsl_resume.py` (8 cases).
+- **T2 — cross-process run lock + priority queue** (#plan 1.2): `RunLock`
+  (fcntl flock on `{cache_path}/run.lock`, kernel-released on process death)
+  serializes hosts (agent-studio in-process / bridge / cowork all converge
+  on one lock); in-process pending queue (priority + FIFO) with `queued`
+  status + `queue_position` in status/info. Tests: lock contention, queued
+  stop, info queue surface.
+- **§1.3 — unified-memory admission gate**: `memory_guard.estimate_training_gb`
+  (deterministic: params × quant factor + batch×seq×params activation,
+  checkpointing 0.30×) + `precheck` (two constraints: psutil available ≥
+  estimate AND estimate ≤ budget) wired into SFT + RLSL before any job
+  submission — fail-visible with de-escalation suggestions
+  (`--grad-checkpoint` / `--max-seq-length` / 8-bit / free resident models),
+  never auto-mutates config. Tests: `tests/test_memory_guard.py` (10 cases).
+- **T3 — cross-run comparison** (#plan 2.1): `RunManager.compare_runs` +
+  bridge `GET /runs/compare?run_ids=a,b` — downsampled metric series
+  (train_loss/val_loss/mean_reward) from events.jsonl, compact per-run
+  config summary recorded at start, field-level diff; trainer.html section 5
+  renders an SVG curve overlay + config diff table (mismatches highlighted).
+  Tests: `tests/test_run_manager.py` (5 cases) + `bridge/test_server.py`
+  (3 cases).
+- **T4 — dataset lineage** (#plan 2.2 + flywheel entry 3): unified lineage
+  records (`source`/`source_path`/`source_sha256`/`transforms`/`output`) on
+  the from-eval/from-rollouts/from-cowork sidecar manifests;
+  `ft datasets info <path>` prints the full chain; `ft datasets from-cowork`
+  ingests cowork DAG flow exports (eval-trajectory shape, retry siblings
+  share task_id) reusing the eval DPO miner.
+- **T7 — reward-hacking monitoring** (#plan 2.3): `hacking_monitor.py` —
+  three deterministic detectors over the reward stream (Rule 5, no model
+  routing): reward drift (last-window mean shift vs FIRST-window std,
+  z ≥ 3 + abs drift ≥ 0.15), length inflation (last/first window mean ratio
+  ≥ 1.5), format-token gaming (`<answer>`-family share drift ≥ 0.5 with
+  last share ≥ 0.9). `HackingMonitor.observe()` fed by RewardServer batches
+  and the RFT scoring loop; snapshot lands in the GRPO result
+  (`hacking_metrics`) and in metrics.prom via `prom_series()`. Offline twin
+  `compute_hacking_metrics(events)` reduces any events.jsonl. Tests:
+  `tests/test_hacking_monitor.py` (10 cases, injected drift triggers each
+  alarm; flat series zero false positives).
+- **Bench-as-GRPO-verifier** (#plan 3.1): `sandbox_mode="bench"` —
+  `RewardServer` scores each completion through fusion-bench's task API
+  (per-(task, completion) cache; sample must carry `bench_task`), any bench
+  failure degrades the whole batch to the sandbox reward with a loud error +
+  `bench_degraded=True` in the result (fail-visible, same semantics as
+  eval_loop #75). `RewardServer(mode="bench")` without a client refuses to
+  start. Tests: `tests/test_bench_reward.py` (7 cases, real HTTP callback).
+- **T5 — distributed orchestration surface** (#plan 2.4, orchestration only):
+  `distributed.py` — node manifest validation (`load_nodes`), deterministic
+  round-robin shard plan with per-shard sha256 (`plan_shards` →
+  `shard_plan.json`), aggregated progress with worst-status-wins
+  (`aggregate_progress`). Training execution stays upstream (fusion-mlx
+  mx.distributed job API — filed fusion-mlx#1566). Tests:
+  `tests/test_distributed.py` (12 cases).
+- **T9 — rollout throughput metric** (#plan 3.2): GRPO RFT loop logs
+  `rollout_samples_per_second` + `rollout_seconds` per iteration into
+  events.jsonl/metrics.prom — quantifies fusion-mlx prefix-cache /
+  continuous-batching gains on the sampling path.
+
+### Upstream issues filed (U1-U6)
+- fusion-mlx#1564 — RL job numbered checkpoints + init_adapter_path resume
+- fusion-mlx#1565 — memory_limit_gb generalized to all fine-tune endpoints
+- fusion-models-hub#100 — dataset version/lineage registration API
+- fusion-mlx#1566 — distributed fine-tune job API
+- fusion-bench#44 — programmatic per-item scoring endpoint
+- fusion-mlx#1567 — VLMFineTuneConfig quantize fields
+
+### Fixed
+- `bridge/test_shell_registry.py` clean_env fixture now deletes
+  FUSION_CLIENT_KEY/FUSION_MLX_API_KEY/MLX_API_KEY — a developer shell with
+  FUSION_CLIENT_KEY exported leaked into `accepted_bridge_keys()`
+  expectations via fusion_core.config.client_key().
+
+### Tests
+752 tests + 47 bridge tests green, ruff clean, docs validator 0 ERROR.
 
 ## [1.0.0rc25] - 2026-11-10
 
