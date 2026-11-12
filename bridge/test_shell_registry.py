@@ -39,6 +39,12 @@ def clean_env(monkeypatch, tmp_path):
         "FUSION_PROFILE",
         "FUSION_SHELL_UPSTREAM",
         "FUSION_SHELL_MANIFEST",
+        # accepted_bridge_keys() folds fusion_core.config.client_key() into
+        # the accept set; a developer shell with FUSION_CLIENT_KEY exported
+        # must not leak into these tests.
+        "FUSION_CLIENT_KEY",
+        "FUSION_MLX_API_KEY",
+        "MLX_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
