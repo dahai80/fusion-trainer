@@ -58,6 +58,7 @@ class RewardServer:
         host: str = "127.0.0.1",
         port: int = 0,
         prompt_miss_action: str = "warn",
+        monitor: Any = None,
     ):
         self._mode = mode
         self._scale = scale
@@ -95,6 +96,10 @@ class RewardServer:
             os.environ.get("FUSION_REWARD_LATENCY_TRIP_AFTER", "3")
         )
         self._breaker = _LatencyBreaker(self._latency_budget, self._latency_trip_after)
+        # T7 (capability plan): optional HackingMonitor — every scoring batch
+        # feeds the reward-drift / length-inflation / format-gaming detectors.
+        self.monitor = monitor
+        self._batch_count = 0
 
     @property
     def endpoint(self) -> str:
@@ -117,6 +122,8 @@ class RewardServer:
         index = self._sample_index
         breaker = self._breaker
         miss_action = self._prompt_miss_action
+        monitor = self.monitor
+        batch_no = [0]  # T7: mutable batch counter for the closure
         # Generate a fresh unguessable token per server instance; embed it in
         # the URL the caller (fusion-mlx) POSTs back to verbatim.
         token = secrets.token_urlsafe(32)
@@ -210,6 +217,9 @@ class RewardServer:
                         for c in completions
                     ]
                     breaker.record(time.monotonic() - _t0)
+                    if monitor is not None:
+                        batch_no[0] += 1
+                        monitor.observe(batch_no[0], rewards, completions)
                     payload = json.dumps({"rewards": rewards}).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")

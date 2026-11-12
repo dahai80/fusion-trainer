@@ -140,6 +140,10 @@ class GRPOTrainer:
         reward_trajectory: list[float] = []
         final_status = "completed"
         last_adapter = ""
+        # T7 (capability plan): reward-hacking detectors over the scored batches.
+        from ..hacking_monitor import HackingMonitor
+
+        monitor = HackingMonitor()
 
         for it in range(iters):
             print(f"\n  [GRPO iter {it + 1}/{iters}]")
@@ -167,6 +171,9 @@ class GRPOTrainer:
             mean_r = sum(s["reward"] for s in samples) / len(samples)
             self._mean_reward = mean_r
             reward_trajectory.append(mean_r)
+            monitor.observe(
+                it, [s["reward"] for s in samples], [s.get("completion", "") for s in samples]
+            )
             exp.log_metrics(
                 step=it,
                 metrics={
@@ -186,6 +193,9 @@ class GRPOTrainer:
             last_adapter = job_result.get("adapter_path", "")
             self._adapter_name = job_result.get("adapter_name", self._adapter_name)
 
+        prom = monitor.prom_series()
+        if prom:
+            exp.log_metrics(step=max(1, len(reward_trajectory)), metrics=prom)
         exp.save()
         if final_status == "completed":
             print("\n      ✓ GRPO complete!")
@@ -207,6 +217,7 @@ class GRPOTrainer:
             "final_mean_reward": reward_trajectory[-1] if reward_trajectory else 0.0,
             "adapter_path": last_adapter,
             "adapter_name": self._adapter_name,
+            "hacking_metrics": monitor.snapshot(),
             "note": "reward-filtered SFT approx (backend=rft); use grpo_backend=grpo for true policy-gradient",
         }
 
@@ -265,8 +276,12 @@ class GRPOTrainer:
         import os as _os
 
         miss_action = _os.environ.get("FUSION_REWARD_PROMPT_MISS", "warn")
+        # T7 (capability plan): hacking detectors fed by the reward callback.
+        from ..hacking_monitor import HackingMonitor
+
+        monitor = HackingMonitor()
         reward_server = RewardServer(
-            dataset, mode=mode, scale=scale, prompt_miss_action=miss_action
+            dataset, mode=mode, scale=scale, prompt_miss_action=miss_action, monitor=monitor
         )
         endpoint = reward_server.start()
         final_status = "completed"
@@ -340,6 +355,9 @@ class GRPOTrainer:
         finally:
             reward_server.stop()
 
+        prom = monitor.prom_series()
+        if prom:
+            exp.log_metrics(step=iters, metrics=prom)
         exp.save()
         if final_status == "completed":
             print("\n      ✓ GRPO complete!")
@@ -360,6 +378,7 @@ class GRPOTrainer:
             "adapter_path": last_adapter,
             "adapter_name": self._adapter_name,
             "output_dir": str(self._output_dir),
+            "hacking_metrics": monitor.snapshot(),
             "note": "true policy-gradient GRPO via fusion-mlx #363 Phase 2",
         }
 
