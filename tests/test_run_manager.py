@@ -577,3 +577,83 @@ class TestRunQueue:
             info = rm.info()
             assert info["queue"]["lock_path"].endswith("run.lock")
             assert info["queue"]["pending"] == 0
+
+
+# ===========================================================================
+# T3: compare_runs (capability plan 2.1)
+# ===========================================================================
+
+
+def _write_run_dir(tmp: Path, rid: str, losses, config=None) -> None:
+    d = tmp / "runs" / rid
+    d.mkdir(parents=True)
+    (d / "run_meta.json").write_text(
+        json.dumps(
+            {
+                "run_id": rid,
+                "name": rid,
+                "model": "test-model",
+                "status": "completed",
+                "events_path": str(d / "events.jsonl"),
+                "config": config or {"lora_rank": 16, "model": "test-model"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with open(d / "events.jsonl", "w") as f:
+        for i, v in enumerate(losses, 1):
+            f.write(json.dumps({"step": i, "train_loss": v}) + "\n")
+
+
+class TestCompareRuns:
+    def test_compare_from_disk(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        _write_run_dir(tmp_path, "sft_a", [2.0, 1.5, 1.0])
+        _write_run_dir(tmp_path, "sft_b", [2.0, 1.8, 1.6], config={"lora_rank": 8, "model": "test-model"})
+        out = rm.compare_runs(["sft_a", "sft_b"])
+        assert len(out["runs"]) == 2
+        assert out["runs"][0]["series"]["train_loss"] == [[1.0, 2.0], [2.0, 1.5], [3.0, 1.0]]
+        diff = {d["field"]: d for d in out["diff"]}
+        assert diff["lora_rank"]["same"] is False
+        assert diff["model"]["same"] is True
+
+    def test_compare_missing_run_is_visible(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        _write_run_dir(tmp_path, "sft_a", [1.0])
+        out = rm.compare_runs(["sft_a", "sft_ghost"])
+        assert out["runs"][1]["error"] == "run not found"
+
+    def test_compare_downsamples(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        _write_run_dir(tmp_path, "sft_big", list(range(300)))
+        out = rm.compare_runs(["sft_big"], max_points=50)
+        pts = out["runs"][0]["series"]["train_loss"]
+        assert len(pts) <= 50
+        assert pts[0][1] == 0.0
+        assert pts[-1][1] == 299.0
+
+    def test_compare_ignores_malformed_lines(self, tmp_path):
+        rm = RunManager(cache_path=str(tmp_path), model_hub_path=str(tmp_path), mlx_port=11999)
+        d = tmp_path / "runs" / "sft_bad"
+        d.mkdir(parents=True)
+        (d / "run_meta.json").write_text(
+            json.dumps({"run_id": "sft_bad", "config": {}}), encoding="utf-8"
+        )
+        (d / "events.jsonl").write_text(
+            '{"step": 1, "train_loss": 2.0}\nnot-json\n\n{"step": 2, "train_loss": 1.0}\n',
+            encoding="utf-8",
+        )
+        out = rm.compare_runs(["sft_bad"])
+        assert out["runs"][0]["series"]["train_loss"] == [[1.0, 2.0], [2.0, 1.0]]
+
+    def test_start_records_config_summary(self, monkeypatch, tmp_path):
+        with tempfile.TemporaryDirectory() as tmp:
+            _patch_sft_client(monkeypatch)
+            rm = RunManager(cache_path=tmp, model_hub_path=tmp, mlx_port=11999)
+            cfg = _make_sft_config(tmp)
+            run_id = rm.start_sft(cfg)["run_id"]
+            _wait_terminal(rm, run_id)
+            st = rm.run_status(run_id)
+            assert st["config"]["model"] == "test-model"
+            assert st["config"]["lora_rank"] == 16
+            assert st["config"]["max_seq_length"] == 128

@@ -354,3 +354,38 @@ def test_console_theme_follows_shell(client):
     assert "applyTheme" in html
     # surfaces use tokens, not hardcoded white (dark mode would break)
     assert "background: #fff" not in html
+
+
+def test_compare_runs_endpoint(client, monkeypatch):
+    class _CmpRM:
+        def compare_runs(self, run_ids, max_points=200):
+            return {
+                "runs": [
+                    {"run_id": rid, "series": {"train_loss": [[1, 2.0]]}}
+                    for rid in run_ids
+                ],
+                "diff": [{"field": "model", "values": run_ids, "same": True}],
+            }
+
+    monkeypatch.setattr(bs, "_rm", lambda: _CmpRM())
+    resp = client.get(
+        "/runs/compare?run_ids=a,b", headers=AUTH
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [r["run_id"] for r in body["runs"]] == ["a", "b"]
+    assert body["diff"][0]["field"] == "model"
+
+
+def test_compare_runs_requires_two(client, monkeypatch):
+    monkeypatch.setattr(bs, "_rm", lambda: _FakeRM({"status": "completed"}))
+    assert client.get("/runs/compare?run_ids=a", headers=AUTH).status_code == 400
+    assert (
+        client.get("/runs/compare?run_ids=", headers=AUTH).status_code == 400
+    )
+
+
+def test_compare_runs_caps_six(client, monkeypatch):
+    monkeypatch.setattr(bs, "_rm", lambda: _FakeRM({"status": "completed"}))
+    ids = ",".join(f"r{i}" for i in range(7))
+    assert client.get(f"/runs/compare?run_ids={ids}", headers=AUTH).status_code == 400

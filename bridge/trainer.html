@@ -109,7 +109,7 @@ or JSONL: {"messages": [...]}'></textarea>
     <span id="run-msg" class="muted"></span>
   </p>
   <table>
-    <thead><tr><th>Run</th><th>Model</th><th>Status</th><th>Progress</th><th></th></tr></thead>
+    <thead><tr><th></th><th>Run</th><th>Model</th><th>Status</th><th>Progress</th><th></th></tr></thead>
     <tbody id="run-rows"></tbody>
   </table>
 </section>
@@ -130,6 +130,24 @@ or JSONL: {"messages": [...]}'></textarea>
     <div><b>Base model</b><pre id="eval-base">—</pre></div>
     <div><b>Tuned model</b><pre id="eval-tuned">—</pre></div>
   </div>
+</section>
+
+<h2>5 · Compare Runs <span class="muted">curve overlay + config diff (T3)</span></h2>
+<section>
+  <p>
+    <label>Metric
+      <select id="cmp-metric">
+        <option value="train_loss">train_loss</option>
+        <option value="val_loss">val_loss</option>
+        <option value="mean_reward">mean_reward</option>
+      </select>
+    </label>
+    <button class="primary" id="cmp-run">Compare Selected</button>
+    <span id="cmp-msg" class="muted">tick 2+ runs in the table above, then compare</span>
+  </p>
+  <svg id="cmp-chart" width="100%" height="220" preserveAspectRatio="none"
+       style="border:1px solid var(--fs-border);border-radius:6px;background:var(--bg-soft)"></svg>
+  <div id="cmp-table" style="margin-top:10px"></div>
 </section>
 
 <p class="msg" id="msg"></p>
@@ -227,13 +245,14 @@ async function loadRuns() {
         actions.push(`<button data-merge="${esc(r.run_id)}" class="link">Merge</button>`);
         actions.push(`<button data-publish="${esc(r.run_id)}" class="link">Publish</button>`);
       }
-      return `<tr><td>${esc(r.name || r.run_id)}</td>` +
+      return `<tr><td><input type="checkbox" class="cmp-check" value="${esc(r.run_id)}"></td>` +
+        `<td>${esc(r.name || r.run_id)}</td>` +
         `<td class="muted">${esc(r.model || "")}</td>` +
         `<td>${esc(r.status)}${r.error ? ` <span class="muted">${esc(String(r.error).slice(0, 60))}</span>` : ""}</td>` +
         `<td><span class="progress-track"><span class="progress-fill" style="width:${pct}%"></span></span> ` +
         `${step}/${total || "?"} ${total ? `(${pct.toFixed(0)}%)` : ""}</td>` +
         `<td>${actions.join(" ")}</td></tr>`;
-    }).join("") || `<tr><td colspan="5" class="muted">No runs yet.</td></tr>`;
+    }).join("") || `<tr><td colspan="6" class="muted">No runs yet.</td></tr>`;
   } catch (e) {
     $("run-msg").textContent = `bridge unreachable — start scripts/trainer-bridge.sh`;
   }
@@ -316,6 +335,76 @@ $("eval-run").addEventListener("click", async () => {
     $("eval-msg").textContent = "";
   } catch (e) { $("eval-msg").textContent = e.message; }
 });
+
+// ── compare runs (T3) ─────────────────────────────────────────────────
+const CMP_COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2"];
+
+$("cmp-run").addEventListener("click", async () => {
+  const ids = [...document.querySelectorAll(".cmp-check:checked")].map(c => c.value);
+  if (ids.length < 2) {
+    $("cmp-msg").textContent = "select at least 2 runs";
+    return;
+  }
+  $("cmp-msg").textContent = "comparing…";
+  try {
+    const res = await api("GET", `runs/compare?run_ids=${ids.map(encodeURIComponent).join(",")}`);
+    drawCompare(res);
+    $("cmp-msg").textContent = "";
+  } catch (e) { $("cmp-msg").textContent = e.message; }
+});
+
+function drawCompare(res) {
+  const metric = $("cmp-metric").value;
+  const svg = $("cmp-chart");
+  const W = 1000, H = 220, PAD = 30;
+  let pts = [];
+  res.runs.forEach((r, i) => {
+    const series = (r.series || {})[metric] || [];
+    if (series.length) pts = pts.concat(series.map(p => p[1]));
+  });
+  if (!pts.length) {
+    svg.innerHTML = `<text x="20" y="40" fill="var(--fs-text-2)">no ${esc(metric)} points</text>`;
+    renderDiff(res);
+    return;
+  }
+  let lo = Math.min(...pts), hi = Math.max(...pts);
+  if (hi - lo < 1e-9) { hi = lo + 1; }
+  let maxStep = 1;
+  res.runs.forEach(r => {
+    const series = (r.series || {})[metric] || [];
+    if (series.length) maxStep = Math.max(maxStep, series[series.length - 1][0]);
+  });
+  let lines = "";
+  res.runs.forEach((r, i) => {
+    const series = (r.series || {})[metric] || [];
+    if (!series.length) return;
+    const color = CMP_COLORS[i % CMP_COLORS.length];
+    const d = series.map((p, j) => {
+      const x = PAD + (p[0] / maxStep) * (W - 2 * PAD);
+      const y = H - PAD - ((p[1] - lo) / (hi - lo)) * (H - 2 * PAD);
+      return (j ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1);
+    }).join(" ");
+    lines += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.5"></path>`;
+  });
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML =
+    `<line x1="${PAD}" y1="${H - PAD}" x2="${W - PAD}" y2="${H - PAD}" stroke="var(--fs-border)"></line>` +
+    `<text x="${PAD}" y="16" fill="var(--fs-text-2)" font-size="12">${esc(metric)} — lo ${(+lo).toFixed(3)} hi ${(+hi).toFixed(3)}</text>` +
+    lines;
+  renderDiff(res);
+}
+
+function renderDiff(res) {
+  const names = res.runs.map(r =>
+    `<th title="${esc(r.run_id || "")}">${esc(r.name || r.run_id || "?")}</th>`).join("");
+  const rows = (res.diff || []).map(d =>
+    `<tr><td>${esc(d.field)}</td>` +
+    d.values.map(v =>
+      `<td${d.same ? "" : ` style="color:var(--fs-error);font-weight:600"`}>${esc(String(v))}</td>`).join("") +
+    `</tr>`).join("");
+  $("cmp-table").innerHTML =
+    `<table><thead><tr><th>Field</th>${names}</tr></thead><tbody>${rows}</tbody></table>`;
+}
 
 // ── shell theme follow ────────────────────────────────────────────────
 // Embedded in the Fusion web shell, the parent posts
