@@ -41,6 +41,7 @@ import contextlib
 import json
 import logging
 import math
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -152,7 +153,9 @@ class GRPOTrainer:
             # instead of `continue`-ing every iteration into a zero-training
             # fake "completed".
             try:
+                _t_sample = time.monotonic()
                 samples = self._sample_and_score(dataset, g, mode, scale)
+                _sample_sec = time.monotonic() - _t_sample
             except MLXFineTuneError as exc:
                 logger.error("GRPO iter %d sampling failed: %s", it, exc)
                 final_status = "failed"
@@ -181,6 +184,13 @@ class GRPOTrainer:
                     "mean_reward": mean_r,
                     "kept_samples": len(kept),
                     "total_samples": len(samples),
+                    # T9 (capability plan 3.2): rollout throughput — the metric
+                    # that quantifies fusion-mlx prefix-cache/continuous-batching
+                    # gains on the sampling path.
+                    "rollout_samples_per_second": (
+                        round(len(samples) / _sample_sec, 4) if _sample_sec > 0 else 0.0
+                    ),
+                    "rollout_seconds": round(_sample_sec, 4),
                 },
             )
             print(f"      mean_reward={mean_r:.4f} kept={len(kept)}/{len(samples)}")
