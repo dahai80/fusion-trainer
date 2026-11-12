@@ -6,7 +6,7 @@ entry: service
 doc_type: guide
 title: { zh: "能力补齐与超越计划（2026-11）", en: "Capability catch-up and leapfrog plan (2026-11)" }
 audience: engineer
-status: draft
+status: review
 version: 1.0.0rc25
 updated: 2026-11-12
 owner: "@dahai"
@@ -18,6 +18,30 @@ source_of_truth:
 
 输入：`~/fusion/insight/fusion-trainer-evolution-2026-11.md`（业界洞察 + T1-T9 差距表）。
 基线：v1.0.0rc25（2026-11-10），~14.4k LOC，697 测试，纯 HTTP 委托制。
+
+## 落地状态（2026-11-12，分支 plan/evolution-2026-11）
+
+| 项 | 状态 | 提交 / issue |
+|----|------|--------------|
+| T1 RL resume + 引擎重启检测 | ✅ 已落地 | 05b6cbe（`ft rlsl --resume`、`_resolve_rl_resume`、404/409 → interrupted） |
+| T2 作业队列 + 跨进程互斥 | ✅ 已落地 | e629782（RunLock fcntl + 优先级队列 + queued 状态） |
+| 统一内存护栏 | ✅ 已落地 | 3862d9e（`memory_guard.precheck`，SFT + RLSL 双入口） |
+| T3 实验横向比较 | ✅ 已落地 | 2e01079（`GET /runs/compare` + 曲线叠加 SVG + 配置 diff 表） |
+| T4 数据集 lineage | ✅ 已落地 | fe422e1（lineage 字段 + `ft datasets info`） |
+| T7 reward-hacking 监控 | ✅ 已落地 | d99e681（`hacking_monitor.py` 三类确定性指标 + metrics.prom 通道） |
+| 超越出口：bench 即 GRPO 验证器 | ✅ 已落地（等 U5 一等接口提速） | 553c71a（`sandbox_mode=bench`，降级 fail-visible） |
+| T5 分布式编排面 | ✅ 已落地（等 U4 job API） | 8bb7664（`distributed.py`：节点清单/分片计划/聚合进度） |
+| T9 rollout 吞吐指标 | ✅ 已落地 | d8149d7（`rollout_samples_per_second` 进 events） |
+| T6 量化训练跟进 | ⏳ 跟随上游 | U6 已提 issue |
+| 飞轮入口三（cowork） | ✅ 已落地 | fe422e1（`ft datasets from-cowork`） |
+| U1 RL checkpoint API | issue 已提 | [fusion-mlx#1564](https://github.com/dahai80/fusion-mlx/issues/1564) |
+| U2 memory_limit_gb 泛化 | issue 已提 | [fusion-mlx#1565](https://github.com/dahai80/fusion-mlx/issues/1565) |
+| U3 hub lineage API | issue 已提 | [fusion-models-hub#100](https://github.com/dahai80/fusion-models-hub/issues/100) |
+| U4 分布式 job API | issue 已提 | [fusion-mlx#1566](https://github.com/dahai80/fusion-mlx/issues/1566) |
+| U5 bench 逐题打分 API | issue 已提 | [fusion-bench#44](https://github.com/dahai80/fusion-bench/issues/44) |
+| U6 VLM quantize 字段 | issue 已提 | [fusion-mlx#1567](https://github.com/dahai80/fusion-mlx/issues/1567) |
+
+落地后全量验证：752 tests + 47 bridge tests 通过，ruff 0 违例，docs validator 0 ERROR。
 本文档 = 差距 → 可执行交付的映射：每项给出仓库内交付物、上游依赖（issue 路由）、验收标准、交付节点。
 
 ## 0. 总原则（先立防线，再谈能力）
