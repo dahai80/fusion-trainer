@@ -74,6 +74,29 @@ class RLSLEngine:
 
         method = self.rlsl_cfg.method
 
+        # Capability plan §1.3: unified-memory admission gate (same contract
+        # as the SFT path — fail-visible before any job submission).
+        from ..memory_guard import precheck
+
+        guard = precheck(
+            model=self.config.sft.model,
+            quant_bits=self.config.sft.quant_bits,
+            batch_size=self.config.sft.batch_size,
+            max_seq_length=self.dataset_cfg.max_seq_length,
+            gradient_checkpointing=self.config.sft.gradient_checkpointing,
+            memory_limit_gb=self.config.sft.memory_limit_gb,
+        )
+        if not guard["ok"]:
+            raise MemoryError(
+                "memory admission gate: estimated {:.1f}GB > available {:.1f}GB "
+                "(budget {:.1f}GB). Suggestions: {}".format(
+                    guard["estimate_gb"],
+                    guard["available_gb"],
+                    guard["budget_gb"],
+                    "; ".join(guard["suggestions"]) or "none",
+                )
+            )
+
         # Step 1: Load dataset — GRPO uses prompt data, others use preference pairs
         if method == "grpo":
             print("[1/4] Loading GRPO prompt dataset...")
