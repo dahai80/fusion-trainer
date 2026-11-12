@@ -98,8 +98,24 @@ def test_resolve_resume_no_checkpoint_warns_fresh(tmp_path, monkeypatch, caplog)
     assert any("no numbered checkpoint found" in r.message for r in caplog.records)
 
 
+def _bypass_guard(monkeypatch):
+    # CI runners report ~7GB RAM; the admission gate must not gate offline
+    # pipeline tests on host memory.
+    monkeypatch.setattr(
+        "fusion_trainer.memory_guard.precheck",
+        lambda **kw: {
+            "ok": True,
+            "estimate_gb": 0.0,
+            "available_gb": 0.0,
+            "budget_gb": 0.0,
+            "suggestions": [],
+        },
+    )
+
+
 def test_interrupted_result_on_404(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    _bypass_guard(monkeypatch)
     ckpt = _make_checkpoint(tmp_path, 40)
     engine = _engine(tmp_path)
     monkeypatch.setattr(
@@ -122,6 +138,7 @@ def test_interrupted_result_on_404(tmp_path, monkeypatch):
 
 def test_non_404_error_reraises(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    _bypass_guard(monkeypatch)
     engine = _engine(tmp_path)
     monkeypatch.setattr(
         engine._loader,

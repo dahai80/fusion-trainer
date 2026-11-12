@@ -35,7 +35,13 @@ def test_estimate_seq_length_scales_activation():
     assert long > short
 
 
-def test_precheck_passes_small_model():
+def test_precheck_passes_small_model(monkeypatch):
+    import psutil
+
+    # Fixed memory fixture: CI runners report ~7GB available, below the
+    # 1B/4bit estimate — the gate's pass path must not depend on host RAM.
+    fake = type("VM", (), {"total": 96 * 1024**3, "available": 64 * 1024**3})()
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: fake)
     result = precheck(
         model="llama-3.2-1b-4bit",
         quant_bits=4,
@@ -105,7 +111,11 @@ def test_precheck_memory_limit_override_budget(monkeypatch):
     assert any("memory_limit_gb" in s for s in result["suggestions"])
 
 
-def test_precheck_logs_decision(caplog):
+def test_precheck_logs_decision(caplog, monkeypatch):
+    import psutil
+
+    fake = type("VM", (), {"total": 96 * 1024**3, "available": 64 * 1024**3})()
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: fake)
     with caplog.at_level(logging.INFO, logger="fusion_trainer.memory_guard"):
         precheck(model="llama-3.2-1b-4bit", quant_bits=4)
     assert any("memory_guard: ok=" in r.message for r in caplog.records)
