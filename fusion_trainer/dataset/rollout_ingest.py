@@ -296,6 +296,13 @@ def build_from_rollouts(
         "grpo_prompts": len(grpo_samples),
         "records_total": len(records),
         "signals": _signal_counts(records),
+        "lineage": {
+            "source": "gateway-rollout-tap",
+            "source_path": str(sink_path),
+            "source_sha256": digest,
+            "transforms": ["positive_rollouts", "rollouts_to_sft"],
+            "output": str(sft_output_path or grpo_output_path),
+        },
     }
     manifest_path = Path(str(manifest_anchor) + ROLLOUT_MANIFEST_SUFFIX)
     tmp_path = Path(str(manifest_path) + ".tmp")

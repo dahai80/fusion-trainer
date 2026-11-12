@@ -309,6 +309,13 @@ def build_from_eval_dataset(
         "records_passed": sum(1 for r in records if r.get("passed")),
         "records_failed": sum(1 for r in records if not r.get("passed")),
         "per_type": _per_type_counts(records),
+        "lineage": {
+            "source": "fusion-eval",
+            "source_path": str(export_path),
+            "source_sha256": digest,
+            "transforms": ["eval_records_to_sft"],
+            "output": str(output_path),
+        },
     }
     manifest_path = Path(str(output_path) + MANIFEST_SUFFIX)
     tmp_path = Path(str(manifest_path) + ".tmp")
