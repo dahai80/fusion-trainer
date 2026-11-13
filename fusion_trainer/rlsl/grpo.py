@@ -154,6 +154,7 @@ class GRPOTrainer:
             # fake "completed".
             try:
                 _t_sample = time.monotonic()
+                self._rollout_completion_tokens = 0
                 samples = self._sample_and_score(dataset, g, mode, scale)
                 _sample_sec = time.monotonic() - _t_sample
             except MLXFineTuneError as exc:
@@ -189,6 +190,19 @@ class GRPOTrainer:
                     # gains on the sampling path.
                     "rollout_samples_per_second": (
                         round(len(samples) / _sample_sec, 4) if _sample_sec > 0 else 0.0
+                    ),
+                    # P2-5 headline: server-reported completion tokens over
+                    # the sampling window (tok/s), not just samples/s.
+                    "rollout_tokens_per_second": (
+                        round(
+                            getattr(self, "_rollout_completion_tokens", 0) / _sample_sec,
+                            1,
+                        )
+                        if _sample_sec > 0
+                        else 0.0
+                    ),
+                    "rollout_completion_tokens": getattr(
+                        self, "_rollout_completion_tokens", 0
                     ),
                     "rollout_seconds": round(_sample_sec, 4),
                 },
@@ -536,7 +550,7 @@ class GRPOTrainer:
         catches per-prompt so one bad prompt doesn't kill the batch, but if
         ALL prompts fail it raises so the run fails visibly.
         """
-        return self._client.chat_completions(
+        completions, usage = self._client.chat_completions_with_usage(
             self._model,
             [{"role": "user", "content": prompt}],
             n=n,
@@ -544,6 +558,17 @@ class GRPOTrainer:
             top_p=float(self.rlsl_cfg.top_p),
             max_tokens=int(self.rlsl_cfg.response_length),
         )
+        # P2-5: accumulate server-reported completion tokens for the rollout
+        # tok/s headline metric. Fails soft — usage may be absent on older
+        # servers, in which case the tok/s metric reports 0 while samples/s
+        # keeps working.
+        try:
+            self._rollout_completion_tokens += int(
+                usage.get("completion_tokens") or 0
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return completions
 
     # ------------------------------------------------------------------
     # Step 3-4: group-relative advantage + top-k selection

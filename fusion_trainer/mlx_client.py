@@ -281,6 +281,55 @@ class MLXFineTuneClient:
 
         Returns the list of non-empty completion strings (one per choice).
         """
+        completions, usage = self._chat_completions_raw(
+            model_id,
+            messages,
+            n=n,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        return completions
+
+    def chat_completions_with_usage(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        n: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 512,
+        timeout: float = 120.0,
+    ) -> tuple[list[str], dict[str, Any]]:
+        """chat_completions plus the raw usage dict (completion_tokens et al).
+
+        P2-5: the GRPO rollout throughput headline is tok/s, and samples/s
+        alone hides response-length variance. Same request/retry path as
+        chat_completions; usage is {} when the server omits it.
+        """
+        return self._chat_completions_raw(
+            model_id,
+            messages,
+            n=n,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+    def _chat_completions_raw(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        n: int = 1,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 512,
+        timeout: float = 120.0,
+    ) -> tuple[list[str], dict[str, Any]]:
         body = {
             "model": model_id,
             "messages": messages,
@@ -307,10 +356,10 @@ class MLXFineTuneClient:
                 content = (ch.get("message") or {}).get("content", "")
                 if content:
                     out.append(str(content))
-        return out
+        usage = result.get("usage")
+        return out, usage if isinstance(usage, dict) else {}
 
-    # ------------------------------------------------------------------
-    # Job lifecycle
+    # ------------------------------------------------------------------    # Job lifecycle
     # ------------------------------------------------------------------
 
     def create_job(
