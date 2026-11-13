@@ -758,3 +758,58 @@ class TestGRPOTrueBackend:
             cache_path=str(tmp_path),
         )
         assert cfg.rlsl.grpo_backend == "rft"
+
+
+class TestRolloutTokensMetric:
+    def test_generate_accumulates_usage_tokens(self):
+        from types import SimpleNamespace
+
+        from fusion_trainer.rlsl.grpo import GRPOTrainer
+
+        trainer = GRPOTrainer.__new__(GRPOTrainer)
+        trainer._model = "m"
+        trainer._rollout_completion_tokens = 0
+        calls = []
+
+        def fake_with_usage(model_id, messages, **kw):
+            calls.append(model_id)
+            return (["c1", "c2"], {"completion_tokens": 41})
+
+        trainer._client = SimpleNamespace(chat_completions_with_usage=fake_with_usage)
+        trainer.rlsl_cfg = SimpleNamespace(temperature=1.0, top_p=1.0, response_length=64)
+        out = GRPOTrainer._generate(trainer, "prompt", 2)
+        assert out == ["c1", "c2"]
+        assert trainer._rollout_completion_tokens == 41
+
+    def test_generate_soft_fails_on_missing_usage(self):
+        from types import SimpleNamespace
+
+        from fusion_trainer.rlsl.grpo import GRPOTrainer
+
+        trainer = GRPOTrainer.__new__(GRPOTrainer)
+        trainer._model = "m"
+        trainer._rollout_completion_tokens = 0
+        trainer._client = SimpleNamespace(
+            chat_completions_with_usage=lambda *a, **k: (["c"], {})
+        )
+        trainer.rlsl_cfg = SimpleNamespace(temperature=1.0, top_p=1.0, response_length=64)
+        out = GRPOTrainer._generate(trainer, "prompt", 1)
+        assert out == ["c"]
+        assert trainer._rollout_completion_tokens == 0
+
+    def test_client_with_usage_returns_usage_dict(self, monkeypatch):
+        from fusion_trainer.mlx_client import MLXFineTuneClient
+
+        client = MLXFineTuneClient.__new__(MLXFineTuneClient)
+        captured = {}
+
+        def fake_raw(self, model_id, messages, **kw):
+            captured.update(kw)
+            return (["hello"], {"completion_tokens": 7})
+
+        monkeypatch.setattr(MLXFineTuneClient, "_chat_completions_raw", fake_raw)
+        completions, usage = MLXFineTuneClient.chat_completions_with_usage(
+            client, "m", [{"role": "user", "content": "p"}], n=1
+        )
+        assert completions == ["hello"]
+        assert usage == {"completion_tokens": 7}
