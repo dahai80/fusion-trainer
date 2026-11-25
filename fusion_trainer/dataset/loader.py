@@ -21,9 +21,11 @@ from .formats import (
     SCHEMA_GRPO_PROMPT,
     SCHEMA_MESSAGES,
     SCHEMA_SHAREGPT,
+    copy_message,
     detect_dataset_schema,
     load_dataset_file,
     sharegpt_to_messages,
+    validate_chat_messages,
     validate_format,
 )
 from .transforms import deduplicate
@@ -183,6 +185,16 @@ class DatasetLoader:
                 continue
             if not messages:
                 continue
+            # Issue #88: validate tool-calling structure up front; an invalid
+            # tool turn would 400 upstream or teach the model garbage.
+            ok, reason = validate_chat_messages(messages)
+            if not ok and any(
+                "tool_calls" in m or m.get("role") == "tool" for m in messages
+            ):
+                logger.warning(
+                    "skip sample with invalid tool-call structure: %s", reason
+                )
+                continue
             if max_seq_length > 0:
                 # issue #75: cap the WHOLE conversation at a char budget of
                 # max_seq_length * 4 (~4 chars/token), not each message at
@@ -213,7 +225,9 @@ class DatasetLoader:
                         mlen = len(str(m.get("content", "")))
                         if used + mlen > budget:
                             break
-                        kept.append({"role": m["role"], "content": str(m["content"])})
+                        # Issue #88: copy_message preserves tool_calls /
+                        # tool_call_id / name instead of amputating them.
+                        kept.append(copy_message(m))
                         used += mlen
                     kept.reverse()
                     # Never keep zero turns — keep at least the last message,
@@ -235,27 +249,15 @@ class DatasetLoader:
                             None,
                         )
                         if last_user is not None:
-                            kept = [
-                                {
-                                    "role": "user",
-                                    "content": str(last_user.get("content", ""))[
-                                        : budget // 2
-                                    ],
-                                },
-                                {
-                                    "role": "assistant",
-                                    "content": str(messages[-1].get("content", ""))[
-                                        : budget // 2
-                                    ],
-                                },
-                            ]
+                            u = copy_message(last_user)
+                            u["content"] = str(u["content"])[: budget // 2]
+                            a = copy_message(messages[-1])
+                            a["content"] = str(a["content"])[: budget // 2]
+                            kept = [u, a]
                         else:
-                            kept = [
-                                {
-                                    "role": messages[-1]["role"],
-                                    "content": str(messages[-1]["content"])[:budget],
-                                }
-                            ]
+                            last = copy_message(messages[-1])
+                            last["content"] = str(last["content"])[:budget]
+                            kept = [last]
                     if (
                         kept
                         and "user" not in {m["role"] for m in kept}
@@ -287,7 +289,12 @@ class DatasetLoader:
                             },
                         )
                     messages = kept
-            normalized.append({"messages": messages})
+            # Issue #88: pass a sample-level tools schema through verbatim —
+            # mlx_lm.tuner ChatDataset forwards it to apply_chat_template.
+            sample: dict[str, Any] = {"messages": messages}
+            if isinstance(item.get("tools"), list):
+                sample["tools"] = item["tools"]
+            normalized.append(sample)
 
         if val_ratio > 0 and len(normalized) > 1:
             split_idx = int(len(normalized) * (1 - val_ratio))

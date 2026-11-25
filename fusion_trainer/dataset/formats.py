@@ -52,6 +52,113 @@ _SHAREGPT_ROLE_MAP = {
     "function": "tool",
 }
 
+# Issue #88: OpenAI-compatible tool-calling fields preserved on chat
+# messages. mlx_lm.tuner ChatDataset passes the whole message dict to
+# tokenizer.apply_chat_template, so these keys are visible to templates
+# that render tool calls (Llama-3.x, Qwen2.5+). Content may also be a
+# list of typed parts, passed through verbatim.
+TOOL_MESSAGE_FIELDS = ("tool_calls", "tool_call_id", "name")
+CHAT_ROLES = ("system", "user", "assistant", "tool")
+
+
+def copy_message(m: dict[str, Any]) -> dict[str, Any]:
+    """Copy one chat message preserving tool-calling fields verbatim.
+
+    The old round-trips rebuilt {"role","content"} and silently amputated
+    tool_calls / tool_call_id / name (issue #88).
+    """
+    out = {"role": m["role"], "content": m.get("content", "")}
+    for key in TOOL_MESSAGE_FIELDS:
+        if key in m:
+            out[key] = m[key]
+    return out
+
+
+def validate_chat_messages(messages: Any) -> tuple[bool, str]:
+    """Validate a chat conversation including tool-calling turns (issue #88).
+
+    Accepts: text-only messages; assistant turns with
+    tool_calls=[{id, type, function:{name, arguments}}]; tool-result turns
+    (role "tool") with tool_call_id. Content may be a string or a list of
+    typed parts. Returns (ok, reason).
+    """
+    if not isinstance(messages, list) or not messages:
+        return False, "messages must be a non-empty list"
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict):
+            return False, f"message #{i} is not an object"
+        if m.get("role") not in CHAT_ROLES:
+            return False, f"message #{i} has invalid role {m.get('role')!r}"
+        content = m.get("content", "")
+        if isinstance(content, str) or isinstance(content, list) and all(
+            isinstance(p, dict) and "type" in p for p in content
+        ):
+            pass
+        else:
+            return False, f"message #{i} content must be string or typed parts"
+        calls = m.get("tool_calls")
+        if calls is not None:
+            if m.get("role") != "assistant":
+                return False, f"message #{i}: tool_calls only valid on assistant"
+            if not isinstance(calls, list) or not calls:
+                return False, f"message #{i}: tool_calls must be a non-empty list"
+            for j, tc in enumerate(calls):
+                fn = (tc or {}).get("function") if isinstance(tc, dict) else None
+                if (
+                    not isinstance(fn, dict)
+                    or not str(fn.get("name", "")).strip()
+                    or "arguments" not in fn
+                ):
+                    return False, (
+                        f"message #{i} tool_call #{j}: needs function.name+arguments"
+                    )
+        if m.get("role") == "tool" and not str(m.get("tool_call_id", "")).strip():
+            return False, f"message #{i}: role 'tool' requires tool_call_id"
+    return True, ""
+
+
+def serialize_chatml(messages: list[dict[str, Any]]) -> str:
+    """Deterministically render messages (incl. tool calls) to training text.
+
+    Fallback for model templates that cannot render tool_calls themselves:
+    each tool call becomes a "TOOL_CALL " line with sorted-keys JSON
+    (Rule 5: no model routing); tool results become "TOOL_RESULT[id] "
+    lines. Byte-stable for equal input.
+    """
+    parts: list[str] = []
+    for m in messages:
+        role = m.get("role", "")
+        content = m.get("content", "")
+        calls = m.get("tool_calls") if role == "assistant" else None
+        if calls:
+            rendered = "\n".join(
+                "TOOL_CALL "
+                + json.dumps(
+                    {
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                for tc in calls
+            )
+            text = rendered if not content else f"{content}\n{rendered}"
+            parts.append(
+                "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                f"{text}<|eot_id|>"
+            )
+        elif role == "tool":
+            parts.append(
+                "<|start_header_id|>tool<|end_header_id|>\n\n"
+                f"TOOL_RESULT[{m.get('tool_call_id', '')}] {content}<|eot_id|>"
+            )
+        else:
+            parts.append(
+                f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
+            )
+    return "<|begin_of_text|>" + "".join(parts)
+
 
 def detect_format(path: Path) -> str:
     """Detect the format of a dataset file by its extension."""

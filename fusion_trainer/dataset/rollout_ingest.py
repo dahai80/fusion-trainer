@@ -67,7 +67,20 @@ def _valid_messages(messages: Any) -> bool:
             return False
         if m.get("role") not in ("user", "assistant", "system", "tool"):
             return False
-        if not isinstance(m.get("content"), str) or not m["content"].strip():
+        # Issue #88: assistant tool-call turns may carry empty content; the
+        # call payload lives in tool_calls. Structural validity is enforced
+        # by formats.validate_chat_messages at conversion time.
+        calls = m.get("tool_calls")
+        if calls:
+            continue
+        if m.get("role") == "tool" and "tool_call_id" not in m:
+            return False
+        content = m.get("content")
+        ok_content = isinstance(content, str) and bool(content.strip())
+        if not ok_content and m.get("role") == "tool":
+            # tool results may be empty when the tool returned nothing
+            ok_content = True
+        if not ok_content:
             return False
     return True
 
@@ -171,17 +184,29 @@ def positive_rollouts(
 
 
 def rollouts_to_sft(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Positive rollouts -> D1 messages samples (multi-turn preserved)."""
+    """Positive rollouts -> D1 messages samples (multi-turn + tool calls
+    preserved, issue #88)."""
+    from .formats import copy_message, validate_chat_messages
+
     samples = []
+    skipped = 0
     for rec in records:
-        samples.append(
-            {
-                "messages": [
-                    {"role": m["role"], "content": m["content"]}
-                    for m in rec["messages"]
-                ]
-            }
-        )
+        messages = [copy_message(m) for m in rec["messages"]]
+        ok, reason = validate_chat_messages(messages)
+        if not ok:
+            skipped += 1
+            logger.warning(
+                "skip rollout %s: invalid message structure (%s)",
+                rec.get("rollout_id", "?"),
+                reason,
+            )
+            continue
+        sample: dict[str, Any] = {"messages": messages}
+        if isinstance(rec.get("tools"), list):
+            sample["tools"] = rec["tools"]
+        samples.append(sample)
+    if skipped:
+        logger.warning("dropped %d/%d rollouts with invalid tool structure", skipped, len(records))
     logger.info(
         "built %d SFT samples from %d positive rollouts", len(samples), len(records)
     )
