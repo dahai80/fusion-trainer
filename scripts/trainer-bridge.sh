@@ -11,7 +11,9 @@
 #               FUSION_TRAINER_BRIDGE_PORT (8790), FUSION_MLX_MODEL,
 #               FUSION_SHELL_GATEWAY_URL + FUSION_ADMIN_KEY (shell
 #               registration, issue #72 — admin key auto-read from the
-#               gateway config when unset)
+#               gateway config when unset),
+#               FUSION_TRAINER_ROLLOUT_SINKS (issue #98 — defaults to the
+#               gateway rollout-tap + office outcome sink files when unset)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -81,6 +83,16 @@ case "${1:-status}" in
             echo "shell registration: gateway=${FUSION_SHELL_GATEWAY_URL}"
         else
             echo "WARN: FUSION_ADMIN_KEY unset — console will NOT appear in the shell sidebar" >&2
+        fi
+        # #98: default the rollout sinks to the standard gateway rollout-tap
+        # and office outcome files (read-only). os.pathsep on macOS/POSIX is
+        # ":"; dashboard.py logs+skips missing sink files, so a missing office
+        # sink degrades to a warning, never an error. An explicit env value
+        # always wins.
+        if [ -z "${FUSION_TRAINER_ROLLOUT_SINKS:-}" ]; then
+            FUSION_TRAINER_ROLLOUT_SINKS="$HOME/.fusion-gateway/rollout-tap.jsonl:$HOME/.fusion-office/rollout-outcomes.jsonl"
+            export FUSION_TRAINER_ROLLOUT_SINKS
+            echo "rollout sinks: defaulted to gateway rollout-tap + office outcome files"
         fi
         cd "$ROOT"
         nohup "$PY" -m bridge.server >>"$LOG_FILE" 2>&1 &
