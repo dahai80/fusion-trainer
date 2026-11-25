@@ -166,16 +166,47 @@ def reward_completion(
     mode: str = "auto",
     scale: float = 1.0,
 ) -> float:
-    """Dispatch reward by mode. 'auto' picks by dataset fields (tests->code, answer->math)."""
+    """Dispatch reward by mode. 'auto' picks by dataset fields: an explicit
+    sample["reward"] plugin spec wins (issue #90), then tests->code,
+    answer->math."""
     if mode == "off":
         return 0.5 * scale
     if mode == "math":
         return reward_math(sample, completion) * scale
     if mode == "code":
         return reward_code(sample, completion) * scale
+    # Issue #90: sample-level reward plugin spec, e.g.
+    # "reward": {"plugin": "office_xlsx", "args": {"required_sheets": [...]}}
+    spec = sample.get("reward")
+    if isinstance(spec, dict) and spec.get("plugin"):
+        from fusion_trainer.rlsl.reward_plugins import get_reward_fn
+
+        fn = get_reward_fn(str(spec["plugin"]))
+        if fn is None:
+            logger.warning(
+                "unknown reward plugin %r (registered: %s) — reward 0.0",
+                spec["plugin"],
+                ", ".join(_registered_names()),
+            )
+            return 0.0
+        try:
+            return max(0.0, min(1.0, float(fn(sample, completion, spec.get("args") or {})))) * scale
+        except Exception as exc:
+            logger.warning(
+                "reward plugin %s failed (%s) — reward 0.0 (fail-visible)",
+                spec["plugin"],
+                exc,
+            )
+            return 0.0
     # auto
     if sample.get("tests"):
         return reward_code(sample, completion) * scale
     if sample.get("answer") or sample.get("solution"):
         return reward_math(sample, completion) * scale
     return 0.5 * scale
+
+
+def _registered_names() -> list[str]:
+    from fusion_trainer.rlsl.reward_plugins import list_reward_fns
+
+    return list_reward_fns()
