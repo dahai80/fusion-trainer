@@ -33,6 +33,10 @@ jobs:
     timeout-minutes: 90
     env:
       FUSION_TRAINER_REAL: "1"
+      # 7GB runner + loaded engine leaves ~2.7GB available — below the guard's
+      # 4GB runtime-overhead constant even for the 0.6B test model. Opt out
+      # here; the gate stays active for operator machines.
+      FUSION_TRAINER_MEMORY_GUARD: "off"
       FUSION_MLX_PORT: "11434"
       # Tiny model: real MLX training loop, minutes not hours.
       FUSION_MLX_ADMIN_TOKEN: ci-nightly-admin-key

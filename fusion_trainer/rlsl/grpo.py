@@ -176,7 +176,9 @@ class GRPOTrainer:
             self._mean_reward = mean_r
             reward_trajectory.append(mean_r)
             monitor.observe(
-                it, [s["reward"] for s in samples], [s.get("completion", "") for s in samples]
+                it,
+                [s["reward"] for s in samples],
+                [s.get("completion", "") for s in samples],
             )
             exp.log_metrics(
                 step=it,
@@ -195,7 +197,8 @@ class GRPOTrainer:
                     # the sampling window (tok/s), not just samples/s.
                     "rollout_tokens_per_second": (
                         round(
-                            getattr(self, "_rollout_completion_tokens", 0) / _sample_sec,
+                            getattr(self, "_rollout_completion_tokens", 0)
+                            / _sample_sec,
                             1,
                         )
                         if _sample_sec > 0
@@ -562,12 +565,8 @@ class GRPOTrainer:
         # tok/s headline metric. Fails soft — usage may be absent on older
         # servers, in which case the tok/s metric reports 0 while samples/s
         # keeps working.
-        try:
-            self._rollout_completion_tokens += int(
-                usage.get("completion_tokens") or 0
-            )
-        except (AttributeError, TypeError, ValueError):
-            pass
+        with contextlib.suppress(AttributeError, TypeError, ValueError):
+            self._rollout_completion_tokens += int(usage.get("completion_tokens") or 0)
         return completions
 
     # ------------------------------------------------------------------
