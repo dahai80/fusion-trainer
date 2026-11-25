@@ -25,7 +25,9 @@ def test_estimate_unknown_model_returns_zero():
 
 def test_estimate_gradient_checkpointing_cuts_activation():
     full = estimate_training_gb("qwen3-27b-8bit", quant_bits=8)
-    ckpt = estimate_training_gb("qwen3-27b-8bit", quant_bits=8, gradient_checkpointing=True)
+    ckpt = estimate_training_gb(
+        "qwen3-27b-8bit", quant_bits=8, gradient_checkpointing=True
+    )
     assert ckpt < full
 
 
@@ -109,6 +111,27 @@ def test_precheck_memory_limit_override_budget(monkeypatch):
     # estimate ~5GB exceeds the explicit 2GB budget even though 10GB free
     assert result["ok"] is False
     assert any("memory_limit_gb" in s for s in result["suggestions"])
+
+
+def test_precheck_env_off_bypasses_gate(monkeypatch, caplog):
+    import psutil
+
+    # Constrained CI runners (7GB, ~2.7GB available with the engine loaded)
+    # cannot satisfy the 4GB runtime-overhead constant even for a 0.6B model;
+    # nightly opts out explicitly via FUSION_TRAINER_MEMORY_GUARD=off.
+    monkeypatch.setenv("FUSION_TRAINER_MEMORY_GUARD", "off")
+    with caplog.at_level(logging.WARNING, logger="fusion_trainer.memory_guard"):
+        result = precheck(model="qwen3-27b-8bit", quant_bits=8)
+    assert result["ok"] is True
+    assert result["estimate_gb"] == 0.0
+    assert any(
+        "disabled via FUSION_TRAINER_MEMORY_GUARD" in r.message for r in caplog.records
+    )
+    # other values keep the gate active
+    monkeypatch.setenv("FUSION_TRAINER_MEMORY_GUARD", "on")
+    fake = type("VM", (), {"total": 96 * 1024**3, "available": 8 * 1024**3})()
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: fake)
+    assert precheck(model="qwen3-27b-8bit", quant_bits=8)["ok"] is False
 
 
 def test_precheck_logs_decision(caplog, monkeypatch):

@@ -17,6 +17,7 @@ Calibrated against the recorded 27B-8bit incidents (#76: OOM panic without
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 
@@ -62,7 +63,24 @@ def precheck(
 
     Returns {ok, estimate_gb, available_gb, budget_gb, suggestions}.
     ok=False means fail-visible stop BEFORE submission (never auto-mutate).
+
+    Opt-out: FUSION_TRAINER_MEMORY_GUARD=off disables the gate entirely
+    (logged loudly). Intended for constrained CI runners where the 4GB
+    runtime-overhead constant makes every real-training estimate exceed
+    physical availability; keep it unset on operator machines.
     """
+    if os.environ.get("FUSION_TRAINER_MEMORY_GUARD", "").strip().lower() == "off":
+        logger.warning(
+            "memory_guard: disabled via FUSION_TRAINER_MEMORY_GUARD=off — "
+            "skipping admission check (CI/constrained-runner opt-out)"
+        )
+        return {
+            "ok": True,
+            "estimate_gb": 0.0,
+            "available_gb": 0.0,
+            "budget_gb": 0.0,
+            "suggestions": [],
+        }
     estimate = estimate_training_gb(
         model, quant_bits, batch_size, max_seq_length, gradient_checkpointing
     )
@@ -81,7 +99,9 @@ def precheck(
             "budget_gb": 0.0,
             "suggestions": [],
         }
-    budget = memory_limit_gb if memory_limit_gb > 0 else total_gb * DEFAULT_BUDGET_FRACTION
+    budget = (
+        memory_limit_gb if memory_limit_gb > 0 else total_gb * DEFAULT_BUDGET_FRACTION
+    )
     if estimate <= 0:
         # unknown model size — cannot gate, pass with a note
         return {
