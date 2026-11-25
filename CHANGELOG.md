@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc27
+version: 1.0.0rc28
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,45 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc28] - 2026-11-25
+
+Tool-calling trajectory support (#91, closes #88): agent trajectories with
+function calls (e.g. office-agent runs captured via the gateway rollout
+tap) are now trainable end to end.
+
+### Added
+- **Message schema (#88):** assistant turns may carry
+  `tool_calls=[{id, type, function:{name, arguments}}]`; `role: "tool"`
+  turns carry `tool_call_id`; `content` may be a list of typed parts.
+  `formats.copy_message` preserves the tool fields on every round-trip
+  (they were silently amputated to `{"role","content"}` before).
+- **`serialize_chatml`:** deterministic flatten for model templates
+  without tool grammar — tool calls become sorted-key
+  `TOOL_CALL {"arguments": ..., "name": ...}` lines, tool results become
+  `TOOL_RESULT[call_id]` lines.
+- **Sample-level `tools`:** forwarded verbatim to
+  `tokenizer.apply_chat_template(messages, tools=...)` by fusion-mlx
+  (mlx_lm.tuner `ChatDataset`); templates with tool grammar
+  (Llama-3.x, Qwen2.5+) render it.
+- **Ingest entry points:** `ft datasets from-rollouts` and `from-eval`
+  keep tool fields; DPO pair mining renders tool-call turns as
+  `TOOL_CALL` lines so chosen/rejected text is never emptied by
+  tool-only turns.
+- **Docs:** `docs/tool-trajectories.md` (EN/CN) — schema, sample shape,
+  training path, ingest commands.
+
+### Behavior
+- Invalid tool structure (orphan `tool` turn without `tool_call_id`,
+  tool call missing `function.name`/`arguments`) is dropped with a loud
+  warning — never silently mutated. Text-only datasets are unaffected.
+- No upstream gap: mlx_lm.tuner `ChatDataset` already passes whole
+  message dicts and sample-level `tools` to `apply_chat_template`.
+
+### Tests
+- New `tests/test_tool_trajectories.py` (14 cases): validation matrix,
+  serialize determinism, loader round-trip/trim/drop, ingest
+  preservation, DPO mining. Suite: 771 passed, 15 skipped.
 
 ## [1.0.0rc27] - 2026-11-25
 

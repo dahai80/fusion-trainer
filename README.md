@@ -58,6 +58,7 @@ fusion-* products (consumption layer)
 - Automatic deduplication, cleaning, format conversion
 - Version snapshots for reproducibility
 - Category-based organization (sft, preference, reward, multimodal, domain)
+- Tool-calling agent trajectories (#88) — OpenAI-style `tool_calls` / `tool` turns train end to end ([docs/tool-trajectories.md](docs/tool-trajectories.md))
 - Designed to interface with `fusion-model-hub` for shared storage
 
 ### Supervised Fine-Tuning (SFT)
