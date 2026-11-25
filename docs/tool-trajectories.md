@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/tool-trajectories
+product: fusion-trainer
+class: platform
+entry: developer
+doc_type: guide
+title: { zh: "工具调用轨迹（#88）", en: "Tool-calling trajectories (#88)" }
+audience: engineer
+status: draft
+version: 1.0.0rc31
+updated: 2026-11-25
+owner: "@dahai"
+source_of_truth:
+  - docs/tool-trajectories.md
+---
+
 # Tool-Calling Trajectories (#88)
 
 Train on agent trajectories that contain function/tool calls — e.g. records
