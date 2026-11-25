@@ -2105,6 +2105,12 @@ def flywheel_watch(
     interval: float = typer.Option(
         30.0, "--interval", help="Poll interval in seconds"
     ),
+    checkpoint: str = typer.Option(
+        "",
+        "--checkpoint",
+        help="Trained adapter path recorded on auto-recorded rounds (loop "
+        "invariant: round checkpoint == published adapter == served model)",
+    ),
     cache_path: str = typer.Option(
         "",
         "--cache-path",
@@ -2124,6 +2130,7 @@ def flywheel_watch(
             gate=gate,
             once=once,
             interval=interval,
+            checkpoint=checkpoint,
         )
     except FileNotFoundError as exc:
         typer.echo(f"Error: {exc}", err=True)

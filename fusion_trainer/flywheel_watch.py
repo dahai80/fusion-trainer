@@ -126,6 +126,7 @@ def watch(
     gate: bool = True,
     once: bool = False,
     interval: float = 30.0,
+    checkpoint: str = "",
 ) -> int:
     """Poll the watch dir; returns the number of rounds recorded. --once
     does a single pass (CI / cron friendly)."""
@@ -133,7 +134,9 @@ def watch(
         raise FileNotFoundError(f"watch dir not found: {watch_dir}")
     total = 0
     while True:
-        total += len(record_new_summaries(watch_dir, cache_path, gate=gate))
+        total += len(
+            record_new_summaries(watch_dir, cache_path, gate=gate, checkpoint=checkpoint)
+        )
         if once:
             break
         time.sleep(max(1.0, interval))
