@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc29
+version: 1.0.0rc30
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,12 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc30] - 2026-11-25
+
+### Added
+
+- **Training-loop dashboard (#93):** `GET /dashboard` page + `GET /api/dashboard` payload on the trainer-bridge, per prototype 06 — flywheel round progression chart with gate-discard warning, incumbent eval pass rate, per-task-type breakdown, recent runs table, rollout-sink data mix (`FUSION_TRAINER_ROLLOUT_SINKS`), next-step card. Live data only: every section returns explicit `{available, reason}` and missing data renders an honest empty state. Reuses the trainer-console theme (dark mode + shell theme follow) and bearer auth. 14 tests.
 
 ## [1.0.0rc29] - 2026-11-25
 
