@@ -2087,6 +2087,50 @@ def flywheel_status(
     typer.echo(format_status(cache_path or _default_cache_path()))
 
 
+@flywheel_app.command(name="watch")
+def flywheel_watch(
+    watch_dir: str = typer.Option(
+        ...,
+        "--dir",
+        help="fusion-eval results dir to watch (results/<run>/summary.json lands here)",
+    ),
+    gate: bool = typer.Option(
+        True,
+        "--gate/--no-gate",
+        help="Eval-gated promotion on auto-recorded rounds (default on, #82)",
+    ),
+    once: bool = typer.Option(
+        False, "--once", help="Single scan pass then exit (CI/cron friendly)"
+    ),
+    interval: float = typer.Option(
+        30.0, "--interval", help="Poll interval in seconds"
+    ),
+    cache_path: str = typer.Option(
+        "",
+        "--cache-path",
+        help="Cache dir holding flywheel.json (default: FUSION_TRAINER_CACHE)",
+    ),
+):
+    """Auto-record flywheel rounds as eval summaries land (#95)."""
+    from pathlib import Path
+
+    from fusion_trainer.config import _default_cache_path
+    from fusion_trainer.flywheel_watch import watch
+
+    try:
+        n = watch(
+            Path(watch_dir).expanduser(),
+            cache_path or _default_cache_path(),
+            gate=gate,
+            once=once,
+            interval=interval,
+        )
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"flywheel watch: {n} round(s) recorded")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
