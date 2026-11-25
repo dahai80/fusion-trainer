@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/flywheel-loop
+product: fusion-trainer
+class: platform
+entry: service
+doc_type: guide
+title: { zh: "飞轮闭环演练：训练 -> 合并 -> 发布 -> 服务 -> 评估 -> 记录", en: "Flywheel loop walkthrough: train -> merge -> publish -> serve -> eval -> record" }
+audience: engineer
+status: draft
+version: 1.0.0rc31
+updated: 2026-11-25
+owner: "@dahai"
+source_of_truth:
+  - docs/guides/flywheel-loop.md
+---
+
 # Flywheel Loop Walkthrough: train -> merge -> publish -> serve -> eval -> record
 
 The closing leg of the training flywheel, end to end (#95). Every step is a
