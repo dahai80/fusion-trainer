@@ -120,13 +120,24 @@ def _valid_messages(messages: Any) -> bool:
             return False
         if m.get("role") not in ("user", "assistant", "system", "tool"):
             return False
-        if not isinstance(m.get("content"), str) or not m["content"].strip():
-            return False
+        # Issue #88: assistant tool-call turns may carry empty content; the
+        # call payload lives in tool_calls.
+        if m.get("tool_calls"):
+            continue
+        content = m.get("content")
+        if isinstance(content, str) and content.strip():
+            continue
+        if m.get("role") == "tool" and "tool_call_id" in m:
+            continue
+        return False
     return True
 
 
 def eval_records_to_sft(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Passed-only records -> D1 messages samples. Multi-turn preserved."""
+    """Passed-only records -> D1 messages samples. Multi-turn + tool calls
+    preserved (issue #88)."""
+    from .formats import copy_message, validate_chat_messages
+
     samples = []
     skipped = 0
     for rec in records:
@@ -140,19 +151,54 @@ def eval_records_to_sft(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 rec.get("task_id", "?"),
             )
             continue
-        samples.append(
-            {
-                "messages": [
-                    {"role": m["role"], "content": m["content"]} for m in messages
-                ]
-            }
-        )
+        copied = [copy_message(m) for m in messages]
+        ok, reason = validate_chat_messages(copied)
+        if not ok and any(
+            "tool_calls" in m or m.get("role") == "tool" for m in copied
+        ):
+            skipped += 1
+            logger.warning(
+                "skip passed trajectory %s: invalid tool structure (%s)",
+                rec.get("task_id", "?"),
+                reason,
+            )
+            continue
+        sample: dict[str, Any] = {"messages": copied}
+        if isinstance(rec.get("tools"), list):
+            sample["tools"] = rec["tools"]
+        samples.append(sample)
     if skipped:
         logger.warning("%d passed trajectories skipped (invalid messages)", skipped)
     logger.info(
         "built %d SFT samples from %d trajectory records", len(samples), len(records)
     )
     return samples
+
+
+def _assistant_text(messages: list[dict[str, Any]]) -> str:
+    """Flatten assistant turns to DPO-pair text; tool-call turns render as
+    deterministic TOOL_CALL JSON lines (issue #88) instead of vanishing."""
+    import json as _json
+
+    parts = []
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        calls = m.get("tool_calls") or []
+        for tc in calls:
+            fn = (tc or {}).get("function") or {}
+            parts.append(
+                "TOOL_CALL "
+                + _json.dumps(
+                    {"name": fn.get("name", ""), "arguments": fn.get("arguments", "")},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        content = m.get("content")
+        if isinstance(content, str) and content.strip():
+            parts.append(content)
+    return "\n\n".join(parts)
 
 
 def mine_preference_pairs(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -181,13 +227,9 @@ def mine_preference_pairs(records: list[dict[str, Any]]) -> list[dict[str, Any]]
         if not prompt:
             unpaired_failures += len(slots["failed"])
             continue
-        chosen = "\n\n".join(
-            m["content"] for m in chosen_rec["messages"] if m["role"] == "assistant"
-        )
+        chosen = _assistant_text(chosen_rec["messages"])
         for failed_rec in slots["failed"]:
-            rejected = "\n\n".join(
-                m["content"] for m in failed_rec["messages"] if m["role"] == "assistant"
-            )
+            rejected = _assistant_text(failed_rec["messages"])
             if not chosen.strip() or not rejected.strip():
                 unpaired_failures += 1
                 continue
