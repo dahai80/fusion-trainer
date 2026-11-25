@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fusion Trainer · 训练闭环看板</title>
+<script>
+// Set the theme class before first paint — no flash of wrong theme.
+// Embedded: the shell re-pushes its current theme on iframe load.
+(function () {
+  let mode = null;
+  try { mode = localStorage.getItem("fusion.shell.theme"); } catch (e) {}
+  if (mode !== "dark" && mode !== "light") {
+    mode = window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+  }
+  document.documentElement.classList.add(mode);
+})();
+</script>
+<style>
+  :root, html.light {
+    --fs-bg: #f6f7f9; --bg-soft: #f8fafc; --fs-surface: #ffffff;
+    --fs-text: #1a1f2e; --fs-text-2: #6b7280;
+    --fs-border: #d7dce3; --fs-brand: #2563eb;
+    --fs-success: #16a34a; --fs-error: #dc2626;
+    --fs-accent: #818cf8; --fs-accent-soft: #c7d2fe;
+  }
+  html.dark {
+    --fs-bg: #0b0e14; --bg-soft: #11151d; --fs-surface: #141926;
+    --fs-text: #e5e9f0; --fs-text-2: #8b93a3;
+    --fs-border: #2a3140; --fs-brand: #3b82f6;
+    --fs-success: #22c55e; --fs-error: #ef4444;
+    --fs-accent: #818cf8; --fs-accent-soft: #31386b;
+  }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--fs-text); max-width: 1080px; margin: 0 auto; padding: 24px 20px;
+    background: var(--fs-bg); }
+  .topbar { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .pill { font-size: 12px; color: var(--fs-text-2);
+    border: 1px solid var(--fs-border); border-radius: 999px; padding: 2px 10px; }
+  .muted { color: var(--fs-text-2); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+  section { background: var(--fs-surface); border: 1px solid var(--fs-border);
+    border-radius: 8px; padding: 14px; margin-top: 14px; }
+  .grid section, .grid2 section { margin-top: 0; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .kpi-v { font-size: 26px; font-weight: 600; }
+  .kpi-sub { font-size: 12px; color: var(--fs-text-2); margin-top: 4px; }
+  .bar-track { height: 10px; border-radius: 6px; background: var(--fs-border);
+    margin-top: 8px; overflow: hidden; }
+  .bar { height: 100%; border-radius: 6px; background: var(--fs-accent);
+    width: 0; transition: width .4s; }
+  .bar.soft { background: var(--fs-accent-soft); }
+  .row { display: flex; justify-content: space-between; gap: 8px;
+    font-size: 13px; margin-top: 8px; }
+  .fw-chart { display: flex; align-items: flex-end; gap: 18px; height: 150px;
+    padding: 6px 4px 0; }
+  .fw-col { display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-end; height: 100%; flex: 1; gap: 6px; }
+  .fw-bar { width: 38px; border-radius: 6px 6px 0 0; background: var(--fs-accent);
+    min-height: 2px; }
+  .fw-bar.discarded { background: var(--fs-error); opacity: .75; }
+  .fw-bar.baseline { background: var(--fs-accent-soft); }
+  .fw-label { font-size: 11px; color: var(--fs-text-2); text-align: center;
+    max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fw-value { font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--fs-border); }
+  th { font-size: 12px; color: var(--fs-text-2); text-transform: uppercase; }
+  .ok { color: var(--fs-success); }
+  .err { color: var(--fs-error); }
+  .warn { color: var(--fs-error); }
+  .note { font-size: 13px; color: var(--fs-text-2); }
+  .empty { font-size: 13px; color: var(--fs-text-2); font-style: italic; }
+  .warn-card { border-color: var(--fs-error); }
+  @media (max-width: 760px) { .grid, .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>Fusion Trainer · 训练闭环看板</h1>
+  <span class="pill" id="model-pill">model: —</span>
+  <span class="muted" id="generated-at"></span>
+</div>
+
+<div class="grid" id="kpis">
+  <section>
+    <h2>轨迹总量</h2>
+    <div class="kpi-v" id="kpi-traj">—</div>
+    <div class="kpi-sub" id="kpi-traj-sub"></div>
+    <div class="bar-track"><div class="bar" id="kpi-traj-bar"></div></div>
+  </section>
+  <section>
+    <h2>Eval 通过率（incumbent）</h2>
+    <div class="kpi-v" id="kpi-eval">—</div>
+    <div class="kpi-sub" id="kpi-eval-sub"></div>
+    <div class="bar-track"><div class="bar" id="kpi-eval-bar"></div></div>
+  </section>
+  <section>
+    <h2>分类型通过率<span class="muted" id="kpi-bytype-round"></span></h2>
+    <div id="kpi-bytype"><p class="empty">暂无分类型数据</p></div>
+  </section>
+</div>
+
+<div class="grid2">
+  <section id="flywheel-card">
+    <h2>Flywheel 轮次</h2>
+    <div class="fw-chart" id="fw-chart"><p class="empty">暂无轮次数据</p></div>
+  </section>
+  <section id="gate-card">
+    <h2>轮次管控</h2>
+    <p class="note" id="gate-note">无被 gate 回滚的轮次。</p>
+  </section>
+</div>
+
+<div class="grid2">
+  <section>
+    <h2>最近训练任务</h2>
+    <table id="runs-table">
+      <thead><tr><th>run</th><th>method</th><th>状态</th><th>step</th></tr></thead>
+      <tbody id="runs-rows"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>数据构成（rollout sinks）</h2>
+    <div id="data-mix"><p class="empty">加载中…</p></div>
+  </section>
+</div>
+
+<div class="grid2">
+  <section>
+    <h2>Reward 构成</h2>
+    <div id="reward-mix"><p class="empty">加载中…</p></div>
+  </section>
+  <section>
+    <h2>下一步</h2>
+    <p class="note" id="next-step">—</p>
+  </section>
+</div>
+
+<p class="muted" id="err" style="margin-top:14px"></p>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pct = v => (v == null ? "—" : (v * 100).toFixed(2) + "%");
+
+// Bridge bearer token — same store as the trainer console.
+const KEY_STORE = "fusion-trainer-bridge-key";
+const BRIDGE_KEY = localStorage.getItem(KEY_STORE) || "";
+
+function emptyState(el, section) {
+  el.innerHTML = `<p class="empty">${esc(section.reason || "暂无数据")}</p>`;
+}
+
+function render(d) {
+  $("generated-at").textContent = "生成于 " + (d.generated_at || "").replace("T", " ").slice(0, 19);
+  const fw = d.flywheel || {};
+  const ro = d.rollouts || {};
+
+  if (fw.available && fw.latest) {
+    $("model-pill").textContent = "model: " + (fw.latest.model || "—");
+  }
+
+  // KPI: trajectories
+  if (ro.available) {
+    $("kpi-traj").textContent = ro.total;
+    const pos = ro.positive_share == null ? "" :
+      ` · 正向占比 ${pct(ro.positive_share)}`;
+    $("kpi-traj-sub").textContent =
+      `近 7 天 +${ro.recent}${pos}`;
+    const share = ro.positive_share;
+    if (share != null) {
+      $("kpi-traj-bar").style.width = Math.round(share * 100) + "%";
+    }
+  } else {
+    $("kpi-traj").textContent = "—";
+    $("kpi-traj-sub").textContent = ro.reason || "未配置";
+  }
+
+  // KPI: incumbent eval pass rate
+  if (fw.available && fw.incumbent_pass_rate != null) {
+    $("kpi-eval").textContent = pct(fw.incumbent_pass_rate);
+    $("kpi-eval-bar").style.width =
+      Math.round(fw.incumbent_pass_rate * 100) + "%";
+    const prog = fw.progression || [];
+    $("kpi-eval-sub").textContent = prog.length > 1
+      ? "路径 " + prog.map(p => pct(p.pass_rate)).join(" → ")
+      : "仅基线轮";
+  } else {
+    $("kpi-eval").textContent = "—";
+    $("kpi-eval-sub").textContent = fw.reason || "";
+  }
+
+  // KPI: per-type pass rates (latest round that has a breakdown)
+  if (fw.available && (fw.by_type || []).length) {
+    $("kpi-bytype-round").textContent =
+      "（" + (fw.by_type_round || "最新轮") + "）";
+    const maxV = Math.max(...fw.by_type.map(t => t.pass_rate || 0), 0.0001);
+    $("kpi-bytype").innerHTML = fw.by_type.map(t => `
+      <div class="row"><span>${esc(t.type)}</span><span>${pct(t.pass_rate)}</span></div>
+      <div class="bar-track"><div class="bar soft"
+        style="width:${Math.round((t.pass_rate || 0) / maxV * 100)}%"></div></div>
+    `).join("");
+  } else {
+    emptyState($("kpi-bytype"), fw.available ? { reason: "暂无分类型数据" } : fw);
+  }
+
+  // Flywheel bar chart
+  if (fw.available && (fw.progression || []).length) {
+    const prog = fw.progression;
+    const maxR = Math.max(...prog.map(p => p.pass_rate || 0), 0.0001);
+    $("fw-chart").innerHTML = prog.map(p => `
+      <div class="fw-col">
+        <span class="fw-value">${pct(p.pass_rate)}</span>
+        <div class="fw-bar ${p.status === "discarded" ? "discarded" : ""}
+          ${p.status !== "discarded" && p.pass_rate === prog[0].pass_rate ? "baseline" : ""}"
+          style="height:${Math.max(2, Math.round((p.pass_rate || 0) / maxR * 110))}px"></div>
+        <span class="fw-label" title="${esc(p.label)}">${esc(p.label)}</span>
+      </div>
+    `).join("");
+  } else {
+    emptyState($("fw-chart"), fw);
+  }
+
+  // Gate note
+  if (fw.gate_note) {
+    $("gate-note").innerHTML = `<span class="warn">${esc(fw.gate_note)}</span>`;
+    $("gate-card").classList.add("warn-card");
+  }
+
+  // Runs table
+  const runs = d.runs || [];
+  if (runs.length) {
+    $("runs-rows").innerHTML = runs.map(r => `
+      <tr>
+        <td>${esc(r.name || r.run_id)}</td>
+        <td>${esc(r.method || "")}</td>
+        <td class="${r.status === "failed" ? "err" : (r.status === "completed" ? "ok" : "")}">${esc(r.status)}</td>
+        <td>${r.step}/${r.total_steps}</td>
+      </tr>
+    `).join("");
+  } else {
+    $("runs-rows").innerHTML =
+      `<tr><td colspan="4" class="empty">尚无训练任务</td></tr>`;
+  }
+
+  // Data mix (rollout signals)
+  if (ro.available) {
+    const sig = ro.signals || {};
+    const keys = Object.keys(sig);
+    const totalSig = keys.reduce((a, k) => a + sig[k], 0) || 1;
+    $("data-mix").innerHTML = keys.map(k => `
+      <div class="row"><span>${esc(k)}</span><span>${sig[k]}</span></div>
+      <div class="bar-track"><div class="bar soft"
+        style="width:${Math.round(sig[k] / totalSig * 100)}%"></div></div>
+    `).join("") + `<p class="note" style="margin-top:10px">来源: ${ro.sinks.length} 个 sink 文件 · 无效行 ${ro.invalid_lines}</p>`;
+  } else {
+    emptyState($("data-mix"), ro);
+  }
+
+  // Reward composition — honest empty state (no fabricated shares)
+  emptyState($("reward-mix"), d.reward_composition || { reason: "暂无数据" });
+
+  $("next-step").textContent = d.next_step || "—";
+}
+
+async function load() {
+  try {
+    const opt = { headers: { "Content-Type": "application/json" } };
+    if (BRIDGE_KEY) opt.headers["Authorization"] = `Bearer ${BRIDGE_KEY}`;
+    const r = await fetch("api/dashboard", opt);
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 401) {
+      $("err").textContent =
+        "需要 bridge token — 请先在训练控制台输入一次（同一浏览器共享）。";
+      return;
+    }
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+    render(data);
+  } catch (e) {
+    $("err").textContent = "加载失败: " + e.message;
+  }
+}
+
+// Shell theme follow: the embedding shell posts
+// {type:"event", event:"theme", payload:"dark"|"light"} on every toggle.
+window.addEventListener("message", (ev) => {
+  const d = ev.data;
+  if (d && d.type === "event" && d.event === "theme") {
+    const mode = d.payload;
+    if (mode !== "dark" && mode !== "light") return;
+    const root = document.documentElement;
+    root.classList.remove("dark", "light");
+    root.classList.add(mode);
+  }
+});
+
+load();
+</script>
+</body>
+</html>

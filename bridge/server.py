@@ -759,6 +759,23 @@ async def index():
     return FileResponse(page)
 
 
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard_page():
+    from fastapi.responses import FileResponse
+
+    page = Path(__file__).resolve().parent / "dashboard.html"
+    if not page.exists():
+        raise HTTPException(404, "dashboard.html missing from bridge package")
+    return FileResponse(page)
+
+
+@app.get("/api/dashboard", dependencies=[Depends(_require_auth)])
+async def api_dashboard() -> dict[str, Any]:
+    from bridge.dashboard import build_payload
+
+    return build_payload(_rm().cache_path, _rm().list_runs(limit=12))
+
+
 if __name__ == "__main__":
     import uvicorn
 
