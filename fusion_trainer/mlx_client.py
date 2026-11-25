@@ -71,6 +71,33 @@ class MLXFineTuneError(RuntimeError):
         self.status_code = status_code
 
 
+class _JobEventCursor:
+    # fusion-mlx job dicts carry no `events` array (progress streams via SSE;
+    # to_dict exposes only the latest `progress` snapshot). Collect new
+    # events from the polled `events` array when present (older engines and
+    # test fakes), else synthesize one train_loss event per advanced step
+    # from the `progress` snapshot so run records still get per-step metrics.
+    def __init__(self):
+        self.last_seen = 0
+
+    def collect(self, job: dict) -> list[dict]:
+        events = job.get("events") or []
+        if events:
+            new = events[self.last_seen :]
+            self.last_seen = len(events)
+            return new
+        prog = job.get("progress") or {}
+        step = prog.get("step")
+        if (
+            isinstance(step, (int, float))
+            and int(step) > self.last_seen
+            and prog.get("train_loss") is not None
+        ):
+            self.last_seen = int(step)
+            return [{"type": "train_loss", **prog}]
+        return []
+
+
 class MLXFineTuneClient:
     """Thin HTTP wrapper around fusion-mlx's fine-tune admin API.
 
@@ -434,6 +461,7 @@ class MLXFineTuneClient:
         """
         deadline = time.monotonic() + timeout
         last_seen = 0
+        cursor = _JobEventCursor()
         while time.monotonic() < deadline:
             # A1: a poll failure after retries must not kill the whole run —
             # the job may still be healthy upstream. Keep polling until the
@@ -446,12 +474,9 @@ class MLXFineTuneClient:
                 logger.warning("wait_for_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
-            events = job.get("events", [])
-            if len(events) > last_seen:
-                new_events = events[last_seen:]
-                last_seen = len(events)
-                if on_progress is not None:
-                    on_progress(job, new_events)
+            new_events = cursor.collect(job)
+            if new_events and on_progress is not None:
+                on_progress(job, new_events)
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
@@ -528,6 +553,7 @@ class MLXFineTuneClient:
         # honored — only the poll path differs.
         deadline = time.monotonic() + timeout
         last_seen = 0
+        cursor = _JobEventCursor()
         while time.monotonic() < deadline:
             try:
                 job = self.get_vlm_job(job_id)
@@ -536,12 +562,9 @@ class MLXFineTuneClient:
                 logger.warning("wait_for_vlm_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
-            events = job.get("events", [])
-            if len(events) > last_seen:
-                new_events = events[last_seen:]
-                last_seen = len(events)
-                if on_progress is not None:
-                    on_progress(job, new_events)
+            new_events = cursor.collect(job)
+            if new_events and on_progress is not None:
+                on_progress(job, new_events)
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
@@ -615,6 +638,7 @@ class MLXFineTuneClient:
         """Block until a GRPO job reaches a terminal state, emitting progress."""
         deadline = time.monotonic() + timeout
         last_seen = 0
+        cursor = _JobEventCursor()
         while time.monotonic() < deadline:
             # A1: keep polling past transient poll failures (see wait_for_job).
             try:
@@ -624,12 +648,9 @@ class MLXFineTuneClient:
                 logger.warning("wait_for_grpo_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
-            events = job.get("events", [])
-            if len(events) > last_seen:
-                new_events = events[last_seen:]
-                last_seen = len(events)
-                if on_progress is not None:
-                    on_progress(job, new_events)
+            new_events = cursor.collect(job)
+            if new_events and on_progress is not None:
+                on_progress(job, new_events)
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
@@ -718,6 +739,7 @@ class MLXFineTuneClient:
         # 轮询 DPO/ORPO job 到终态。事件流同 SFT/GRPO 模式。
         deadline = time.monotonic() + timeout
         last_seen = 0
+        cursor = _JobEventCursor()
         while time.monotonic() < deadline:
             # A1: keep polling past transient poll failures (see wait_for_job)。
             try:
@@ -727,12 +749,9 @@ class MLXFineTuneClient:
                 logger.warning("wait_for_dpo_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
-            events = job.get("events", [])
-            if len(events) > last_seen:
-                new_events = events[last_seen:]
-                last_seen = len(events)
-                if on_progress is not None:
-                    on_progress(job, new_events)
+            new_events = cursor.collect(job)
+            if new_events and on_progress is not None:
+                on_progress(job, new_events)
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
@@ -806,6 +825,7 @@ class MLXFineTuneClient:
         # 轮询 reward job 到终态。progress 含 loss/reward_margin/acc_chosen。
         deadline = time.monotonic() + timeout
         last_seen = 0
+        cursor = _JobEventCursor()
         while time.monotonic() < deadline:
             # A1: keep polling past transient poll failures (see wait_for_job)。
             try:
@@ -815,12 +835,9 @@ class MLXFineTuneClient:
                 logger.warning("wait_for_reward_job poll failed, continuing: %s", exc)
                 time.sleep(poll_interval)
                 continue
-            events = job.get("events", [])
-            if len(events) > last_seen:
-                new_events = events[last_seen:]
-                last_seen = len(events)
-                if on_progress is not None:
-                    on_progress(job, new_events)
+            new_events = cursor.collect(job)
+            if new_events and on_progress is not None:
+                on_progress(job, new_events)
             status = job.get("status", "")
             if status in ("completed", "failed", "cancelled"):
                 return job
