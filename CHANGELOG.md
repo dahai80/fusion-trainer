@@ -7,14 +7,36 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc26
-updated: 2026-11-12
+version: 1.0.0rc27
+updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
   - CHANGELOG.md
 ---
 
 # Changelog
+
+## [1.0.0rc27] - 2026-11-25
+
+CI-repair patch release: the memory admission gate shipped in rc26 made the
+nightly real-training suite structurally unpassable on the 7GB runner, and
+#87 introduced a ruff lint failure on the master push CI.
+
+### Fixed
+- **Memory-guard CI opt-out (#89):** `memory_guard.precheck` honors
+  `FUSION_TRAINER_MEMORY_GUARD=off` (logged loudly) — the 4GB
+  runtime-overhead constant puts the estimate floor at ~4.4GB while the
+  7GB macOS runner leaves ~2.7GB available with the engine loaded, so the
+  real RLSL closed-loop test failed the gate regardless of model size.
+  `nightly.yml` sets the opt-out for the real-training job only; the gate
+  stays active for operator machines.
+- **ruff SIM105 (#89):** `grpo.py` rollout token counter replaced
+  `try/except pass` with `contextlib.suppress` (master lint job red since
+  #87).
+
+### Tests
+- New `test_precheck_env_off_bypasses_gate` (bypass + non-off values keep
+  the gate active). Suite: 756 passed, 15 skipped.
 
 ## [1.0.0rc26] - 2026-11-12
 
