@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc30
+version: 1.0.0rc31
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,17 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc31] - 2026-11-25
+
+### Added
+
+- **Flywheel auto-record (#95):** `ft flywheel watch --dir <fusion-eval-results> [--gate] [--once] [--checkpoint <adapter>]` polls for `results/<run>/summary.json` and records a gated flywheel round per unconsumed summary — closes the manual-recording leg of the publish -> deploy -> re-record loop. Consumption state (path + sha256) in `{cache}/flywheel_watch.json`: re-runs never double-record, rewritten summaries record a new round, malformed summaries stay unconsumed and retry loudly. `--checkpoint` passes the loop-invariant adapter path through to `record_round`. 7 tests + walkthrough `docs/guides/flywheel-loop.md`.
+- **Loop invariant live-verified (#95):** round checkpoint == published adapter == fusion-mlx served model id (`sft_1795605347026_00eee724-20261125-191812`), confirmed by chat-completion probe and dashboard model pill; gate verdict (including discards) visible on `/dashboard`.
+
+### Fixed
+
+- **Zero train_loss events in bridge run records:** the engine job dict (`to_dict()`) carries no `events` array (SSE stream only), so `wait_for_job`'s events-diff never fired. `_JobEventCursor` now synthesizes per-step events from the `progress` snapshot (`step`/`train_loss`) when `events` is absent and prefers the real array when present. Bridge run `events.jsonl` now streams per-step loss (verified live: 3/3 steps, loss 2.056).
 
 ## [1.0.0rc30] - 2026-11-25
 
