@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc28
+version: 1.0.0rc29
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,37 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc29] - 2026-11-25
+
+Pluggable reward functions for GRPO (#92, in-repo portion of #90): office
+validators + rubric judge beyond the built-in math/code sandboxes.
+
+### Added
+- **Reward plugin registry** (`rlsl/reward_plugins.py`): sample-level
+  `"reward": {"plugin": "...", "args": {...}}` spec dispatched from
+  `sandbox.reward_completion` ahead of the auto math/code pick.
+- **Office validators** (deterministic, stdlib zip+XML, no new deps):
+  `office_xlsx` (required sheets, `formula_policy: require|strict`),
+  `office_docx` (required sections), `office_pptx` (min slides, required
+  titles). Result file from `args.path_regex` or the last path-like token
+  in the completion; missing file / corrupt zip -> 0.0.
+- **Rubric LLM judge**: deterministic rubric prompt over MLXClient HTTP
+  (`args.model` or `FUSION_RUBRIC_JUDGE_MODEL`), JSON total clamped to
+  [0,1]; failure -> 0.0 + loud warning.
+- **Dispatch safety**: unknown plugin / plugin exception -> 0.0
+  fail-visible, scores clamped to [0,1].
+
+### Notes
+- Office validators are deterministic by construction (issue #90
+  acceptance); the rubric judge is model-scored by design and documented
+  as non-deterministic.
+- Upstream gap: fusion-office ships TS web apps, no Python office-api —
+  validators here are trainer-side; issue filed on fusion-office.
+- Live GRPO acceptance (non-degenerate reward distribution on real office
+  trajectories) remains open on #90.
+- Tests: +19 (`tests/test_reward_plugins.py`); suite 790 passed, 15
+  skipped.
 
 ## [1.0.0rc28] - 2026-11-25
 
