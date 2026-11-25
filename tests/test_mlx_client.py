@@ -160,3 +160,36 @@ class TestScoreReward:
 
         with pytest.raises(MLXFineTuneError, match="404"):
             client.score_reward("m", "a", "p", ["c"])
+
+
+def test_job_event_cursor_synthesizes_from_progress():
+    # fusion-mlx to_dict carries no events array — cursor falls back to the
+    # `progress` snapshot and emits one train_loss event per advanced step.
+    from fusion_trainer.mlx_client import _JobEventCursor
+
+    c = _JobEventCursor()
+    assert c.collect({"status": "running", "progress": {"step": 0}}) == []
+    ev1 = c.collect(
+        {"status": "running", "progress": {"step": 1, "train_loss": 1.5, "val_loss": 1.2}}
+    )
+    assert len(ev1) == 1 and ev1[0]["type"] == "train_loss" and ev1[0]["step"] == 1
+    # same step again: no duplicate
+    assert (
+        c.collect(
+            {"status": "running", "progress": {"step": 1, "train_loss": 1.5}}
+        )
+        == []
+    )
+    ev2 = c.collect(
+        {"status": "running", "progress": {"step": 2, "train_loss": 1.1}}
+    )
+    assert ev2[0]["step"] == 2
+
+
+def test_job_event_cursor_prefers_events_array():
+    from fusion_trainer.mlx_client import _JobEventCursor
+
+    c = _JobEventCursor()
+    job = {"events": [{"type": "train_loss", "step": 1}, {"type": "val_loss", "step": 1}]}
+    assert len(c.collect(job)) == 2
+    assert c.collect(job) == []
