@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc36
+version: 1.0.0rc37
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,15 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc37] - 2026-11-26
+
+### Added
+
+- **Failure-trajectory channel (#111):** `ft datasets from-rollouts --failures-output` writes scored-negative rollouts (reward < min-score, unobserved excluded) as full records with outcome, feeding the resynthesis stage; an empty failure set writes an empty file (honest), never an error. The manifest carries a `weakness` profile (per-signal failure counts + bounded sample rollout_ids) for targeted resynthesis.
+- **Efficiency pre-step (#111, CARE-PO):** offline redundant consecutive tool-call rate (same tool name + normalized arguments, reset at user turns) computed on every ingest and recorded in the manifest as `efficiency` — the BEFORE number for any future efficiency reward; the budget anchor must be fixed before training, never policy-relative.
+
+Remaining #111 items (environment snapshots, validator audit gate, cross-app synthesis, expert injection, efficiency reward proper) stay open on the issue — cross-repo or training-time scope.
 
 ## [1.0.0rc36] - 2026-11-26
 
