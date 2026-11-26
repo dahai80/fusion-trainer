@@ -1794,6 +1794,14 @@ def datasets_from_rollouts(
         "rollout-outcomes.jsonl): records joined by rollout_id to "
         "backfill tap records without an inline outcome (#97)",
     ),
+    failures_file: str = typer.Option(
+        "",
+        "--failures-output",
+        help="Optional failure-channel JSONL (scored-negative rollouts, "
+        "full records with outcome) feeding the resynthesis stage (#111); "
+        "the manifest carries the weakness profile and redundant tool-call "
+        "rate",
+    ),
 ):
     """Build RFT/GRPO datasets from a gateway rollout-tap sink (#86).
 
@@ -1810,9 +1818,10 @@ def datasets_from_rollouts(
         build_from_rollouts,
     )
 
-    if not output_file and not grpo_output:
+    if not output_file and not grpo_output and not failures_file:
         typer.echo(
-            "Error: nothing to write — pass --output (SFT) and/or --grpo-output (GRPO prompts)",
+            "Error: nothing to write — pass --output (SFT) and/or "
+            "--grpo-output (GRPO prompts) and/or --failures-output",
             err=True,
         )
         raise typer.Exit(1)
@@ -1823,6 +1832,7 @@ def datasets_from_rollouts(
             Path(grpo_output) if grpo_output else None,
             min_score=min_score,
             outcomes_path=Path(outcomes_file) if outcomes_file else None,
+            failures_output_path=Path(failures_file) if failures_file else None,
         )
     except RolloutIngestError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1835,6 +1845,17 @@ def datasets_from_rollouts(
         typer.echo(
             f"GRPO prompts: {manifest['grpo_prompts']} -> {manifest['grpo_path']}"
         )
+    if manifest["failures_path"]:
+        typer.echo(
+            f"Failures:     {manifest['failures_records']} -> "
+            f"{manifest['failures_path']}  weakness={manifest['weakness']['failure_signals']}"
+        )
+    eff = manifest["efficiency"]
+    if eff["tool_calls"]:
+        typer.echo(
+            f"Efficiency:   {eff['redundant_consecutive']}/{eff['tool_calls']} "
+            f"redundant tool calls ({eff['redundant_rate']:.1%})"
+        )
     typer.echo(f"Signals:      {manifest['signals']}")
     if manifest.get("outcomes_path"):
         typer.echo(
@@ -1843,7 +1864,8 @@ def datasets_from_rollouts(
         )
     typer.echo(f"Sink sha256:  {manifest['sink_sha256']}")
     typer.echo(
-        f"Manifest:     {manifest['sft_path'] or manifest['grpo_path']}"
+        f"Manifest:     "
+        f"{manifest['sft_path'] or manifest['grpo_path'] or manifest['failures_path']}"
         ".from_rollouts.json "
         "(ft sft records this run's rollout source automatically)"
     )

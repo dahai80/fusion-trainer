@@ -5,6 +5,7 @@ Targets: cli.py
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 
@@ -552,3 +553,68 @@ class TestDPOAdapterChaining:
         assert r.num_epochs == 1
         assert r.beta == 0.1
         assert r.batch_size == 1
+
+
+def test_from_rollouts_failures_output(tmp_path):
+    from typer.testing import CliRunner
+
+    from fusion_trainer.cli import app
+
+    sink = tmp_path / "tap.jsonl"
+    ok = {
+        "schema_version": 1,
+        "rollout_id": "ro-1",
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "prompt": "go",
+        "outcome": {"signal": "task_success"},
+    }
+    bad = {
+        "schema_version": 1,
+        "rollout_id": "ro-2",
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "oops"},
+        ],
+        "prompt": "go",
+        "outcome": {"signal": "user_rejected"},
+    }
+    sink.write_text(
+        json.dumps(ok) + "\n" + json.dumps(bad) + "\n", encoding="utf-8"
+    )
+    fail_out = tmp_path / "failures.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "datasets",
+            "from-rollouts",
+            "--sink",
+            str(sink),
+            "--failures-output",
+            str(fail_out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Failures:     1" in result.output
+    assert "user_rejected" in result.output
+    lines = [json.loads(l) for l in fail_out.read_text().splitlines()]
+    assert lines[0]["rollout_id"] == "ro-2"
+
+
+def test_from_rollouts_no_output_errors():
+    from typer.testing import CliRunner
+
+    from fusion_trainer.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["datasets", "from-rollouts", "--sink", "/nonexistent/tap.jsonl"],
+    )
+    assert result.exit_code == 1
+    assert "nothing to write" in result.output

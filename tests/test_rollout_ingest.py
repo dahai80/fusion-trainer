@@ -13,12 +13,15 @@ import pytest
 from fusion_trainer.dataset.rollout_ingest import (
     RolloutIngestError,
     build_from_rollouts,
+    failure_rollouts,
     find_rollout_manifest,
     load_rollout_sink,
     positive_rollouts,
     reward_score,
     rollouts_to_grpo,
     rollouts_to_sft,
+    tool_call_stats,
+    weakness_profile,
 )
 
 
@@ -346,3 +349,136 @@ def test_build_sft_outcomes_join_still_no_positives(tmp_path):
     )
     with pytest.raises(RolloutIngestError, match="no positive rollouts"):
         build_from_rollouts(tap, tmp_path / "sft.jsonl", outcomes_path=side)
+
+
+# ---------------------------------------------------------------------------
+# failure channel + tool-call efficiency stats (#111)
+# ---------------------------------------------------------------------------
+
+
+def test_failure_rollouts_scored_negatives_only():
+    records = [
+        _rec("ro-1", signal="task_success"),
+        _rec("ro-2", signal="user_rejected"),
+        _rec("ro-3", signal="error", score=0.2),
+        _rec("ro-4", signal=None),  # unobserved: neither positive nor failure
+    ]
+    failures = failure_rollouts(records)
+    assert [r["rollout_id"] for r in failures] == ["ro-2", "ro-3"]
+
+
+def test_weakness_profile_counts_and_caps_samples():
+    records = [_rec(f"ro-{i}", signal="user_rejected") for i in range(15)]
+    records += [_rec("err-1", signal="error")]
+    profile = weakness_profile(failure_rollouts(records))
+    assert profile["failure_signals"] == {"user_rejected": 15, "error": 1}
+    assert len(profile["sample_rollout_ids"]["user_rejected"]) == 10
+    assert profile["sample_rollout_ids"]["error"] == ["err-1"]
+
+
+def test_tool_call_stats_consecutive_duplicates():
+    dup_call = {"type": "function", "function": {"name": "read", "arguments": '{"path": "a.xlsx"}'}}
+    other = {"type": "function", "function": {"name": "write", "arguments": {"path": "b.docx"}}}
+    records = [
+        {
+            "rollout_id": "ro-1",
+            "messages": [
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": "", "tool_calls": [dup_call, dup_call, other]},
+                {"role": "user", "content": "again"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    # same key as turn 1 but a NEW user turn resets the anchor
+                    "tool_calls": [dup_call],
+                },
+            ],
+        }
+    ]
+    stats = tool_call_stats(records)
+    assert stats["records_with_tool_calls"] == 1
+    assert stats["tool_calls"] == 4
+    assert stats["redundant_consecutive"] == 1
+    assert stats["redundant_rate"] == 0.25
+
+
+def test_tool_call_stats_empty_and_unparseable():
+    assert tool_call_stats([])["tool_calls"] == 0
+    assert tool_call_stats([_rec("ro-1")])["redundant_rate"] == 0.0
+    bad = {
+        "rollout_id": "ro-2",
+        "messages": [
+            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "x"}}]}
+        ],
+    }
+    # arguments missing -> key still forms with None-ish args
+    assert tool_call_stats([bad])["tool_calls"] == 1
+
+
+def test_build_failures_only_channel(tmp_path):
+    tap = _write_sink(
+        tmp_path,
+        [
+            _rec("ro-1", signal="task_success"),
+            _rec("ro-2", signal="user_rejected"),
+            _rec("ro-3", signal=None),
+        ],
+    )
+    fail_out = tmp_path / "failures.jsonl"
+    manifest = build_from_rollouts(tap, failures_output_path=fail_out)
+    assert manifest["failures_records"] == 1
+    assert manifest["failures_path"] == str(fail_out)
+    assert manifest["weakness"]["failure_signals"] == {"user_rejected": 1}
+    assert manifest["weakness"]["sample_rollout_ids"]["user_rejected"] == ["ro-2"]
+    lines = [json.loads(l) for l in fail_out.read_text().splitlines()]
+    assert lines[0]["rollout_id"] == "ro-2"
+    assert lines[0]["outcome"]["signal"] == "user_rejected"
+    assert manifest["lineage"]["transforms"] == ["failure_rollouts"]
+
+
+def test_build_failures_empty_set_writes_empty_file(tmp_path):
+    tap = _write_sink(tmp_path, [_rec("ro-1", signal="task_success")])
+    fail_out = tmp_path / "failures.jsonl"
+    manifest = build_from_rollouts(tap, failures_output_path=fail_out)
+    assert manifest["failures_records"] == 0
+    assert fail_out.exists() and fail_out.read_text() == ""
+
+
+def test_build_manifest_carries_efficiency(tmp_path):
+    call = {"type": "function", "function": {"name": "read", "arguments": "{}"}}
+    tap = _write_sink(
+        tmp_path,
+        [
+            _rec(
+                "ro-1",
+                signal="task_success",
+                messages=[
+                    {"role": "user", "content": "go"},
+                    {"role": "assistant", "content": "", "tool_calls": [call, call]},
+                ],
+            )
+        ],
+    )
+    manifest = build_from_rollouts(tap, tmp_path / "sft.jsonl")
+    assert manifest["efficiency"]["tool_calls"] == 2
+    assert manifest["efficiency"]["redundant_consecutive"] == 1
+
+
+def test_build_failures_with_sft_and_lineage(tmp_path):
+    tap = _write_sink(
+        tmp_path,
+        [
+            _rec("ro-1", signal="task_success"),
+            _rec("ro-2", signal="user_rejected"),
+        ],
+    )
+    sft_out = tmp_path / "sft.jsonl"
+    fail_out = tmp_path / "failures.jsonl"
+    manifest = build_from_rollouts(tap, sft_out, failures_output_path=fail_out)
+    assert manifest["sft_samples"] == 1 and manifest["failures_records"] == 1
+    assert manifest["lineage"]["transforms"] == [
+        "positive_rollouts",
+        "rollouts_to_sft",
+        "failure_rollouts",
+    ]
+    assert manifest["lineage"]["output"] == str(sft_out)
