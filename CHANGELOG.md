@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc31
+version: 1.0.0rc32
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,17 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc32] - 2026-11-26
+
+### Added
+
+- **Outcome sidecar join (#97):** reader-side join by `rollout_id` between the gateway rollout tap (never writes outcomes, gateway#33 contract) and app sidecars like office-api's `rollout-outcomes.jsonl`. `load_outcome_sidecar` + `join_outcomes` in `rollout_ingest` (inline outcomes always win, malformed lines skipped loudly), `ft datasets from-rollouts --outcomes <sidecar>`, dashboard `rollout_section` applies the same join (sidecar records carry `outcome` and no `source` — never counted as separate trajectories). Live-verified on real records: SFT positive set produced where ingest previously errored `no positive rollouts`; dashboard total counts tap-only with joined signals. `docs/rollout-tap.md` outcome-backfill row names the join owner.
+
+### Fixed
+
+- **X-Fusion-Source declaration (#100):** `MLXFineTuneClient` declares `X-Fusion-Source: model-hub` by default (`FUSION_MLX_SOURCE` env override, explicit arg wins) — model-management routes through the gateway (`/v1/merge-adapter`, `/v1/convert/jobs*`, proxied since fusion-gateway#721) 403 without the declaration. `merge_adapter` normalizes dash-form catalog ids to slash repo ids (hf rejects `--` in repo_id).
+- **Bridge sink defaults (#98, PR #101):** `trainer-bridge.sh` defaults `FUSION_TRAINER_ROLLOUT_SINKS` to the gateway rollout-tap + office outcome files so the dashboard trajectory panel survives supervisor-managed restarts.
 
 ## [1.0.0rc31] - 2026-11-25
 
