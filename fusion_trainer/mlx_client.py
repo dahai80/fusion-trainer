@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -121,7 +122,12 @@ class MLXFineTuneClient:
         self._headers = {"X-Fusion-Route": "admin"}
         # Model-management endpoints (merge/serve/load) are gated on
         # X-Fusion-Source: model-hub (fusion-mlx auth.py:531). A host that
-        # manages models on the user's behalf declares itself here.
+        # manages models on the user's behalf declares itself here; the
+        # gateway deliberately does not fabricate it (fusion-gateway#721).
+        # Default model-hub unconditionally (#100): the header is only
+        # consulted for model-management routes, and FUSION_MLX_SOURCE
+        # overrides for hosts that need a different declaration.
+        source = source or os.environ.get("FUSION_MLX_SOURCE", "") or "model-hub"
         if source:
             self._headers["X-Fusion-Source"] = source
         if token:
@@ -990,6 +996,12 @@ class MLXFineTuneClient:
         and writes SafeTensors to output_path. Returns {status, model,
         output_path}. This is a synchronous call (blocks until merge done).
         """
+        # Catalog ids are dash-form (mlx-community--Qwen3-0.6B-4bit) but the
+        # merge endpoint's base model must be the slash repo id — hf rejects
+        # "--" in repo_id (#100).
+        if "--" in model:
+            model = model.replace("--", "/")
+            logger.info("merge_adapter: normalized catalog id to %s", model)
         body: dict[str, Any] = {
             "model": model,
             "adapter_path": adapter_path,
