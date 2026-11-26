@@ -197,7 +197,7 @@ class TestPublishMergedModel:
         result = client.publish_merged_model(name="bnup-merged", base_model="qwen")
         assert result["published"] is True
         assert result["model"]["id"] == "m9"
-        assert captured["json"]["model_type"] == "mlx"
+        assert captured["json"]["model_type"] == "llm"  # #113: hub ModelType has no mlx
         assert "base_model_id" not in captured["json"]
 
     def test_short_name_raises(self):
@@ -206,7 +206,7 @@ class TestPublishMergedModel:
             client.publish_merged_model(name="ab")
 
     def test_409_idempotent_when_own_model_exists(self, monkeypatch):
-        existing = {"id": "m9", "name": "bnup-merged", "model_type": "mlx"}
+        existing = {"id": "m9", "name": "bnup-merged", "model_type": "llm"}
         monkeypatch.setattr(
             hub_mod.httpx,
             "post",
