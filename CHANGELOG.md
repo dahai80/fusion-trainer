@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc37
+version: 1.0.0rc38
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,13 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc38] - 2026-11-26
+
+### Added
+
+- **Struggle features (#116, JudgeMix):** deterministic per-`rollout_id` struggle signals over the failure channel (redundant consecutive tool calls, error signals, score normalized by step count); the manifest `struggle` block carries non-zero-scored failures only. First-pass judge for step-wise expert injection — injection eligibility explainable from deterministic features; an LLM judge may layer on top later.
+- **Task-aware weakness profile (#117 prep):** per-task failure breakdown when outcomes carry `task_id` (office sidecar contract) — the input for the fixed difficulty-anchored call budget of the efficiency reward. Per-task budgets and student/reference pairing remain blocked on office-side data (`task_id` in outcomes, paired co-rollout volume — fusion-office#48/#49).
 
 ## [1.0.0rc37] - 2026-11-26
 
