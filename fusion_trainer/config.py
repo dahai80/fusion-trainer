@@ -96,6 +96,11 @@ def _default_mlx_port() -> int:
     # the gateway path works — but the default stays 11434: one hop less and
     # the trainer's own admin key. FUSION_MLX_PORT=11432 routes everything
     # through the gateway (auth chain = gateway key, injected upstream).
+    # Since fusion-gateway#721 (v0.9.196) the gateway is also the single
+    # entry for model-management calls: /v1/merge-adapter and
+    # /v1/convert/jobs* are proxied on the same :11432 path, gated on the
+    # caller's X-Fusion-Source: model-hub declaration (trainer sends it by
+    # default, #100).
     return service_port("MLX", default=11434)
 
 

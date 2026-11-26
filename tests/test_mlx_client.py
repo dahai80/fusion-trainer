@@ -75,14 +75,16 @@ class TestAdminRouteHeader:
 class TestFusionSourceHeader:
     # Bridge/model-manager hosts must declare X-Fusion-Source: model-hub —
     # merge/serve model-management endpoints are gated on it
-    # (fusion-mlx auth.py:531).
+    # (fusion-mlx auth.py:531). #100: the declaration is sent by default
+    # (env FUSION_MLX_SOURCE overrides; explicit arg wins) — a merge
+    # through the gateway 403s without it.
     def test_source_header_when_set(self):
         client = MLXFineTuneClient(port=11434, source="model-hub")
         assert client._headers.get("X-Fusion-Source") == "model-hub"
 
-    def test_no_source_header_by_default(self):
+    def test_model_hub_by_default(self):
         client = MLXFineTuneClient(port=11434)
-        assert "X-Fusion-Source" not in client._headers
+        assert client._headers.get("X-Fusion-Source") == "model-hub"
 
 
 class TestBaseURL:
@@ -170,19 +172,18 @@ def test_job_event_cursor_synthesizes_from_progress():
     c = _JobEventCursor()
     assert c.collect({"status": "running", "progress": {"step": 0}}) == []
     ev1 = c.collect(
-        {"status": "running", "progress": {"step": 1, "train_loss": 1.5, "val_loss": 1.2}}
+        {
+            "status": "running",
+            "progress": {"step": 1, "train_loss": 1.5, "val_loss": 1.2},
+        }
     )
     assert len(ev1) == 1 and ev1[0]["type"] == "train_loss" and ev1[0]["step"] == 1
     # same step again: no duplicate
     assert (
-        c.collect(
-            {"status": "running", "progress": {"step": 1, "train_loss": 1.5}}
-        )
+        c.collect({"status": "running", "progress": {"step": 1, "train_loss": 1.5}})
         == []
     )
-    ev2 = c.collect(
-        {"status": "running", "progress": {"step": 2, "train_loss": 1.1}}
-    )
+    ev2 = c.collect({"status": "running", "progress": {"step": 2, "train_loss": 1.1}})
     assert ev2[0]["step"] == 2
 
 
@@ -190,6 +191,50 @@ def test_job_event_cursor_prefers_events_array():
     from fusion_trainer.mlx_client import _JobEventCursor
 
     c = _JobEventCursor()
-    job = {"events": [{"type": "train_loss", "step": 1}, {"type": "val_loss", "step": 1}]}
+    job = {
+        "events": [{"type": "train_loss", "step": 1}, {"type": "val_loss", "step": 1}]
+    }
     assert len(c.collect(job)) == 2
     assert c.collect(job) == []
+
+
+def test_client_default_fusion_source_header(monkeypatch):
+    # #100: model-management endpoints are gated on X-Fusion-Source; the
+    # client declares model-hub by default, FUSION_MLX_SOURCE overrides,
+    # an explicit constructor arg wins over both.
+    monkeypatch.delenv("FUSION_MLX_SOURCE", raising=False)
+    assert MLXFineTuneClient(port=11434)._headers["X-Fusion-Source"] == "model-hub"
+    monkeypatch.setenv("FUSION_MLX_SOURCE", "trainer-console")
+    assert (
+        MLXFineTuneClient(port=11434)._headers["X-Fusion-Source"] == "trainer-console"
+    )
+    assert (
+        MLXFineTuneClient(port=11434, source="explicit")._headers["X-Fusion-Source"]
+        == "explicit"
+    )
+
+
+def test_merge_adapter_normalizes_catalog_id():
+    # #100: merge-adapter base model must be the slash repo id; the dash
+    # catalog form is rejected by hf ("Cannot have -- in repo_id").
+    client = MLXFineTuneClient(port=11434)
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"status": "ok"}
+
+        text = "{}"
+
+    class _FakeHttp:
+        def request(self, method, url, json=None, params=None):
+            captured["body"] = json
+            return _FakeResp()
+
+    client._http = _FakeHttp()
+    client.merge_adapter("mlx-community--Qwen3-0.6B-4bit", "/tmp/adapter")
+    assert captured["body"]["model"] == "mlx-community/Qwen3-0.6B-4bit"
+    client.merge_adapter("sft_1795605347026_00eee724-20261125-191812", "/tmp/a")
+    assert captured["body"]["model"] == "sft_1795605347026_00eee724-20261125-191812"
