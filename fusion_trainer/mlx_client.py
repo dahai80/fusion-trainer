@@ -395,6 +395,7 @@ class MLXFineTuneClient:
             f"{self._base}/v1/chat/completions",
             json_body=body,
             max_retries=3,
+            timeout=timeout,
         )
         if not isinstance(result, dict):
             raise MLXFineTuneError(f"chat/completions returned non-dict: {result!r}")

@@ -275,3 +275,29 @@ def test_merge_adapter_timeout_env_and_explicit(monkeypatch):
     assert captured["timeout"] == httpx.USE_CLIENT_DEFAULT
     client.merge_adapter("m", "/tmp/a", merge_timeout=99)
     assert captured["timeout"] == 99  # explicit arg beats env
+
+
+def test_chat_completions_forwards_timeout():
+    # #104 follow-up: _chat_completions_raw accepted `timeout` but never
+    # forwarded it — the 30s pooled default silently won and the post-merge
+    # validation probe timed out against a cold-loading model.
+    client = MLXFineTuneClient(port=11434)
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": "pong"}}], "usage": {}}
+
+        text = "{}"
+
+    class _FakeHttp:
+        def request(self, method, url, json=None, params=None, timeout=None):
+            captured["timeout"] = timeout
+            return _FakeResp()
+
+    client._http = _FakeHttp()
+    completions = client.chat_completions(model_id="m", messages=[], timeout=99)
+    assert completions == ["pong"]
+    assert captured["timeout"] == 99
