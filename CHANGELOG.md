@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc38
+version: 1.0.0rc39
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,12 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc39] - 2026-11-26
+
+### Fixed
+
+- **Outcome sidecar schema v2 acceptance (office-api #48 acceptance):** office-api #52 bumped the sidecar contract to v2 (additive `env_state` / `validator {name, version, status}` fields), but both trainer readers filtered on `schema_version == 1` — `load_outcome_sidecar` dropped v2 records from the join and the dashboard counted them invalid. Both now accept the version tuple `(1, 2)`; unknown additive fields pass through harmlessly. Live-verified against the real gateway tap + office sidecar: join succeeds, failure channel + weakness profile produced, `task_id` visible for #117 budget anchoring.
 
 ## [1.0.0rc38] - 2026-11-26
 
