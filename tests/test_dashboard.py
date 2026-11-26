@@ -350,3 +350,48 @@ def test_rollouts_inline_outcome_beats_sidecar(tmp_path, monkeypatch):
     out = bd.rollout_section()
     assert out["signals"] == {"user_rejected": 1}
     assert out["positive_share"] == 0.0
+
+
+def test_rollouts_sidecar_v2_env_validator_join(tmp_path, monkeypatch):
+    # office-api #48 sidecar schema v2: additive env_state/validator fields
+    # must not break the dashboard join (schema_version in (1, 2)).
+    import json as _json
+
+    tap = tmp_path / "tap.jsonl"
+    side = tmp_path / "side.jsonl"
+    tap.write_text(
+        _json.dumps(
+            {
+                "schema_version": 1,
+                "rollout_id": "ro-1",
+                "source": "chat_completions",
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    side.write_text(
+        _json.dumps(
+            {
+                "schema_version": 2,
+                "rollout_id": "ro-1",
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "outcome": {"signal": "task_success", "score": 1.0, "task_id": "t-1"},
+                "env_state": {"working_dir": "/w"},
+                "validator": {"name": "v", "version": "1", "status": "passing"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        bd.ROLLOUT_SINKS_ENV, os.pathsep.join([str(tap), str(side)])
+    )
+    out = bd.rollout_section()
+    assert out["available"] is True
+    assert out["total"] == 1  # sidecar line not double-counted
+    assert out["signals"] == {"task_success": 1}
+    assert out["positive_share"] == 1.0

@@ -173,7 +173,7 @@ def rollout_section() -> dict[str, Any]:
                         continue
                     if not (
                         isinstance(rec, dict)
-                        and rec.get("schema_version") == 1
+                        and rec.get("schema_version") in (1, 2)
                         and rec.get("rollout_id")
                         and isinstance(rec.get("messages"), list)
                     ):
@@ -182,7 +182,8 @@ def rollout_section() -> dict[str, Any]:
                     # Outcome sidecar record (#97): carries an outcome and no
                     # `source` (the gateway tap contract always writes source
                     # and never outcome). Counted via the join, never as a
-                    # separate trajectory.
+                    # separate trajectory. Schema v2 (office-api #48) adds
+                    # top-level env_state/validator additively — harmless here.
                     if isinstance(rec.get("outcome"), dict) and not rec.get("source"):
                         sidecar_outcomes[str(rec["rollout_id"])] = rec["outcome"]
                         continue

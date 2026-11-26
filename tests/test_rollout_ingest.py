@@ -548,3 +548,65 @@ def test_build_manifest_struggle_only_nonzero(tmp_path):
     manifest = build_from_rollouts(tap, failures_output_path=tmp_path / "f.jsonl")
     assert set(manifest["struggle"]) == {"a"}
     assert manifest["struggle"]["a"]["redundant_consecutive"] == 1
+
+
+def test_load_sidecar_v2_env_validator_records(tmp_path):
+    # office-api #48 sidecar schema v2: additive env_state/validator fields
+    side = tmp_path / "outcomes.jsonl"
+    side.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "rollout_id": "ro-1",
+                        "outcome": {"signal": "task_success", "task_id": "t-9"},
+                        "env_state": {
+                            "working_dir": "/w",
+                            "files": {"a.xlsx": "sha256:abc"},
+                        },
+                        "validator": {
+                            "name": "check-a",
+                            "version": "3",
+                            "status": "passing",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "rollout_id": "ro-2",
+                        "outcome": {"signal": "error"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    outcomes = load_outcome_sidecar(side)
+    assert outcomes["ro-1"]["signal"] == "task_success"
+    assert outcomes["ro-2"]["signal"] == "error"
+
+
+def test_build_sft_join_with_v2_sidecar(tmp_path):
+    tap = _write_sink(tmp_path, [_rec("ro-1", signal=None)], name="tap.jsonl")
+    side = tmp_path / "outcomes.jsonl"
+    side.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "rollout_id": "ro-1",
+                "outcome": {"signal": "task_success", "task_id": "t-1"},
+                "env_state": {"working_dir": "/w"},
+                "validator": {"name": "v", "version": "1", "status": "untested"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    sft_out = tmp_path / "sft.jsonl"
+    manifest = build_from_rollouts(tap, sft_out, outcomes_path=side)
+    assert manifest["outcomes_joined"] == 1
+    assert manifest["sft_samples"] == 1
+    assert manifest["signals"]["task_success"] == 1
