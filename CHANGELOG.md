@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc32
+version: 1.0.0rc33
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,13 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc33] - 2026-11-26
+
+### Fixed
+
+- **merge_adapter 30s timeout (#104):** `_request` gains a per-call `timeout` kwarg (httpx `USE_CLIENT_DEFAULT` sentinel keeps the pooled default when unset — `request(timeout=None)` would disable timeouts entirely). `merge_adapter` now sends `MERGE_CALL_TIMEOUT = 1800s`, overridable via `FUSION_TRAINER_MERGE_TIMEOUT` (invalid/`<=0` falls back loudly; explicit arg beats env). Live-verified: real merge through the gateway `:11432` completes in one shot where it previously timed out at 30s.
+- **Dead timeout param in `_chat_completions_raw`:** accepted `timeout` (default 120s) but never forwarded it to `_request` — the post-merge validation probe rode the 30s pooled default and false-timed-out against a cold-loading model. Now forwarded.
 
 ## [1.0.0rc32] - 2026-11-26
 
