@@ -111,7 +111,8 @@ negatives (negative mining stays the from-eval DPO path's job).
 
 ```
 ft datasets from-rollouts --sink rollouts.jsonl \
-    --output sft.jsonl [--grpo-output prompts.jsonl] [--min-score 1.0]
+    --output sft.jsonl [--grpo-output prompts.jsonl] \
+    [--failures-output failures.jsonl] [--min-score 1.0]
 ```
 
 - SFT (`--output`): positive rollouts (`score >= min-score`) with
@@ -122,6 +123,15 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   field survives `DatasetLoader.load_grpo` and documents the observed
   outcome for sandbox/analysis; on-policy sampling still decides the
   trained completions.
+- Failure channel (`--failures-output`, #111): scored-negative
+  rollouts (`reward < min-score`, unobserved excluded) written as full
+  records with their outcome — the input to the resynthesis stage. An
+  empty failure set writes an empty file (honest), never an error.
+  The manifest carries `weakness` (per-signal failure counts + bounded
+  sample rollout_ids) and `efficiency` (offline redundant consecutive
+  tool-call rate — the BEFORE number for any future efficiency reward;
+  the budget anchor must be fixed before training, never
+  policy-relative).
 - Sidecar manifest `<output>.from_rollouts.json` (atomic write)
   carries the sink sha256 + per-signal counts; `ft sft` auto-detects
   it beside the dataset and records `source_export_sha256` in the run

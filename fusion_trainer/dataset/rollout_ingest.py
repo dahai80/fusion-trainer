@@ -250,6 +250,117 @@ def positive_rollouts(
     return positives
 
 
+def failure_rollouts(
+    records: list[dict[str, Any]], max_score: float = 1.0
+) -> list[dict[str, Any]]:
+    """Scored records whose reward < max_score (#111 failure channel).
+
+    Feeds the resynthesis stage (weakness profile). Unobserved outcomes
+    (reward None) are NOT failures — they carry no signal and belong to
+    neither the positive nor the failure set.
+    """
+    failures = []
+    for rec in records:
+        score = reward_score(rec.get("outcome"))
+        if score is not None and score < max_score:
+            failures.append(rec)
+    logger.info(
+        "%d/%d rollouts negative at max_score=%s",
+        len(failures),
+        len(records),
+        max_score,
+    )
+    return failures
+
+
+_WEAKNESS_SAMPLE_CAP = 10
+
+
+def weakness_profile(failures: list[dict[str, Any]]) -> dict[str, Any]:
+    """Signal distribution over scored failures + bounded sample ids (#111).
+
+    The profile is the resynthesis stage's input: which outcome signals
+    dominate the failure set, with a few rollout_ids per signal to pull
+    full trajectories from the tap for targeted resynthesis.
+    """
+    counts: dict[str, int] = {}
+    samples: dict[str, list[str]] = {}
+    for rec in failures:
+        outcome = rec.get("outcome")
+        signal = (
+            str(outcome.get("signal"))
+            if isinstance(outcome, dict) and outcome.get("signal")
+            else "unobserved"
+        )
+        counts[signal] = counts.get(signal, 0) + 1
+        bucket = samples.setdefault(signal, [])
+        rid = rec.get("rollout_id")
+        if len(bucket) < _WEAKNESS_SAMPLE_CAP and rid:
+            bucket.append(str(rid))
+    return {"failure_signals": counts, "sample_rollout_ids": samples}
+
+
+def _tool_call_key(call: Any) -> str | None:
+    fn = call.get("function") if isinstance(call, dict) else None
+    if not isinstance(fn, dict) or not fn.get("name"):
+        return None
+    args = fn.get("arguments")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return f"{fn['name']}|{args}"
+    if isinstance(args, dict):
+        args = json.dumps(args, sort_keys=True, ensure_ascii=False)
+    return f"{fn['name']}|{args}"
+
+
+def tool_call_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Offline efficiency pre-step (#111, CARE-PO): count removable calls.
+
+    A call is redundant when it repeats the immediately preceding call
+    (same tool name + normalized arguments) within the same assistant
+    turn sequence; a new user turn resets the comparison anchor. The
+    redundant-call rate is the BEFORE number for any future efficiency
+    reward — the budget anchor must be fixed before training, never
+    policy-relative.
+    """
+    total_calls = 0
+    redundant_calls = 0
+    records_with_calls = 0
+    for rec in records:
+        messages = rec.get("messages")
+        if not isinstance(messages, list):
+            continue
+        prev_key: str | None = None
+        calls_in_rec = 0
+        redundant_in_rec = 0
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") == "user":
+                prev_key = None
+            for call in m.get("tool_calls") or []:
+                key = _tool_call_key(call)
+                if key is None:
+                    continue
+                calls_in_rec += 1
+                if key == prev_key:
+                    redundant_in_rec += 1
+                prev_key = key
+        if calls_in_rec:
+            records_with_calls += 1
+            total_calls += calls_in_rec
+            redundant_calls += redundant_in_rec
+    rate = (redundant_calls / total_calls) if total_calls else 0.0
+    return {
+        "records_with_tool_calls": records_with_calls,
+        "tool_calls": total_calls,
+        "redundant_consecutive": redundant_calls,
+        "redundant_rate": round(rate, 4),
+    }
+
+
 def rollouts_to_sft(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Positive rollouts -> D1 messages samples (multi-turn + tool calls
     preserved, issue #88)."""
@@ -337,6 +448,7 @@ def build_from_rollouts(
     grpo_output_path: Path | None = None,
     min_score: float = 1.0,
     outcomes_path: Path | None = None,
+    failures_output_path: Path | None = None,
 ) -> dict[str, Any]:
     """Full ingestion: sink -> SFT dataset and/or GRPO prompt set + manifest.
 
@@ -347,10 +459,16 @@ def build_from_rollouts(
     `outcomes_path` (optional, #97) names an outcome sidecar JSONL whose
     records are joined by rollout_id to backfill tap records written
     without an inline outcome.
+    `failures_output_path` (optional, #111) writes scored-negative
+    rollouts (reward < min_score, full records with outcome) as the
+    failure-trajectory channel feeding the resynthesis stage; the
+    manifest carries the weakness profile and the offline redundant
+    tool-call rate.
     """
-    if sft_output_path is None and grpo_output_path is None:
+    if sft_output_path is None and grpo_output_path is None and failures_output_path is None:
         raise RolloutIngestError(
-            "nothing to write: pass --output (SFT) and/or --grpo-output (GRPO prompts)"
+            "nothing to write: pass --output (SFT) and/or --grpo-output "
+            "(GRPO prompts) and/or --failures-output (failure channel)"
         )
     records, digest = load_rollout_sink(sink_path)
     joined = 0
@@ -386,7 +504,31 @@ def build_from_rollouts(
                 fh.write(json.dumps(sample, ensure_ascii=False) + "\n")
         logger.info("wrote %d GRPO prompts to %s", len(grpo_samples), grpo_output_path)
 
-    manifest_anchor = sft_output_path or grpo_output_path
+    failure_records: list[dict[str, Any]] = []
+    if failures_output_path is not None:
+        # #111: an empty failure set is a GOOD result — write the empty
+        # file (honest) rather than erroring.
+        failure_records = failure_rollouts(records, min_score)
+        failures_output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(failures_output_path, "w", encoding="utf-8") as fh:
+            for rec in failure_records:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        logger.info(
+            "wrote %d failure rollouts to %s",
+            len(failure_records),
+            failures_output_path,
+        )
+
+    efficiency = tool_call_stats(records)
+    if efficiency["tool_calls"]:
+        logger.info(
+            "redundant tool calls: %d/%d (%.1f%%)",
+            efficiency["redundant_consecutive"],
+            efficiency["tool_calls"],
+            efficiency["redundant_rate"] * 100,
+        )
+
+    manifest_anchor = sft_output_path or grpo_output_path or failures_output_path
     manifest = {
         "source": "gateway-rollout-tap",
         "sink_path": str(sink_path),
@@ -398,6 +540,10 @@ def build_from_rollouts(
         "sft_samples": len(sft_samples),
         "grpo_path": str(grpo_output_path) if grpo_output_path else "",
         "grpo_prompts": len(grpo_samples),
+        "failures_path": str(failures_output_path) if failures_output_path else "",
+        "failures_records": len(failure_records),
+        "weakness": weakness_profile(failure_records),
+        "efficiency": efficiency,
         "records_total": len(records),
         "signals": _signal_counts(records),
         "lineage": {
@@ -405,11 +551,11 @@ def build_from_rollouts(
             "source_path": str(sink_path),
             "source_sha256": digest,
             "transforms": (
-                ["join_outcomes", "positive_rollouts", "rollouts_to_sft"]
-                if outcomes_path
-                else ["positive_rollouts", "rollouts_to_sft"]
+                (["join_outcomes"] if outcomes_path else [])
+                + (["positive_rollouts", "rollouts_to_sft"] if sft_output_path else [])
+                + (["failure_rollouts"] if failures_output_path else [])
             ),
-            "output": str(sft_output_path or grpo_output_path),
+            "output": str(manifest_anchor),
         },
     }
     manifest_path = Path(str(manifest_anchor) + ROLLOUT_MANIFEST_SUFFIX)
