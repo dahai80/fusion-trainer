@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -121,6 +122,7 @@ def _rollout(rid, model="m", created=None, outcome=None):
     rec = {
         "schema_version": 1,
         "rollout_id": rid,
+        "source": "chat_completions",
         "model": model,
         "messages": [{"role": "user", "content": "hi"}],
     }
@@ -265,3 +267,85 @@ def test_dashboard_page_served():
     r = client.get("/dashboard")
     assert r.status_code == 200
     assert "训练闭环看板" in r.text
+
+
+# ---------------------------------------------------------------------------
+# outcome sidecar join (#97)
+# ---------------------------------------------------------------------------
+
+
+def test_rollouts_sidecar_join_no_double_count(tmp_path, monkeypatch):
+    tap = tmp_path / "rollout-tap.jsonl"
+    side = tmp_path / "rollout-outcomes.jsonl"
+    now = datetime.now(UTC)
+    tap.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {
+                    **_rollout("ro-1", created=now.isoformat()),
+                    "source": "chat_completions",
+                },
+                {**_rollout("ro-2"), "source": "chat_completions"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    side.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {
+                    "schema_version": 1,
+                    "rollout_id": "ro-1",
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "outcome": {"signal": "task_success", "score": 1.0},
+                },
+                {
+                    "schema_version": 1,
+                    "rollout_id": "ro-9",
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "outcome": {"signal": "user_rejected", "score": 0.0},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(bd.ROLLOUT_SINKS_ENV, os.pathsep.join([str(tap), str(side)]))
+    out = bd.rollout_section()
+    assert out["total"] == 2  # sidecar lines never counted as trajectories
+    assert out["signals"] == {"task_success": 1, "unobserved": 1}
+    assert out["positive_share"] == 1.0  # ro-1 joined positive; ro-2 unobserved
+
+
+def test_rollouts_inline_outcome_beats_sidecar(tmp_path, monkeypatch):
+    tap = tmp_path / "tap.jsonl"
+    side = tmp_path / "side.jsonl"
+    tap.write_text(
+        json.dumps(
+            {
+                **_rollout("ro-1"),
+                "source": "chat_completions",
+                "outcome": {"signal": "user_rejected", "score": 0.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    side.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "rollout_id": "ro-1",
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "outcome": {"signal": "task_success", "score": 1.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(bd.ROLLOUT_SINKS_ENV, os.pathsep.join([str(tap), str(side)]))
+    out = bd.rollout_section()
+    assert out["signals"] == {"user_rejected": 1}
+    assert out["positive_share"] == 0.0

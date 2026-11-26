@@ -140,7 +140,6 @@ def rollout_section() -> dict[str, Any]:
             "positive_share": None,
         }
     now = time.time()
-    total = 0
     invalid = 0
     recent = 0
     scored = 0
@@ -158,6 +157,8 @@ def rollout_section() -> dict[str, Any]:
             files.append(p)
         else:
             logger.warning("rollout sink %s does not exist — skipped", p)
+    tap_records: list[dict] = []
+    sidecar_outcomes: dict[str, dict] = {}
     for f in files:
         try:
             with open(f, encoding="utf-8") as fh:
@@ -178,38 +179,54 @@ def rollout_section() -> dict[str, Any]:
                     ):
                         invalid += 1
                         continue
-                    total += 1
-                    created = rec.get("created_at")
-                    if isinstance(created, str):
-                        try:
-                            ts = datetime.fromisoformat(
-                                created.replace("Z", "+00:00")
-                            ).timestamp()
-                            if now - ts <= _RECENT_WINDOW_S:
-                                recent += 1
-                        except ValueError:
-                            pass
-                    outcome = rec.get("outcome")
-                    signal = "unobserved"
-                    if isinstance(outcome, dict) and outcome.get("signal"):
-                        signal = str(outcome["signal"])
-                    signals[signal] = signals.get(signal, 0) + 1
-                    if isinstance(outcome, dict):
-                        score = outcome.get("score")
-                        if not isinstance(score, (int, float)):
-                            score = {
-                                "task_success": 1.0,
-                                "user_accepted": 1.0,
-                                "user_edited": 0.5,
-                                "user_rejected": 0.0,
-                                "error": 0.0,
-                            }.get(signal)
-                        if isinstance(score, (int, float)):
-                            scored += 1
-                            if float(score) >= 1.0:
-                                positive += 1
+                    # Outcome sidecar record (#97): carries an outcome and no
+                    # `source` (the gateway tap contract always writes source
+                    # and never outcome). Counted via the join, never as a
+                    # separate trajectory.
+                    if isinstance(rec.get("outcome"), dict) and not rec.get("source"):
+                        sidecar_outcomes[str(rec["rollout_id"])] = rec["outcome"]
+                        continue
+                    tap_records.append(rec)
         except OSError as exc:
             logger.warning("rollout sink %s unreadable: %s", f, exc)
+    total = len(tap_records)
+    for rec in tap_records:
+        if not isinstance(rec.get("outcome"), dict):
+            outcome = sidecar_outcomes.get(str(rec.get("rollout_id")))
+            if outcome is not None:
+                rec = {**rec, "outcome": outcome}
+        created = rec.get("created_at")
+        if isinstance(created, str):
+            try:
+                ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+                if now - ts <= _RECENT_WINDOW_S:
+                    recent += 1
+            except ValueError:
+                pass
+        outcome = rec.get("outcome")
+        signal = "unobserved"
+        if isinstance(outcome, dict) and outcome.get("signal"):
+            signal = str(outcome["signal"])
+        signals[signal] = signals.get(signal, 0) + 1
+        if isinstance(outcome, dict):
+            score = outcome.get("score")
+            if not isinstance(score, (int, float)):
+                score = {
+                    "task_success": 1.0,
+                    "user_accepted": 1.0,
+                    "user_edited": 0.5,
+                    "user_rejected": 0.0,
+                    "error": 0.0,
+                }.get(signal)
+            if isinstance(score, (int, float)):
+                scored += 1
+                if float(score) >= 1.0:
+                    positive += 1
+    if sidecar_outcomes:
+        logger.info(
+            "rollout sinks: %d sidecar outcome record(s) joined by rollout_id",
+            len(sidecar_outcomes),
+        )
     if invalid:
         logger.warning(
             "rollout sinks: %d invalid line(s) skipped (schema_version==1 + "

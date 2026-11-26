@@ -1787,6 +1787,13 @@ def datasets_from_rollouts(
         help="Minimum reward for the SFT positive set (default 1.0: "
         "task_success/user_accepted only)",
     ),
+    outcomes_file: str = typer.Option(
+        "",
+        "--outcomes",
+        help="Optional outcome sidecar JSONL (e.g. office-api "
+        "rollout-outcomes.jsonl): records joined by rollout_id to "
+        "backfill tap records without an inline outcome (#97)",
+    ),
 ):
     """Build RFT/GRPO datasets from a gateway rollout-tap sink (#86).
 
@@ -1815,6 +1822,7 @@ def datasets_from_rollouts(
             Path(output_file) if output_file else None,
             Path(grpo_output) if grpo_output else None,
             min_score=min_score,
+            outcomes_path=Path(outcomes_file) if outcomes_file else None,
         )
     except RolloutIngestError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1828,6 +1836,11 @@ def datasets_from_rollouts(
             f"GRPO prompts: {manifest['grpo_prompts']} -> {manifest['grpo_path']}"
         )
     typer.echo(f"Signals:      {manifest['signals']}")
+    if manifest.get("outcomes_path"):
+        typer.echo(
+            f"Outcomes:     {manifest['outcomes_joined']} joined from "
+            f"{manifest['outcomes_path']}"
+        )
     typer.echo(f"Sink sha256:  {manifest['sink_sha256']}")
     typer.echo(
         f"Manifest:     {manifest['sft_path'] or manifest['grpo_path']}"
