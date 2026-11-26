@@ -67,7 +67,7 @@ Configuration layers, later wins: built-in presets (`SFT_PRESETS`/`RLSL_PRESETS`
 | `FUSION_MLX_PORT` | `11434` | fusion-mlx port; set `11432` to route fine-tune traffic through fusion-gateway |
 | `FUSION_MLX_ADMIN_TOKEN` | resolved via `fusion_core.config` | Engine admin key; falls back to `~/.fusion-mlx/settings.json` `auth.api_key` |
 | `FUSION_MODEL_HUB_URL` | `http://localhost:11432` | Hub endpoint (gateway -> model-hub) |
-| `FUSION_MODEL_HUB_API_KEY` | `""` | Hub auth |
+| `FUSION_MODEL_HUB_API_KEY` | `""` | Hub auth — direct-hub calls need a hub-issued `fmh-*` key (`fmh keys create`), not the gateway admin key |
 | `FUSION_TRAINER_PUBLISH` | unset | `1` forces publish on regardless of config |
 | `FUSION_TRAINER_ACTOR` | `local` | Actor recorded in audit entries |
 | `FUSION_TRAINER_API_KEY` | unset | Gate mutating RunManager ops; unset = local-trust allow-all |

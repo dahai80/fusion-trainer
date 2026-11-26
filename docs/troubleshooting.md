@@ -42,6 +42,7 @@ Training itself executes inside fusion-mlx — check the fusion-mlx side first: 
 
 - 设计行为：publish 失败**告警但不阻塞**，exit 0。看日志中的 hub 错误详情。
 - 检查 `FUSION_MODEL_HUB_URL`（默认 `http://localhost:11432`，需 fusion-gateway 存活）与 `FUSION_MODEL_HUB_API_KEY`。
+- 直连 Hub（`:11444`）时 401 通常是 key 域错误：Hub 只认自己签发的 `fmh-*` key（`fmh keys create --name fusion-trainer --role developer`），gateway admin key / `FUSION_ADMIN_KEY` 按设计被拒。
 - `FUSION_TRAINER_PUBLISH=1` 会强制开启发布，排查时注意它是否被环境残留设置。
 - 事后补发 / Retroactive: `ft publish <run_id>`。
 
