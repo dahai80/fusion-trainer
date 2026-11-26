@@ -31,6 +31,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 ROLLOUT_SCHEMA_VERSION = 1
+# Outcome sidecar contract (office-api #48): v2 adds top-level env_state /
+# validator {name, version, status} fields, additively — v1 stays valid.
+ROLLOUT_SIDECAR_SCHEMA_VERSIONS = (1, 2)
 ROLLOUT_MANIFEST_SUFFIX = ".from_rollouts.json"
 _REQUIRED_KEYS = ("schema_version", "rollout_id", "model", "messages")
 
@@ -171,8 +174,11 @@ def load_outcome_sidecar(path: Path) -> dict[str, dict[str, Any]]:
     Sidecar records (e.g. office-api rollout-outcomes.jsonl) carry
     schema_version/rollout_id/outcome and no `source` field — the
     gateway tap contract always writes `source` and never `outcome`
-    (docs/rollout-tap.md). The latest record per rollout_id wins
-    (append-only file). Malformed lines are skipped loudly.
+    (docs/rollout-tap.md). schema v2 (office-api #48) adds top-level
+    env_state / validator / task-carrying fields additively; the join
+    consumes only the outcome dict, unknown fields pass through
+    harmlessly. The latest record per rollout_id wins (append-only
+    file). Malformed lines are skipped loudly.
     """
     if not path.is_file():
         raise RolloutIngestError(f"outcome sidecar not found: {path}")
@@ -191,7 +197,7 @@ def load_outcome_sidecar(path: Path) -> dict[str, dict[str, Any]]:
                 continue
             if not (
                 isinstance(rec, dict)
-                and rec.get("schema_version") == ROLLOUT_SCHEMA_VERSION
+                and rec.get("schema_version") in ROLLOUT_SIDECAR_SCHEMA_VERSIONS
                 and rec.get("rollout_id")
                 and isinstance(rec.get("outcome"), dict)
             ):
