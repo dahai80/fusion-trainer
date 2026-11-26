@@ -1,3 +1,19 @@
+---
+doc_id: fusion-trainer/claude-md
+product: fusion-trainer
+class: platform
+entry: developer
+doc_type: guide
+title: { zh: "Claude Code 仓库指引", en: "Claude Code repository guidance" }
+audience: engineer
+status: stable
+version: 1.0.0rc34
+updated: 2026-11-26
+owner: "@dahai"
+source_of_truth:
+  - CLAUDE.md
+---
+
 # CLAUDE.md
 
 Guidance for Claude Code when working in this repository.
