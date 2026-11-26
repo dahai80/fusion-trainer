@@ -47,10 +47,10 @@ class ORPOTrainer:
             self._client.close()
 
     def _build_orpo_config(self) -> dict[str, Any]:
-        # 映射 RLSLConfig → DPOConfig(method=orpo)。ORPO 用 lambda_odds,beta 被忽略。
+        # Map RLSLConfig -> DPOConfig (method=orpo). ORPO uses lambda_odds; beta is ignored.
         total_pairs = max(1, len(self._pairs))
         batch_size = max(1, int(self.rlsl_cfg.batch_size))
-        # A5: iters = epoch * (total // batch_size),梯度步非样本步(见 dpo.py)。
+        # A5: iters = epoch * (total // batch_size), gradient steps not sample steps (see dpo.py).
         steps_per_epoch = max(1, total_pairs // batch_size)
         iters = self.rlsl_cfg.num_epochs * steps_per_epoch
         cfg: dict[str, Any] = {
@@ -181,7 +181,7 @@ class ORPOTrainer:
 
 
 def _normalize_pairs(dataset: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # fusion-mlx 要求每对含 prompt/chosen/rejected。兼容 {input,chosen,rejected}。
+    # fusion-mlx requires prompt/chosen/rejected in every pair. Also accepts {input,chosen,rejected}.
     pairs = []
     for item in dataset:
         prompt = item.get("prompt") or item.get("input") or ""

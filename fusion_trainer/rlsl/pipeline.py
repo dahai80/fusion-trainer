@@ -29,11 +29,11 @@ from .reward import RewardTrainer
 
 logger = logging.getLogger(__name__)
 
-# RLSL Phase 2 真实闭环上游能力(均已落地):
-#   #363 PR#366 — 真实 policy-gradient GRPO 端点 /api/fine-tune/grpo/jobs
-#   #430 PR#432 — GRPO worker 线程 stream 修复
-#   #431 PR#433 — reward/score 推理打分端点(加载 RM adapter 打分)
-# Phase 1 reward model 训练用 #424(本仓 PR #41 已对接)。
+# RLSL Phase 2 real closed-loop upstream capabilities (all landed):
+#   #363 PR#366 — real policy-gradient GRPO endpoint /api/fine-tune/grpo/jobs
+#   #430 PR#432 — GRPO worker thread stream fix
+#   #431 PR#433 — reward/score inference scoring endpoint (loads the RM adapter to score)
+# Phase 1 reward model training uses #424 (wired up in this repo's PR #41).
 _UPSTREAM_GRPO = "https://github.com/dahai80/fusion-mlx/issues/363"
 _UPSTREAM_REWARD_SCORE = "https://github.com/dahai80/fusion-mlx/issues/431"
 

@@ -20,11 +20,13 @@ from bridge import shell_registry as sr  # noqa: E402
 
 MANIFEST = {
     "id": "fusion-trainer",
+    # i18n: user-facing
     "title": "训练控制台",
     "path": "/trainer",
     "entry": "/shell/fusion-trainer/",
     "devices": ["desktop"],
     "category": "platform",
+    # i18n: user-facing
     "pages": [{"route": "/", "title": "训练控制台"}],
     "upstream": "http://127.0.0.1:8790",
 }

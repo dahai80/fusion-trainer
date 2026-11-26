@@ -46,6 +46,7 @@ def _assert_negative_fails(response: str) -> None:
     )
 
 
+# i18n: user-facing
 _VALID_DSL = {
     "meta": {
         "id": "demo_01",
@@ -77,6 +78,7 @@ _VALID_DSL = {
     ],
 }
 
+# i18n: user-facing
 _VALID_RESPONSE = (
     "<thinking>\n1. 识别知识点\n2. 导出公式\n</thinking>\n"
     f"<dsl>\n{json.dumps(_VALID_DSL, ensure_ascii=False)}\n</dsl>"
@@ -102,16 +104,19 @@ class TestMakeBrokenJson:
 
 class TestMakeDirectAnswer:
     def test_no_thinking_tag(self):
+        # i18n: user-facing
         result = make_direct_answer("题目", "V=S*h*2/3", "40")
         assert "<thinking>" not in result
         assert "<dsl>" not in result
         assert "40" in result
 
     def test_no_dsl_block(self):
+        # i18n: user-facing
         result = make_direct_answer("题目", "V=S*h", "60")
         assert "<dsl>" not in result
 
     def test_fails_dsl_validation(self):
+        # i18n: user-facing
         result = make_direct_answer("题目", "V=S*h", "60")
         _assert_negative_fails(result)
 
@@ -150,6 +155,7 @@ class TestMakeMissingTag:
         assert "<thinking>" in result
 
     def test_strips_thinking_when_no_dsl(self):
+        # i18n: user-facing
         response = "<thinking>\n思考\n</thinking>\n答案"
         result = make_missing_tag(response)
         assert "<thinking>" not in result
@@ -189,6 +195,7 @@ class TestGenerateNegatives:
         negatives = generate_negatives(
             chosen_response=_VALID_RESPONSE,
             dsl_dict=_VALID_DSL,
+            # i18n: user-facing
             question="题目",
             formula="V=S*h",
             answer="60",
@@ -200,6 +207,7 @@ class TestGenerateNegatives:
         negatives = generate_negatives(
             chosen_response=_VALID_RESPONSE,
             dsl_dict=_VALID_DSL,
+            # i18n: user-facing
             question="题目",
             formula="V=S*h",
             answer="60",
@@ -211,6 +219,7 @@ class TestGenerateNegatives:
         negatives = generate_negatives(
             chosen_response=_VALID_RESPONSE,
             dsl_dict=None,
+            # i18n: user-facing
             question="题目",
             answer="60",
         )
@@ -220,6 +229,7 @@ class TestGenerateNegatives:
         negatives = generate_negatives(
             chosen_response=_VALID_RESPONSE,
             dsl_dict=_VALID_DSL,
+            # i18n: user-facing
             question="题目",
             answer="60",
             neg_ratio=5,
@@ -228,15 +238,19 @@ class TestGenerateNegatives:
             assert neg != _VALID_RESPONSE
 
     def test_all_negatives_fail_validation_or_eval(self):
-        """静态负例必须过不了 validate_dsl_str; param_drift 是语义负例 —
-        JSON/schema 合法, 破绽只在 eval 求值时暴露, 用求值器断言。
-        (sft-dpo-1013 §2.4: E1 漂移的破绽正是静态校验查不到的那类)
+        """Static negatives must fail validate_dsl_str; param_drift is a
+        semantic negative — JSON/schema-valid, the flaw only surfaces at
+        eval evaluation, so assert with an evaluator.
+        (sft-dpo-1013 §2.4: the E1 drift flaw is exactly the class static
+        validation cannot catch)
 
-        求值器复刻生产 BNUPEvaluator.evaluate_eval_expression 的核心语义
-        (fusion-k12-teacher eval_harness.py: params.xxx → params_val['xxx'],
-        eval restricted globals) — 不直接 import 跨项目包 (CI 环境不装
-        fusion-k12-teacher, 且 trainer 不依赖它), 但断言语义一致:
-        漂移键在 params_val 下标中缺失 (KeyError) 即求值失败。"""
+        The evaluator replicates the core semantics of production
+        BNUPEvaluator.evaluate_eval_expression (fusion-k12-teacher
+        eval_harness.py: params.xxx -> params_val['xxx'], eval with
+        restricted globals) — no cross-project import (CI does not install
+        fusion-k12-teacher, and trainer does not depend on it), but asserts
+        the same semantics: a drifted key missing from the params_val
+        lookup (KeyError) means evaluation failed."""
 
         def _eval_pipeline(pipeline, parameters):
             params_val = {
@@ -254,6 +268,7 @@ class TestGenerateNegatives:
         negatives = generate_negatives(
             chosen_response=_VALID_RESPONSE,
             dsl_dict=_VALID_DSL,
+            # i18n: user-facing
             question="题目",
             formula="V=S*h",
             answer="60",
@@ -264,11 +279,11 @@ class TestGenerateNegatives:
             dsl_content = _extract_dsl_content(neg)
             ok, _msg = validate_dsl_str(dsl_content)
             if ok:
-                # 语义负例 (param_drift): 必须在求值器下失败
+                # Semantic negative (param_drift): must fail under the evaluator
                 dsl = json.loads(dsl_content)
                 with pytest.raises((KeyError, NameError)):
                     _eval_pipeline(dsl["pipeline"], dsl["parameters"])
-            # 静态负例由 _assert_negative_fails 覆盖 (其余测试)
+            # Static negatives are covered by _assert_negative_fails (other tests)
 
     def test_valid_dsl_passes_validation(self):
         ok, msg = validate_dsl_str(json.dumps(_VALID_DSL, ensure_ascii=False))

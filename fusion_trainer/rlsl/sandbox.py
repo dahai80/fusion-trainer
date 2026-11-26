@@ -47,6 +47,7 @@ _TRUSTED_ENV = "FUSION_CODE_SANDBOX_TRUSTED"
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.DOTALL | re.IGNORECASE)
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]*)\}", re.DOTALL)
 _CODE_BLOCK_RE = re.compile(r"```(?:python)?\s*(.*?)\s*```", re.DOTALL)
+# i18n: user-facing
 _FINAL_ANSWER_RE = re.compile(
     r"(?:final answer|答案|最终答案)\s*[:：]?\s*(.+?)(?:\n|$)",
     re.DOTALL | re.IGNORECASE,

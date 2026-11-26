@@ -503,8 +503,8 @@ class TestRewardServer:
 
 class TestRMRewardServer:
     def test_forwards_to_score_reward(self):
-        # GRPO 回调 {prompt, completions} -> 转调 client.score_reward(#431)
-        # -> 返回真实 RM 分数。验证闭环转发与参数传递。
+        # GRPO callback {prompt, completions} -> forwards to client.score_reward (#431)
+        # -> returns the real RM score. Verifies loop forwarding and parameter passing.
         import httpx
 
         from fusion_trainer.rlsl.rm_reward_server import RMRewardServer

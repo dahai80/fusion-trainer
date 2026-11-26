@@ -12,7 +12,8 @@ class SFTUnsupportedError(RuntimeError):
 
     QLoRA (quantized-base LoRA) and MXFP8 mixed-precision training require
     server-side support in fusion-mlx's FineTuneConfig. Per the project rule
-    ("只能对接fusion-mlx...遇到上游问题，先提issue，在提pr"), fusion-trainer talks to
+    ("integrate with fusion-mlx only ... for upstream issues, file an issue
+    first, then a PR"), fusion-trainer talks to
     fusion-mlx over HTTP only and never imports mlx-lm directly, so these
     capabilities must live upstream. They do not exist yet
     (tracked in fusion-mlx#402). Until it lands, _build_mlx_config fails

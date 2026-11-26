@@ -265,14 +265,16 @@ class SFTTrainer:
     def _build_mlx_config(self) -> dict[str, Any]:
         """Map SFTConfig → fusion-mlx FineTuneConfig dict.
 
-        fusion-mlx #402/#425 已落地:fine_tune_type = lora | dora | full | qlora,
-        FineTuneConfig 含 quantize_base / quant_bits / mxfp8 字段。
-        - QLoRA:fine_tune_type="qlora" + quantize_base=True,真实量化基座。
-        - MXFP8:上游 service.py 路由到 8-bit QLoRA 路径(quantize_base=True,
-          quant_bits=8, fine_tune_type=qlora)。MLX 0.32 无原生 fp8 dtype,
-          语义=8-bit frozen base + LoRA 省显存,非 fp8 计算。mxfp8+full 矛盾
-          (full 解冻基座无物可量化),上游 fail-visible raise。本仓库透传 mxfp8
-          字段,由上游决定语义。
+        fusion-mlx #402/#425 landed: fine_tune_type = lora | dora | full | qlora,
+        FineTuneConfig has quantize_base / quant_bits / mxfp8 fields.
+        - QLoRA: fine_tune_type="qlora" + quantize_base=True, truly quantized base.
+        - MXFP8: upstream service.py routes to the 8-bit QLoRA path
+          (quantize_base=True, quant_bits=8, fine_tune_type=qlora). MLX 0.32
+          has no native fp8 dtype; semantics = 8-bit frozen base + LoRA for
+          memory saving, not fp8 compute. mxfp8+full is contradictory (full
+          unfreezes the base so there is nothing to quantize); the upstream
+          raises fail-visibly. This repo passes the mxfp8 field through and
+          lets upstream decide the semantics.
         """
         method = self.sft_cfg.method
 
@@ -405,9 +407,10 @@ class SFTTrainer:
                 fine_tune_type,
                 qb,
             )
-        # #402/#425 已落地:透传 mxfp8。上游路由到 8-bit QLoRA(quantize_base=True,
-        # quant_bits=8, fine_tune_type=qlora),语义=8-bit frozen base LoRA 省显存,
-        # 非 fp8 计算。mxfp8+full 矛盾→上游 fail-visible raise。
+        # #402/#425 landed: pass mxfp8 through. Upstream routes to 8-bit QLoRA
+        # (quantize_base=True, quant_bits=8, fine_tune_type=qlora); semantics =
+        # 8-bit frozen base LoRA for memory saving, not fp8 compute. mxfp8+full
+        # is contradictory -> upstream fail-visible raise.
         if self.sft_cfg.use_mxfp8:
             if fine_tune_type == "full":
                 raise MLXFineTuneError(

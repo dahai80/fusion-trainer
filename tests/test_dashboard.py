@@ -266,6 +266,7 @@ def test_dashboard_page_served():
     client = TestClient(bs.app)
     r = client.get("/dashboard")
     assert r.status_code == 200
+    # i18n: user-facing
     assert "训练闭环看板" in r.text
 
 

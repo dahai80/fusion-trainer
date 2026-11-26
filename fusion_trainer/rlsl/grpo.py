@@ -23,8 +23,9 @@ Two backends (config.rlsl.grpo_backend):
     (upstream dahai80/fusion-mlx#363 Phase 2, landed 2026-08-05). fusion-mlx
     runs the GRPO loop server-side and calls back a local reward HTTP endpoint
     (reward_server.py -> sandbox.reward_completion) to score completions.
-    Per the project rule ("只能对接fusion-mlx...遇到上游问题，先提issue，
-    在提pr"), this path talks ONLY to fusion-mlx's HTTP API.
+    Per the project rule ("integrate with fusion-mlx only ... for upstream
+    issues, file an issue first, then a PR"), this path talks ONLY to
+    fusion-mlx's HTTP API.
 
 Importers/callers: fusion_trainer.rlsl.pipeline.RLSLEngine (method="grpo")
 Affected API: GRPOTrainer(config).train(dataset) -> dict

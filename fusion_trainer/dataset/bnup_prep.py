@@ -21,6 +21,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# i18n: user-facing
 DEFAULT_SYSTEM_PROMPT = (
     "你是一名北师大版 K-12 数学苏格拉底讲师。"
     "请分析题目，先在 <thinking> 标签内输出思考链，"
@@ -153,7 +154,7 @@ def process_raw_sft(
         output_file,
     )
     print(
-        f"✅ SFT 数据集构建完成：有效样本 {len(sft_data)} 条，"
-        f"跳过非法样本 {skipped} 条。已输出至 {output_file}"
+        f"✅ SFT dataset build complete: {len(sft_data)} valid samples, "
+        f"{skipped} invalid samples skipped. Written to {output_file}"
     )
     return {"valid": len(sft_data), "skipped": skipped, "total": total}

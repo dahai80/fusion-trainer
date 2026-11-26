@@ -37,8 +37,8 @@ def _make_config(method: str = "dpo", **kwargs) -> TrainerConfig:
 
 
 def _patch_pref_client(monkeypatch, final_status="completed"):
-    # Patch MLXFineTuneClient 让 DPO/ORPO 跑通,不连真实 fusion-mlx。
-    # 记录 create_dpo_job/create_orpo_job 调用供断言。
+    # Patch MLXFineTuneClient so DPO/ORPO run without hitting a real fusion-mlx.
+    # Record create_dpo_job/create_orpo_job calls for assertions.
     calls: list[dict] = []
 
     class _FakeClient:
@@ -82,8 +82,8 @@ def _patch_pref_client(monkeypatch, final_status="completed"):
 
 
 def _patch_reward_client(monkeypatch, final_status="completed", progress=None):
-    # Patch MLXFineTuneClient 让 RewardTrainer 跑通,不连真实 fusion-mlx。
-    # 记录 create_reward_job 调用供断言。
+    # Patch MLXFineTuneClient so RewardTrainer runs without hitting a real fusion-mlx.
+    # Record create_reward_job calls for assertions.
     calls: list[dict] = []
 
     class _FakeClient:
@@ -113,7 +113,7 @@ def _patch_reward_client(monkeypatch, final_status="completed", progress=None):
             }
 
         def score_reward(self, model_id, adapter_name, prompt, completions):
-            # 默认真实 RM 打分(非 length fallback),供 predict 走 #431。
+            # Default real RM scoring (not length fallback), so predict goes through #431.
             return {
                 "rewards": [0.9, 0.1],
                 "model_id": model_id,
@@ -127,9 +127,11 @@ def _patch_reward_client(monkeypatch, final_status="completed", progress=None):
 
 
 def _patch_grpo_and_score_client(monkeypatch):
-    # patch fusion_trainer.mlx_client.MLXFineTuneClient(Phase2 在 _run_rlsl 内
-    # 本地 import),提供 create_grpo_job/wait_for_grpo_job/score_reward。
-    # score_reward 会被 RMRewardServer 回调调用(返回真实 reward,非 length fallback)。
+    # Patch fusion_trainer.mlx_client.MLXFineTuneClient (Phase2 does a local
+    # import inside _run_rlsl), providing
+    # create_grpo_job/wait_for_grpo_job/score_reward.
+    # score_reward is called back by RMRewardServer (returns real reward, not
+    # the length fallback).
     calls: dict = {"create": [], "score": []}
 
     class _FakeClient:
@@ -164,7 +166,7 @@ def _patch_grpo_and_score_client(monkeypatch):
                     "completions": completions,
                 }
             )
-            # 真实 RM 分数(非 length fallback 58.0),验证闭环打分走的是 RM。
+            # Real RM score (not the length fallback 58.0); verifies loop scoring goes through the RM.
             return {
                 "rewards": [0.9, 0.1],
                 "model_id": model_id,
@@ -188,8 +190,8 @@ class TestRewardTrainer:
         assert trainer is not None
 
     def test_train_real(self, monkeypatch):
-        # fusion-mlx #424 已落地:reward 经 /admin/api/fine-tune/reward/jobs 真实训练。
-        # patch 须在实例化前(RewardTrainer.__init__ 创建 client)。
+        # fusion-mlx #424 landed: reward really trained via /admin/api/fine-tune/reward/jobs.
+        # Patch must happen before instantiation (RewardTrainer.__init__ creates the client).
         calls = _patch_reward_client(monkeypatch)
         trainer = RewardTrainer(_make_config("rlsl"))
         data = _make_preference_data(4)
@@ -225,13 +227,13 @@ class TestRewardTrainer:
         assert result["method"] == "reward_model"
 
     def test_predict_without_trained_adapter_raises(self):
-        # 未先 train() -> 没有 adapter -> fail visibly(指向 #431)。
+        # No train() first -> no adapter -> fail visibly (points at #431).
         trainer = RewardTrainer(_make_config("rlsl"))
         with pytest.raises(RLSLUnsupportedError, match="train\\(\\) first"):
             trainer.predict("/fake/model", ["hello", "world"])
 
     def test_predict_real_via_score_reward(self, monkeypatch):
-        # train() 后 predict 经上游 reward/score(#431)真实打分。
+        # After train(), predict scores via upstream reward/score (#431).
         _patch_reward_client(monkeypatch)
         trainer = RewardTrainer(_make_config("rlsl"))
         trainer.train(_make_preference_data(2))
@@ -251,8 +253,8 @@ class TestDPOTrainer:
         assert trainer is not None
 
     def test_train_real(self, monkeypatch):
-        # fusion-mlx #399 已落地:DPO 经 /admin/api/fine-tune/dpo/jobs 真实训练。
-        # patch 须在实例化前(DPOTrainer.__init__ 创建 client)。
+        # fusion-mlx #399 landed: DPO really trained via /admin/api/fine-tune/dpo/jobs.
+        # Patch must happen before instantiation (DPOTrainer.__init__ creates the client).
         calls = _patch_pref_client(monkeypatch)
         trainer = DPOTrainer(_make_config("dpo"))
         data = _make_preference_data(4)
@@ -337,7 +339,7 @@ class TestORPOTrainer:
         assert trainer is not None
 
     def test_train_real(self, monkeypatch):
-        # fusion-mlx #399 已落地:ORPO 经 /admin/api/fine-tune/orpo/jobs 真实训练。
+        # fusion-mlx #399 landed: ORPO really trained via /admin/api/fine-tune/orpo/jobs.
         calls = _patch_pref_client(monkeypatch)
         trainer = ORPOTrainer(_make_config("orpo"))
         data = _make_preference_data(3)
@@ -488,8 +490,8 @@ class TestRLSLEngine:
                 ),
                 cache_path=tmpdir,
             )
-            # RLSL 闭环: Phase1 RM 训练(#424) -> Phase2 真实 GRPO(#363),
-            # reward 信号走本机 RM reward server -> 上游 reward/score(#431)。
+            # RLSL loop: Phase1 RM training (#424) -> Phase2 real GRPO (#363),
+            # reward signal via the local RM reward server -> upstream reward/score (#431).
             _patch_reward_client(monkeypatch)
             grpo_calls = _patch_grpo_and_score_client(monkeypatch)
             engine = RLSLEngine(config)

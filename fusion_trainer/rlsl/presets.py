@@ -72,7 +72,7 @@ RLSL_PRESETS: dict[str, dict] = {
         "memory_estimate_gb": 62,
     },
     "bnup_dpo_32b": {
-        "description": "BNUP DPO preference alignment for Qwen2.5-32B (北师大版, beta=0.1, issue #59)",
+        "description": "BNUP DPO preference alignment for Qwen2.5-32B (BNUP, beta=0.1, issue #59)",
         "method": "dpo",
         "beta": 0.1,
         "batch_size": 1,

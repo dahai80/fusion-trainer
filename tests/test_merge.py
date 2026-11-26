@@ -80,6 +80,7 @@ class TestExportMergedModel:
 
 class TestValidateMergedModel:
     def test_valid_response(self):
+        # i18n: user-facing
         response = (
             '<thinking>\n思考过程\n</thinking>\n<dsl>\n{"meta": {"id": "x"}}\n</dsl>'
         )
@@ -96,6 +97,7 @@ class TestValidateMergedModel:
         assert result["valid"] is False
 
     def test_missing_dsl(self):
+        # i18n: user-facing
         response = "<thinking>\n思考\n</thinking>\n答案"
         result = validate_merged_model(response)
         assert result["has_dsl"] is False
