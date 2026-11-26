@@ -109,7 +109,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def _lifespan(_: Any):
     # Issue #72: register the console as a fusion-gateway shell module and
-    # keep it heartbeating, so the shell sidebar lists 训练 and the gateway
+    # keep it heartbeating, so the shell sidebar lists the trainer and the gateway
     # proxy (/shell/fusion-trainer/) is the user-facing entry. Env-gated —
     # never fatal to the bridge itself.
     task = None

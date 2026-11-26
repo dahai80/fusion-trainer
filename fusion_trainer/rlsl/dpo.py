@@ -48,14 +48,15 @@ class DPOTrainer:
             self._client.close()
 
     def _build_dpo_config(self) -> dict[str, Any]:
-        # 映射 RLSLConfig → fusion-mlx DPOConfig 字段(dpo.py:32)。
-        # method 由端点强制,这里不设(避免与端点冲突)。
+        # Map RLSLConfig -> fusion-mlx DPOConfig fields (dpo.py:32).
+        # method is forced by the endpoint; do not set it here (avoid conflict).
         total_pairs = max(1, len(self._pairs))
         batch_size = max(1, int(self.rlsl_cfg.batch_size))
-        # A5: iters = 梯度更新步数 = epoch * (total // batch_size)。旧公式
-        # num_epochs * total_pairs 把每个样本当一步,忽略 batch 聚合,按
-        # batch_size 倍数过训练(4x 算力浪费 + 过拟合风险)。与 SFT trainer
-        # steps_per_epoch = total // batch_size 对齐。
+        # A5: iters = gradient update steps = epoch * (total // batch_size).
+        # The old formula num_epochs * total_pairs treated each sample as a
+        # step, ignored batch aggregation, and over-trained by a factor of
+        # batch_size (4x compute waste + overfitting risk). Aligned with the
+        # SFT trainer's steps_per_epoch = total // batch_size.
         steps_per_epoch = max(1, total_pairs // batch_size)
         iters = self.rlsl_cfg.num_epochs * steps_per_epoch
         cfg: dict[str, Any] = {
@@ -188,7 +189,7 @@ class DPOTrainer:
 
     @staticmethod
     def _normalize_pairs(dataset: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # fusion-mlx 要求每对含 prompt/chosen/rejected。兼容 {input,chosen,rejected}。
+        # fusion-mlx requires prompt/chosen/rejected in every pair. Also accepts {input,chosen,rejected}.
         pairs = []
         for item in dataset:
             prompt = item.get("prompt") or item.get("input") or ""

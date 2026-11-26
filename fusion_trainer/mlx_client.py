@@ -696,7 +696,8 @@ class MLXFineTuneClient:
         adapter_name: str = "",
         method: str = "dpo",
     ) -> dict[str, Any]:
-        # method in {"dpo","orpo"}:选端点。fusion-mlx 路由会强制 config.method 匹配端点。
+        # method in {"dpo","orpo"}: pick the endpoint. fusion-mlx routing forces
+        # config.method to match the endpoint.
         path = DPO_JOBS_PATH if method == "dpo" else ORPO_JOBS_PATH
         body = {
             "model_id": model_id,
@@ -732,7 +733,8 @@ class MLXFineTuneClient:
         )
 
     def get_dpo_job(self, job_id: str) -> dict[str, Any]:
-        # DPO 与 ORPO 共用 /dpo/jobs/{id} 查询端点(fusion-mlx 路由:GET /dpo/jobs/{id})。
+        # DPO and ORPO share the /dpo/jobs/{id} status endpoint
+        # (fusion-mlx route: GET /dpo/jobs/{id}).
         return self._poll_get(f"{self._base}{DPO_JOBS_PATH}/{job_id}")
 
     def cancel_dpo_job(self, job_id: str) -> dict[str, Any]:
@@ -759,7 +761,7 @@ class MLXFineTuneClient:
         timeout: float = 86400.0,
         is_canceled=None,
     ) -> dict[str, Any]:
-        # 轮询 DPO/ORPO job 到终态。事件流同 SFT/GRPO 模式。
+        # Poll a DPO/ORPO job to terminal state. Event stream follows the SFT/GRPO pattern.
         deadline = time.monotonic() + timeout
         last_seen = 0
         cursor = _JobEventCursor()
@@ -787,7 +789,7 @@ class MLXFineTuneClient:
 
     # ------------------------------------------------------------------
     # Reward-model job lifecycle (fusion-mlx #424:
-    # /admin/api/fine-tune/reward/jobs — Bradley-Terry value-head 训练)
+    # /admin/api/fine-tune/reward/jobs — Bradley-Terry value-head training)
     # ------------------------------------------------------------------
 
     def create_reward_job(
@@ -797,8 +799,8 @@ class MLXFineTuneClient:
         config: dict[str, Any] | None = None,
         adapter_name: str = "",
     ) -> dict[str, Any]:
-        # 训练一个标量 reward head,使 chosen 分数 > rejected(Bradley-Terry)。
-        # preference_pairs 每对含 prompt/chosen/rejected。无 reference model。
+        # Train a scalar reward head so chosen scores above rejected (Bradley-Terry).
+        # Each preference_pairs entry has prompt/chosen/rejected. No reference model.
         body = {
             "model_id": model_id,
             "preference_pairs": preference_pairs,
@@ -845,7 +847,7 @@ class MLXFineTuneClient:
         timeout: float = 86400.0,
         is_canceled=None,
     ) -> dict[str, Any]:
-        # 轮询 reward job 到终态。progress 含 loss/reward_margin/acc_chosen。
+        # Poll a reward job to terminal state. progress includes loss/reward_margin/acc_chosen.
         deadline = time.monotonic() + timeout
         last_seen = 0
         cursor = _JobEventCursor()
@@ -878,10 +880,11 @@ class MLXFineTuneClient:
         prompt: str,
         completions: list[str],
     ) -> dict[str, Any]:
-        # fusion-mlx #431: 用已训练的 RM adapter 对 (prompt, completions) 打分。
-        # POST /admin/api/fine-tune/reward/score -> {rewards, model_id, adapter_name}。
-        # 上游端点要求 model_id/adapter_name(可放 body 或 query),prompt 非空,
-        # completions 非空 list;不存在 adapter 返回 404,非 RM 返回 400。
+        # fusion-mlx #431: score (prompt, completions) with a trained RM adapter.
+        # POST /admin/api/fine-tune/reward/score -> {rewards, model_id, adapter_name}.
+        # The upstream endpoint requires model_id/adapter_name (body or query),
+        # non-empty prompt, non-empty completions list; missing adapter -> 404,
+        # non-RM model -> 400.
         body = {
             "model_id": model_id,
             "adapter_name": adapter_name,

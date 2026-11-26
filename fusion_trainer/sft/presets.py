@@ -207,7 +207,7 @@ SFT_PRESETS: dict[str, dict] = {
         "memory_estimate_gb": 12,
     },
     "bnup_sft_32b": {
-        "description": "BNUP 8-bit QDoRA SFT for Qwen2.5-32B (北师大版 K-12 math, <thinking>+<dsl> format, issue #59; PRD baseline per #63)",
+        "description": "BNUP 8-bit QDoRA SFT for Qwen2.5-32B (BNUP K-12 math, <thinking>+<dsl> format, issue #59; PRD baseline per #63)",
         "model_type": "lm",
         "method": "qdora",
         "quant_bits": 8,

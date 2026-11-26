@@ -75,6 +75,7 @@ def make_direct_answer(question: str, formula: str, answer: str) -> str:
     <dsl> block — the anti-pattern DPO should punish (answer-dumping
     instead of guided Socratic derivation).
     """
+    # i18n: user-facing
     return f"直接计算得：{answer}。\n公式：{formula}"
 
 
@@ -143,12 +144,14 @@ def make_format_drift(dsl_dict: dict[str, Any]) -> str:
     return json.dumps(renamed, ensure_ascii=False)
 
 
-# Real E1 failure vocabulary (e2e_28final.json per_sample: "eval exec: '每排'"
-# "eval exec: 'cols'" "eval exec: 'row_count'" "eval exec: 'T_bridge'"
+# Real E1 failure vocabulary (e2e_28final.json per_sample: "eval exec:
+# '<rows drift alias>'" "eval exec: 'cols'" "eval exec: 'row_count'"
+# "eval exec: 'T_bridge'"
 # "eval exec: 'L_wire'" "eval exec: 'v_cone'" "eval exec: '31'" — the model
 # defined parameters but referenced drifted names in pipeline.eval). Each
 # entry maps a live eval reference to the drift form observed in production.
 _DRIFT_SUFFIXES = ("s", "_count", "_total", "_per_row", "_each", "_val")
+# i18n: user-facing
 _DRIFT_TRANSLATE = {
     "rows": "每排",
     "cols": "列数",
@@ -172,26 +175,26 @@ def _drift_variants(name: str) -> list[str]:
     """Return plausible drift spellings for a parameter name (real E1 forms)."""
     out: list[str] = []
     low = name.lower()
-    # 1. 中文同义名 (最高频 E1 形态: '每排' 代替 rows)
+    # 1. Chinese synonym names (highest-frequency E1 form: per-row alias for rows)
     zh = _DRIFT_TRANSLATE.get(low)
     if zh:
         out.append(zh)
-    # 2. 缩写 (cols 代替 columns / cnt 代替 count)
+    # 2. Abbreviations (cols for columns / cnt for count)
     if low.endswith("count"):
         out.append(low[:-5] + "s" if not low.endswith("s") else low[:-1])
         out.append("cnt_" + low.replace("_count", ""))
     elif low.endswith("s") and len(low) > 3:
         out.append(low[:-1])
-    # 3. 大小写漂移 (T_bridge 代替 t_bridge — 真实样本原样)
+    # 3. Case drift (T_bridge for t_bridge — verbatim from a real sample)
     cased = name.translate(_DRIFT_CASE)
     if cased != name:
         out.append(cased)
-    # 4. 后缀漂移 (_total/_val/_each 附加)
+    # 4. Suffix drift (_total/_val/_each appended)
     for suf in _DRIFT_SUFFIXES:
         cand = name + suf
         if cand != name:
             out.append(cand)
-    # 去重保序
+    # Deduplicate, preserving order
     seen: set[str] = set()
     uniq = []
     for cand in out:
@@ -205,8 +208,9 @@ def make_param_drift(dsl_dict: dict[str, Any], rng: random.Random | None = None)
     """Rewrite one pipeline.eval reference to an UNDEFINED parameter name.
 
     The #1 real-model failure mode (10/18 fixable errors in e2e_28final):
-    parameters defines L_bridge, eval references 每排/cols/T_bridge. The
-    drift name is chosen from the observed-failure vocabulary; JSON stays
+    parameters defines L_bridge, eval references a Chinese rows alias /
+    cols / T_bridge. The drift name is chosen from the observed-failure
+    vocabulary; JSON stays
     valid and schema passes (parameters schema is unconstrained) — the
     break only surfaces at eval execution (NameError), exactly mirroring
     production. Also may inline a bare number literal (real '31' failure).
@@ -256,9 +260,9 @@ def generate_negatives(
 
     if dsl_dict:
         drift_negs = [
-            make_param_drift(dsl_dict, random),  # E1 头号失败模式 (#28)
+            make_param_drift(dsl_dict, random),  # E1 top failure mode (#28)
             make_param_drift(dsl_dict, random),
-        ]  # 双份提高密度 (去重后仍常为 2)
+        ]  # Duplicated to raise density (still usually 2 after dedup)
         others = [
             make_broken_json(dsl_str),
             make_wrong_visual_type(dsl_dict),
@@ -271,10 +275,13 @@ def generate_negatives(
         make_missing_tag(chosen_response),
     ]
 
-    # 选择: 负例总数 ≤5 (文档契约); param_drift 优先占 2 席 —
-    # neg_ratio=3 时 drift 密度最高, 直击 E1; 其余席位从静态负例池随机填充。
-    # 去重保序: 两次 make_param_drift 可能撞出同一负例 (同一 spot + 同一
-    # 变体), 撞了就用静态负例补位 — "distinct" 是文档契约, 不靠运气。
+    # Selection: at most 5 negatives total (doc contract); param_drift
+    # takes the first 2 slots — highest drift density at neg_ratio=3,
+    # hitting E1 directly; remaining slots are filled from the static
+    # negative pool at random.
+    # Dedup, order-preserving: two make_param_drift calls can collide on
+    # the same negative (same spot + same variant); on collision a static
+    # negative fills the slot — "distinct" is a doc contract, not luck.
     count = max(0, min(neg_ratio, 5))
     random.shuffle(others)
     seen: set[str] = set()

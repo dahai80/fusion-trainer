@@ -79,11 +79,13 @@ def _sft_to_dpo_pair(
 def _try_extract_answer(response: str) -> str:
     """Best-effort extract a numeric answer from <thinking> or formula text.
 
-    Looks for patterns like 'V_削 = 40' or '结果：40'. Returns "" if not found.
+    Looks for patterns like '<var> = 40' or a Chinese result label followed
+    by a number. Returns "" if not found.
     Used to make direct-answer negatives more realistic.
     """
     import re
 
+    # i18n: user-facing
     match = re.search(r"(?:=|结果[：:])\s*(\d+(?:\.\d+)?)", response)
     if match:
         return match.group(1)
@@ -141,8 +143,8 @@ def create_dpo_pairs(
         dpo_output,
     )
     print(
-        f"✅ DPO 数据集构建完成：共生成 {len(dpo_samples)} 对偏好对比数据"
-        f"（{sample_count} 样本 × {neg_ratio} 负例）。已输出至 {dpo_output}"
+        f"✅ DPO dataset build complete: generated {len(dpo_samples)} preference pairs "
+        f"({sample_count} samples x {neg_ratio} negatives). Written to {dpo_output}"
     )
     return {
         "pairs": len(dpo_samples),
