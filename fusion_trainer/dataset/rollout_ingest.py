@@ -165,6 +165,73 @@ def load_rollout_sink(path: Path) -> tuple[list[dict[str, Any]], str]:
     return records, digest
 
 
+def load_outcome_sidecar(path: Path) -> dict[str, dict[str, Any]]:
+    """Load an outcome sidecar JSONL -> {rollout_id: outcome} (#97).
+
+    Sidecar records (e.g. office-api rollout-outcomes.jsonl) carry
+    schema_version/rollout_id/outcome and no `source` field — the
+    gateway tap contract always writes `source` and never `outcome`
+    (docs/rollout-tap.md). The latest record per rollout_id wins
+    (append-only file). Malformed lines are skipped loudly.
+    """
+    if not path.is_file():
+        raise RolloutIngestError(f"outcome sidecar not found: {path}")
+    outcomes: dict[str, dict[str, Any]] = {}
+    bad = 0
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                bad += 1
+                logger.warning("skip sidecar line %d: not JSON", lineno)
+                continue
+            if not (
+                isinstance(rec, dict)
+                and rec.get("schema_version") == ROLLOUT_SCHEMA_VERSION
+                and rec.get("rollout_id")
+                and isinstance(rec.get("outcome"), dict)
+            ):
+                bad += 1
+                logger.warning(
+                    "skip sidecar line %d (rollout %s): not an outcome record",
+                    lineno,
+                    rec.get("rollout_id", "?") if isinstance(rec, dict) else "?",
+                )
+                continue
+            outcomes[str(rec["rollout_id"])] = rec["outcome"]
+    if not outcomes:
+        raise RolloutIngestError(
+            f"no outcome records in {path} (skipped {bad} bad lines)"
+        )
+    if bad:
+        logger.warning(
+            "sidecar: %d outcomes loaded, %d bad lines skipped", len(outcomes), bad
+        )
+    logger.info("loaded %d outcomes from sidecar %s", len(outcomes), path)
+    return outcomes
+
+
+def join_outcomes(
+    records: list[dict[str, Any]], outcomes: dict[str, dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Backfill tap records without an inline outcome from the sidecar
+    map (#97). Inline outcomes always win; returns (records, joined)."""
+    joined = 0
+    for rec in records:
+        if isinstance(rec.get("outcome"), dict):
+            continue
+        outcome = outcomes.get(str(rec.get("rollout_id")))
+        if outcome is not None:
+            rec["outcome"] = dict(outcome)
+            joined += 1
+    logger.info("sidecar join: %d/%d tap records backfilled", joined, len(records))
+    return records, joined
+
+
 def positive_rollouts(
     records: list[dict[str, Any]], min_score: float = 1.0
 ) -> list[dict[str, Any]]:
@@ -206,7 +273,9 @@ def rollouts_to_sft(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             sample["tools"] = rec["tools"]
         samples.append(sample)
     if skipped:
-        logger.warning("dropped %d/%d rollouts with invalid tool structure", skipped, len(records))
+        logger.warning(
+            "dropped %d/%d rollouts with invalid tool structure", skipped, len(records)
+        )
     logger.info(
         "built %d SFT samples from %d positive rollouts", len(samples), len(records)
     )
@@ -267,6 +336,7 @@ def build_from_rollouts(
     sft_output_path: Path | None = None,
     grpo_output_path: Path | None = None,
     min_score: float = 1.0,
+    outcomes_path: Path | None = None,
 ) -> dict[str, Any]:
     """Full ingestion: sink -> SFT dataset and/or GRPO prompt set + manifest.
 
@@ -274,12 +344,19 @@ def build_from_rollouts(
     `<output>.from_rollouts.json` (atomic) and carries the sink sha256 —
     SFTTrainer picks it up automatically and records the run's rollout
     source (#86 traceability, mirrors the from-eval sidecar of #76).
+    `outcomes_path` (optional, #97) names an outcome sidecar JSONL whose
+    records are joined by rollout_id to backfill tap records written
+    without an inline outcome.
     """
     if sft_output_path is None and grpo_output_path is None:
         raise RolloutIngestError(
             "nothing to write: pass --output (SFT) and/or --grpo-output (GRPO prompts)"
         )
     records, digest = load_rollout_sink(sink_path)
+    joined = 0
+    if outcomes_path is not None:
+        outcomes = load_outcome_sidecar(outcomes_path)
+        records, joined = join_outcomes(records, outcomes)
 
     sft_samples: list[dict[str, Any]] = []
     if sft_output_path is not None:
@@ -314,6 +391,8 @@ def build_from_rollouts(
         "source": "gateway-rollout-tap",
         "sink_path": str(sink_path),
         "sink_sha256": digest,
+        "outcomes_path": str(outcomes_path) if outcomes_path else "",
+        "outcomes_joined": joined,
         "min_score": min_score,
         "sft_path": str(sft_output_path) if sft_output_path else "",
         "sft_samples": len(sft_samples),
@@ -325,7 +404,11 @@ def build_from_rollouts(
             "source": "gateway-rollout-tap",
             "source_path": str(sink_path),
             "source_sha256": digest,
-            "transforms": ["positive_rollouts", "rollouts_to_sft"],
+            "transforms": (
+                ["join_outcomes", "positive_rollouts", "rollouts_to_sft"]
+                if outcomes_path
+                else ["positive_rollouts", "rollouts_to_sft"]
+            ),
             "output": str(sft_output_path or grpo_output_path),
         },
     }

@@ -42,6 +42,15 @@ observe the result (cowork node completion, app feedback hook). A
 record without `outcome` is still valid — it feeds GRPO prompt sets
 but never the positive SFT set.
 
+Outcome sidecars (#97): producers that cannot write into the tap file
+(e.g. office-api `rollout-outcomes.jsonl`) append outcome records to a
+separate JSONL instead — same schema, identified by carrying `outcome`
+and no `source` field (the tap contract always writes `source` and
+never `outcome`). The trainer joins them reader-side by `rollout_id`
+(inline outcomes win): `ft datasets from-rollouts --outcomes <sidecar>`
+and the dashboard `rollout_section` both apply the join; sidecar lines
+are never counted as separate trajectories.
+
 ```json
 {
   "schema_version": 1,
@@ -77,7 +86,7 @@ reads a sink that was not produced for its tenant.
 | API key | per-key override (deny beats allow) | off |
 | routes | `/v1/chat/completions`, `/v1/completions` | both |
 | PII gate | `redact` (drop content, keep shapes) / `raw` | redact |
-| outcome backfill | app-observable producers only | none |
+| outcome backfill | reader-side join by `rollout_id` (trainer owns it: `ft datasets from-rollouts --outcomes <sidecar>` + dashboard `rollout_section`; #97) | none |
 
 ## Reward-signal mapping (deterministic, Rule 5)
 

@@ -213,7 +213,14 @@ def test_build_sft_no_positives_raises(tmp_path):
 def test_build_grpo_no_prompts_raises(tmp_path):
     sink = _write_sink(
         tmp_path,
-        [_rec("a", "task_success", prompt=None, messages=[{"role": "assistant", "content": "x"}])],
+        [
+            _rec(
+                "a",
+                "task_success",
+                prompt=None,
+                messages=[{"role": "assistant", "content": "x"}],
+            )
+        ],
     )
     with pytest.raises(RolloutIngestError, match="no prompts extractable"):
         build_from_rollouts(sink, None, tmp_path / "grpo.jsonl")
@@ -252,3 +259,90 @@ def test_trainer_find_manifest_picks_rollout_sidecar(tmp_path):
     manifest = find_rollout_manifest(resolved)
     assert manifest is not None
     assert manifest.get("sink_sha256")
+
+
+# ---------------------------------------------------------------------------
+# outcome sidecar join (#97)
+# ---------------------------------------------------------------------------
+
+from fusion_trainer.dataset.rollout_ingest import (  # noqa: E402
+    join_outcomes,
+    load_outcome_sidecar,
+)
+
+
+def _sidecar_line(rollout_id, signal="task_success", score=None):
+    rec = {
+        "schema_version": 1,
+        "rollout_id": rollout_id,
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "x"}],
+        "outcome": {"signal": signal},
+    }
+    if score is not None:
+        rec["outcome"]["score"] = score
+    return rec
+
+
+def test_load_outcome_sidecar_latest_wins_and_loud_skips(tmp_path):
+    p = tmp_path / "outcomes.jsonl"
+    lines = [
+        _sidecar_line("ro-1", "user_rejected"),
+        '{"broken',
+        json.dumps({"schema_version": 1, "rollout_id": "ro-x", "messages": []}),
+        _sidecar_line("ro-1", "task_success", 1.0),
+        _sidecar_line("ro-2", "user_accepted"),
+    ]
+    p.write_text(
+        "\n".join(l if isinstance(l, str) else json.dumps(l) for l in lines) + "\n",
+        encoding="utf-8",
+    )
+    outcomes = load_outcome_sidecar(p)
+    assert set(outcomes) == {"ro-1", "ro-2"}
+    assert outcomes["ro-1"]["signal"] == "task_success"
+
+
+def test_load_outcome_sidecar_missing_raises(tmp_path):
+    with pytest.raises(RolloutIngestError, match="not found"):
+        load_outcome_sidecar(tmp_path / "nope.jsonl")
+
+
+def test_join_outcomes_inline_wins():
+    records = [
+        _rec("ro-1", signal=None),
+        _rec("ro-2", signal="user_edited"),
+    ]
+    outcomes = {"ro-1": {"signal": "task_success"}, "ro-2": {"signal": "error"}}
+    joined, n = join_outcomes(records, outcomes)
+    assert n == 1
+    assert joined[0]["outcome"]["signal"] == "task_success"
+    assert joined[1]["outcome"]["signal"] == "user_edited"
+
+
+def test_build_sft_with_outcomes_join(tmp_path):
+    tap = _write_sink(
+        tmp_path,
+        [_rec("ro-1", signal=None), _rec("ro-2", signal=None)],
+        name="tap.jsonl",
+    )
+    side = tmp_path / "outcomes.jsonl"
+    side.write_text(
+        json.dumps(_sidecar_line("ro-1", "task_success", 1.0)) + "\n", encoding="utf-8"
+    )
+    sft_out = tmp_path / "sft.jsonl"
+    manifest = build_from_rollouts(tap, sft_out, outcomes_path=side)
+    assert manifest["outcomes_joined"] == 1
+    assert manifest["sft_samples"] == 1
+    assert manifest["lineage"]["transforms"][0] == "join_outcomes"
+    samples = [json.loads(l) for l in sft_out.read_text().splitlines()]
+    assert samples[0]["messages"][1]["content"] == "did ro-1"
+
+
+def test_build_sft_outcomes_join_still_no_positives(tmp_path):
+    tap = _write_sink(tmp_path, [_rec("ro-1", signal=None)], name="tap.jsonl")
+    side = tmp_path / "outcomes.jsonl"
+    side.write_text(
+        json.dumps(_sidecar_line("ro-9", "task_success", 1.0)) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(RolloutIngestError, match="no positive rollouts"):
+        build_from_rollouts(tap, tmp_path / "sft.jsonl", outcomes_path=side)
