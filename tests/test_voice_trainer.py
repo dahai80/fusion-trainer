@@ -37,7 +37,7 @@ class _FakeHttp:
         self._responses = list(responses)
         self.requests = []
 
-    def request(self, method, url, json=None, params=None):
+    def request(self, method, url, json=None, params=None, timeout=None):
         self.requests.append({"method": method, "url": url, "json": json})
         if len(self._responses) > 1:
             return self._responses.pop(0)
