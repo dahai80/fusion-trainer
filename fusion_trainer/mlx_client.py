@@ -59,6 +59,10 @@ VOICE_JOBS_PATH = "/admin/api/fine-tune/voice/jobs"
 VOICE_BACKENDS_PATH = "/admin/api/fine-tune/voice/backends"
 ADAPTERS_PATH = "/admin/api/fine-tune/adapters"
 MERGE_ADAPTER_PATH = "/v1/merge-adapter"
+# #104: merge_adapter is synchronous and a real merge takes minutes — the
+# 30s pooled-client default times out mid-merge. FUSION_TRAINER_MERGE_TIMEOUT
+# (seconds) overrides; 0/negative falls back to the client default.
+MERGE_CALL_TIMEOUT = 1800.0
 
 
 class MLXFineTuneError(RuntimeError):
@@ -169,12 +173,24 @@ class MLXFineTuneClient:
         params: Any = None,
         max_retries: int = 5,
         tolerate_status: tuple[int, ...] = (),
+        timeout: float | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         backoff = 1.0
         last_exc: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:
-                resp = self._http.request(method, url, json=json_body, params=params)
+                # per-call timeout overrides the pooled client default (#104);
+                # httpx's request(timeout=None) would disable timeouts entirely,
+                # so fall back to the client default sentinel instead.
+                resp = self._http.request(
+                    method,
+                    url,
+                    json=json_body,
+                    params=params,
+                    timeout=(
+                        timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
+                    ),
+                )
             except (httpx.TransportError, httpx.RequestError) as exc:
                 last_exc = exc
                 logger.warning(
@@ -988,6 +1004,7 @@ class MLXFineTuneClient:
         output_path: str = "",
         dequantize: bool = False,
         upload_repo: str = "",
+        merge_timeout: float | None = None,
     ) -> dict[str, Any]:
         """Merge a trained LoRA/DoRA adapter into the base model via fusion-mlx.
 
@@ -1002,6 +1019,20 @@ class MLXFineTuneClient:
         if "--" in model:
             model = model.replace("--", "/")
             logger.info("merge_adapter: normalized catalog id to %s", model)
+        timeout = merge_timeout
+        if timeout is None:
+            raw = os.environ.get("FUSION_TRAINER_MERGE_TIMEOUT", "").strip()
+            try:
+                timeout = float(raw) if raw else MERGE_CALL_TIMEOUT
+            except ValueError:
+                logger.warning(
+                    "FUSION_TRAINER_MERGE_TIMEOUT %r not a number — using default %ss",
+                    raw,
+                    MERGE_CALL_TIMEOUT,
+                )
+                timeout = MERGE_CALL_TIMEOUT
+        if not timeout or timeout <= 0:
+            timeout = None
         body: dict[str, Any] = {
             "model": model,
             "adapter_path": adapter_path,
@@ -1012,17 +1043,19 @@ class MLXFineTuneClient:
         if upload_repo:
             body["upload_repo"] = upload_repo
         logger.info(
-            "merge_adapter: model=%s adapter=%s -> %s (dequantize=%s)",
+            "merge_adapter: model=%s adapter=%s -> %s (dequantize=%s, timeout=%ss)",
             model,
             adapter_path,
             output_path or "(auto)",
             dequantize,
+            timeout if timeout else "client-default",
         )
         result = self._request(
             "POST",
             f"{self._base}{MERGE_ADAPTER_PATH}",
             json_body=body,
             max_retries=1,
+            timeout=timeout,
         )
         if isinstance(result, dict):
             return result

@@ -8,8 +8,10 @@ Covers the two blocking bugs for real training:
 
 from __future__ import annotations
 
+import httpx
+
 from fusion_trainer.config import _default_mlx_port
-from fusion_trainer.mlx_client import MLXFineTuneClient
+from fusion_trainer.mlx_client import MERGE_CALL_TIMEOUT, MLXFineTuneClient
 
 
 class TestDefaultPort:
@@ -115,7 +117,7 @@ class TestScoreReward:
         # A8: all egress now goes through the pooled self._http.request, so
         # mock that instead of the module-level httpx.post.
         class _FakeHttp:
-            def request(self, method, url, json=None, params=None):
+            def request(self, method, url, json=None, params=None, timeout=None):
                 captured["url"] = url
                 captured["json"] = json
                 return _Resp()
@@ -150,7 +152,7 @@ class TestScoreReward:
         from fusion_trainer.mlx_client import MLXFineTuneError
 
         class _FakeHttp:
-            def request(self, method, url, json=None, params=None):
+            def request(self, method, url, json=None, params=None, timeout=None):
                 return _Resp()
 
             def close(self):
@@ -229,12 +231,47 @@ def test_merge_adapter_normalizes_catalog_id():
         text = "{}"
 
     class _FakeHttp:
-        def request(self, method, url, json=None, params=None):
+        def request(self, method, url, json=None, params=None, timeout=None):
             captured["body"] = json
+            captured["timeout"] = timeout
             return _FakeResp()
 
     client._http = _FakeHttp()
     client.merge_adapter("mlx-community--Qwen3-0.6B-4bit", "/tmp/adapter")
     assert captured["body"]["model"] == "mlx-community/Qwen3-0.6B-4bit"
+    # #104: synchronous merge must not ride the 30s client default
+    assert captured["timeout"] == MERGE_CALL_TIMEOUT
     client.merge_adapter("sft_1795605347026_00eee724-20261125-191812", "/tmp/a")
     assert captured["body"]["model"] == "sft_1795605347026_00eee724-20261125-191812"
+
+
+def test_merge_adapter_timeout_env_and_explicit(monkeypatch):
+    client = MLXFineTuneClient(port=11434)
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"status": "ok"}
+
+        text = "{}"
+
+    class _FakeHttp:
+        def request(self, method, url, json=None, params=None, timeout=None):
+            captured["timeout"] = timeout
+            return _FakeResp()
+
+    client._http = _FakeHttp()
+    monkeypatch.setenv("FUSION_TRAINER_MERGE_TIMEOUT", "60")
+    client.merge_adapter("m", "/tmp/a")
+    assert captured["timeout"] == 60.0
+    monkeypatch.setenv("FUSION_TRAINER_MERGE_TIMEOUT", "not-a-number")
+    client.merge_adapter("m", "/tmp/a")
+    assert captured["timeout"] == MERGE_CALL_TIMEOUT
+    monkeypatch.setenv("FUSION_TRAINER_MERGE_TIMEOUT", "0")
+    client.merge_adapter("m", "/tmp/a")
+    # falls back to the client default (httpx USE_CLIENT_DEFAULT sentinel)
+    assert captured["timeout"] == httpx.USE_CLIENT_DEFAULT
+    client.merge_adapter("m", "/tmp/a", merge_timeout=99)
+    assert captured["timeout"] == 99  # explicit arg beats env
