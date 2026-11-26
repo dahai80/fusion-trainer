@@ -1683,6 +1683,10 @@ flywheel_app = typer.Typer(
 )
 app.add_typer(datasets_app, name="datasets")
 app.add_typer(flywheel_app, name="flywheel")
+tasks_app = typer.Typer(
+    help="Office task registry: corpora, validator gate, synthesis (#120)"
+)
+app.add_typer(tasks_app, name="tasks")
 
 
 @datasets_app.command(name="from-eval")
@@ -1932,9 +1936,7 @@ def datasets_from_cowork(
         typer.echo(f"DPO pairs:    {manifest['dpo_pairs']} -> {manifest['dpo_path']}")
     typer.echo(f"Cowork sha256: {manifest['cowork_export_sha256']}")
     typer.echo(f"Lineage:      {manifest['lineage']['transforms']}")
-    typer.echo(
-        f"Manifest:     {manifest['sft_path']}.from_cowork.json"
-    )
+    typer.echo(f"Manifest:     {manifest['sft_path']}.from_cowork.json")
 
 
 @datasets_app.command(name="info")
@@ -1980,7 +1982,9 @@ def datasets_info(
         )
         typer.echo(f"Lineage[{name}]:")
         typer.echo(f"  source:    {lineage.get('source', manifest.get('source', '?'))}")
-        typer.echo(f"  source_path: {lineage.get('source_path', manifest.get('export_path') or manifest.get('sink_path') or manifest.get('cowork_export_path', '?'))}")
+        typer.echo(
+            f"  source_path: {lineage.get('source_path', manifest.get('export_path') or manifest.get('sink_path') or manifest.get('cowork_export_path', '?'))}"
+        )
         typer.echo(f"  sha256:    {sha[:12]}")
         typer.echo(f"  transforms: {' -> '.join(lineage.get('transforms', []))}")
         typer.echo(f"  output:    {lineage.get('output', str(path))}")
@@ -2081,9 +2085,7 @@ def flywheel_mark(
     label: str = typer.Option(
         ..., "--label", help="Round label to mark (must be unique)"
     ),
-    status: str = typer.Option(
-        ..., "--status", help="promoted | discarded"
-    ),
+    status: str = typer.Option(..., "--status", help="promoted | discarded"),
     cache_path: str = typer.Option(
         "",
         "--cache-path",
@@ -2102,8 +2104,7 @@ def flywheel_mark(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
     typer.echo(
-        f"Marked round {label!r} status={status} "
-        f"(pass_rate={entry['pass_rate']:.4f})"
+        f"Marked round {label!r} status={status} (pass_rate={entry['pass_rate']:.4f})"
     )
 
 
@@ -2137,9 +2138,7 @@ def flywheel_watch(
     once: bool = typer.Option(
         False, "--once", help="Single scan pass then exit (CI/cron friendly)"
     ),
-    interval: float = typer.Option(
-        30.0, "--interval", help="Poll interval in seconds"
-    ),
+    interval: float = typer.Option(30.0, "--interval", help="Poll interval in seconds"),
     checkpoint: str = typer.Option(
         "",
         "--checkpoint",
@@ -2171,6 +2170,185 @@ def flywheel_watch(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
     typer.echo(f"flywheel watch: {n} round(s) recorded")
+
+
+# ---------------------------------------------------------------------------
+# Office task registry (#120): corpora, validator audit gate, synthesis
+# ---------------------------------------------------------------------------
+
+
+def _registry_path(registry_path: str, cache_path: str):
+    from pathlib import Path
+
+    from fusion_trainer.config import _default_cache_path
+    from fusion_trainer.tasks import TASK_REGISTRY_FILENAME
+
+    if registry_path:
+        return Path(registry_path)
+    cache = cache_path or _default_cache_path()
+    return Path(cache) / "tasks" / TASK_REGISTRY_FILENAME
+
+
+@tasks_app.command(name="add")
+def tasks_add(
+    file: str = typer.Option(
+        ...,
+        "--file",
+        "-f",
+        help="Task definition JSON file (single object or a list of objects)",
+    ),
+    registry_path: str = typer.Option(
+        "",
+        "--registry-path",
+        help="Registry JSONL path (default: {cache}/tasks/registry.jsonl)",
+    ),
+    cache_path: str = typer.Option(
+        "", "--cache-path", help="Cache dir (default: FUSION_TRAINER_CACHE)"
+    ),
+):
+    """Add or update task definitions in the registry (append-only, latest-wins)."""
+    import json as _json
+
+    from fusion_trainer.tasks import TaskRegistryError, upsert_task
+
+    try:
+        with open(file, encoding="utf-8") as fh:
+            payload = _json.load(fh)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Error: cannot read task file {file}: {exc}", err=True)
+        raise typer.Exit(1)
+    records = payload if isinstance(payload, list) else [payload]
+    path = _registry_path(registry_path, cache_path)
+    added = 0
+    for rec in records:
+        try:
+            saved = upsert_task(path, rec)
+        except TaskRegistryError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+        added += 1
+        typer.echo(
+            f"upserted task {saved['task_id']} (stage {saved['curriculum_stage']})"
+        )
+    typer.echo(f"tasks add: {added} record(s) written to {path}")
+
+
+@tasks_app.command(name="list")
+def tasks_list(
+    registry_path: str = typer.Option("", "--registry-path"),
+    cache_path: str = typer.Option("", "--cache-path"),
+):
+    """List tasks in the registry with validator/gate status."""
+    from fusion_trainer.tasks import (
+        TaskRegistryError,
+        load_task_registry,
+        validator_gate,
+    )
+
+    path = _registry_path(registry_path, cache_path)
+    try:
+        tasks = load_task_registry(path)
+    except TaskRegistryError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    for tid, task in sorted(tasks.items()):
+        ok, reason = validator_gate(task)
+        validator = task.get("validator", {})
+        marker = "ALLOW" if ok else "MASK"
+        typer.echo(
+            f"{marker}  {tid}  stage={task.get('curriculum_stage')}  "
+            f"validator={validator.get('name')}@v{validator.get('version')} "
+            f"({validator.get('status')})  corpus={len(task.get('known_valid_solutions') or [])}"
+        )
+        if not ok:
+            typer.echo(f"      masked: {reason}")
+    typer.echo(f"tasks list: {len(tasks)} task(s)")
+
+
+@tasks_app.command(name="gate")
+def tasks_gate(
+    registry_path: str = typer.Option("", "--registry-path"),
+    cache_path: str = typer.Option("", "--cache-path"),
+):
+    """Validator audit gate report: which tasks may emit training signal."""
+    import json as _json
+
+    from fusion_trainer.tasks import TaskRegistryError, gate_report, load_task_registry
+
+    path = _registry_path(registry_path, cache_path)
+    try:
+        tasks = load_task_registry(path)
+    except TaskRegistryError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    report = gate_report(tasks)
+    typer.echo(
+        f"total: {report['total']}  allowed: {len(report['allowed'])}  "
+        f"masked: {len(report['masked'])}"
+    )
+    typer.echo(f"by_stage: {_json.dumps(report['by_stage'], sort_keys=True)}")
+    for tid in report["allowed"]:
+        typer.echo(f"  ALLOW {tid}")
+    for m in report["masked"]:
+        typer.echo(f"  MASK  {m['task_id']}  stage={m['stage']}  reason: {m['reason']}")
+
+
+@tasks_app.command(name="synthesize")
+def tasks_synthesize(
+    graph_url: str = typer.Option(
+        ...,
+        "--graph-url",
+        help="office-api GET /v1/graph URL (e.g. http://127.0.0.1:<port>/v1/graph)",
+    ),
+    registry_path: str = typer.Option("", "--registry-path"),
+    cache_path: str = typer.Option("", "--cache-path"),
+):
+    """Synthesize stage-2 tasks from the office-api entity-tool graph (#120)."""
+    import httpx
+
+    from fusion_trainer.tasks import (
+        TaskRegistryError,
+        load_task_registry,
+        synthesize_stage2_tasks,
+        upsert_task,
+    )
+
+    try:
+        resp = httpx.get(graph_url, trust_env=False, timeout=30.0)
+        resp.raise_for_status()
+        graph = resp.json()
+    except Exception as exc:
+        typer.echo(f"Error: cannot fetch graph from {graph_url}: {exc}", err=True)
+        raise typer.Exit(1)
+    try:
+        candidates = synthesize_stage2_tasks(graph)
+    except TaskRegistryError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    path = _registry_path(registry_path, cache_path)
+    existing: set[str] = set()
+    if path.is_file():
+        try:
+            existing = set(load_task_registry(path))
+        except TaskRegistryError:
+            existing = set()
+    added = 0
+    skipped = 0
+    for task in candidates:
+        if task["task_id"] in existing:
+            skipped += 1
+            continue
+        try:
+            upsert_task(path, task)
+        except TaskRegistryError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+        added += 1
+        typer.echo(f"synthesized {task['task_id']}")
+    typer.echo(
+        f"tasks synthesize: {added} added, {skipped} skipped (already registered), "
+        f"{len(candidates)} edge task(s) from graph"
+    )
 
 
 # ---------------------------------------------------------------------------
