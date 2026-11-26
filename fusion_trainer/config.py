@@ -457,6 +457,8 @@ class TrainerConfig:
 
     hub_api_key: str = field(default_factory=_default_hub_api_key)
     """API key for model-hub (Authorization: Bearer ...). Empty = no auth.
+    Must be a hub-issued fmh-* key when talking to the hub directly —
+    the gateway admin key is a different trust domain (401 by design).
     Overridable via FUSION_MODEL_HUB_API_KEY env var."""
 
     publish_adapter: bool = False

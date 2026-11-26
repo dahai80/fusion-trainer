@@ -746,7 +746,7 @@ def publish(
     hub_api_key: str = typer.Option(
         "",
         "--hub-api-key",
-        help="API key for model-hub (default: $FUSION_MODEL_HUB_API_KEY).",
+        help="API key for model-hub (default: $FUSION_MODEL_HUB_API_KEY). Direct-hub auth needs a hub-issued fmh-* key (fmh keys create) - the gateway admin key is a different trust domain and 401s.",
     ),
 ):
     """Publish a completed run's LoRA adapter to fusion-model-hub (issue #49).
