@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc35
+version: 1.0.0rc36
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,12 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc36] - 2026-11-26
+
+### Fixed
+
+- **Merged-model publish 422 + wrong idempotency partition (#113):** `publish_merged_model` sent `model_type: "mlx"`, but the hub `ModelType` enum has no `mlx` value (`mlx` is a `ModelFormat`, and the `POST /api/v1/models` `ModelCreate` schema takes no format field) — merged-model publish 422'd out of the box and the 409 idempotency lookup (`_find_existing_model(name, "mlx")`) searched the wrong type partition. A merged model now registers as `model_type=llm` in both the payload and the lookup; adapter (`lora`) and voice (`audio`) paths unchanged.
 
 ## [1.0.0rc35] - 2026-11-26
 
