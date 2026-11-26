@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc33
+version: 1.0.0rc34
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,13 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc34] - 2026-11-26
+
+### Changed
+
+- **Audit #106 closeout:** adds `CLAUDE.md` (repo guidance for agents: HTTP delegation architecture, commands, gotchas, release process) with required docs-contract frontmatter (validator 0 errors), and removes the `.gitignore` rule excluding it (rule predated the repo going public; file carries no secrets). PR #108.
+- **English source cleanup (#106/#107):** remaining Chinese comments and log strings in `fusion_trainer/`, `bridge/`, `ci/` translated to English — comment-only diff, no behavior change (PR #107, f3d2fb6).
 
 ## [1.0.0rc33] - 2026-11-26
 
