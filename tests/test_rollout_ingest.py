@@ -20,6 +20,7 @@ from fusion_trainer.dataset.rollout_ingest import (
     reward_score,
     rollouts_to_grpo,
     rollouts_to_sft,
+    struggle_features,
     tool_call_stats,
     weakness_profile,
 )
@@ -482,3 +483,68 @@ def test_build_failures_with_sft_and_lineage(tmp_path):
         "failure_rollouts",
     ]
     assert manifest["lineage"]["output"] == str(sft_out)
+
+
+def test_struggle_features_scores_and_groups():
+    dup = {"type": "function", "function": {"name": "read", "arguments": "{}"}}
+    fail_a = {
+        "rollout_id": "a",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [dup, dup]},
+        ],
+        "outcome": {"signal": "error"},
+    }
+    clean_fail = {
+        "rollout_id": "b",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "nope"},
+        ],
+        "outcome": {"signal": "user_rejected"},
+    }
+    feats = struggle_features([fail_a, clean_fail])
+    assert feats["a"]["redundant_consecutive"] == 1
+    assert feats["a"]["error_signals"] == 1
+    assert feats["a"]["struggle_score"] == round((1 + 2) / 1, 4)
+    assert feats["b"]["struggle_score"] == 0.0
+
+
+def test_weakness_profile_task_breakdown_when_present():
+    def _task_rec(rid, signal, task_id):
+        rec = _rec(rid, signal=signal)
+        rec["outcome"]["task_id"] = task_id
+        return rec
+
+    records = [
+        _task_rec("ro-1", "user_rejected", "t-1"),
+        _task_rec("ro-2", "user_rejected", "t-2"),
+        _task_rec("ro-3", "error", "t-1"),
+    ]
+    profile = weakness_profile(failure_rollouts(records))
+    assert profile["failure_by_task"] == {"t-1": 2, "t-2": 1}
+
+
+def test_weakness_profile_no_task_breakdown_when_absent():
+    profile = weakness_profile(failure_rollouts([_rec("ro-1", signal="error")]))
+    assert "failure_by_task" not in profile
+
+
+def test_build_manifest_struggle_only_nonzero(tmp_path):
+    dup = {"type": "function", "function": {"name": "read", "arguments": "{}"}}
+    fail_rec = {
+        "schema_version": 1,
+        "rollout_id": "a",
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [dup, dup]},
+        ],
+        "prompt": "go",
+        "outcome": {"signal": "error"},
+    }
+    clean_fail = _rec("ro-ok", signal="user_rejected")
+    tap = _write_sink(tmp_path, [fail_rec, clean_fail])
+    manifest = build_from_rollouts(tap, failures_output_path=tmp_path / "f.jsonl")
+    assert set(manifest["struggle"]) == {"a"}
+    assert manifest["struggle"]["a"]["redundant_consecutive"] == 1

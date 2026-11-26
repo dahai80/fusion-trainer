@@ -281,10 +281,14 @@ def weakness_profile(failures: list[dict[str, Any]]) -> dict[str, Any]:
 
     The profile is the resynthesis stage's input: which outcome signals
     dominate the failure set, with a few rollout_ids per signal to pull
-    full trajectories from the tap for targeted resynthesis.
+    full trajectories from the tap for targeted resynthesis. When
+    outcomes carry a `task_id` (office sidecar contract, #117), a
+    per-task failure breakdown rides along for budget anchoring.
     """
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
+    by_task: dict[str, int] = {}
+    has_task_id = False
     for rec in failures:
         outcome = rec.get("outcome")
         signal = (
@@ -293,11 +297,69 @@ def weakness_profile(failures: list[dict[str, Any]]) -> dict[str, Any]:
             else "unobserved"
         )
         counts[signal] = counts.get(signal, 0) + 1
+        if isinstance(outcome, dict) and outcome.get("task_id"):
+            has_task_id = True
+            tid = str(outcome["task_id"])
+            by_task[tid] = by_task.get(tid, 0) + 1
         bucket = samples.setdefault(signal, [])
         rid = rec.get("rollout_id")
         if len(bucket) < _WEAKNESS_SAMPLE_CAP and rid:
             bucket.append(str(rid))
-    return {"failure_signals": counts, "sample_rollout_ids": samples}
+    profile: dict[str, Any] = {"failure_signals": counts, "sample_rollout_ids": samples}
+    if has_task_id:
+        profile["failure_by_task"] = by_task
+    return profile
+
+
+def struggle_features(failures: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Deterministic per-rollout struggle features (#116 step-wise judge).
+
+    Groups records by rollout_id (the tap mirrors one LLM call per
+    record) and computes cheap struggle signals per group: redundant
+    consecutive tool calls and error signals per step. The score is a
+    deterministic first-pass judge — an LLM judge may layer on top
+    later, but injection eligibility must be explainable from these
+    features alone.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for rec in failures:
+        rid = str(rec.get("rollout_id") or "")
+        if rid:
+            groups.setdefault(rid, []).append(rec)
+    out: dict[str, dict[str, Any]] = {}
+    for rid, recs in groups.items():
+        tool_calls = 0
+        redundant = 0
+        errors = 0
+        prev_key: str | None = None
+        for rec in recs:
+            outcome = rec.get("outcome")
+            if isinstance(outcome, dict) and outcome.get("signal") == "error":
+                errors += 1
+            for m in rec.get("messages") or []:
+                if not isinstance(m, dict):
+                    continue
+                if m.get("role") == "user":
+                    prev_key = None
+                for call in m.get("tool_calls") or []:
+                    key = _tool_call_key(call)
+                    if key is None:
+                        continue
+                    tool_calls += 1
+                    if key == prev_key:
+                        redundant += 1
+                    prev_key = key
+        # deterministic: each error counts double a redundant call,
+        # normalized by step count so long trajectories don't dominate
+        score = round((redundant + 2 * errors) / max(1, len(recs)), 4)
+        out[rid] = {
+            "steps": len(recs),
+            "tool_calls": tool_calls,
+            "redundant_consecutive": redundant,
+            "error_signals": errors,
+            "struggle_score": score,
+        }
+    return out
 
 
 def _tool_call_key(call: Any) -> str | None:
@@ -543,6 +605,11 @@ def build_from_rollouts(
         "failures_path": str(failures_output_path) if failures_output_path else "",
         "failures_records": len(failure_records),
         "weakness": weakness_profile(failure_records),
+        "struggle": {
+            rid: feat
+            for rid, feat in struggle_features(failure_records).items()
+            if feat["struggle_score"] > 0
+        },
         "efficiency": efficiency,
         "records_total": len(records),
         "signals": _signal_counts(records),
