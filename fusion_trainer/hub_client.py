@@ -239,18 +239,21 @@ class ModelHubClient:
         architecture: str = "",
         params_size: str = "",
     ) -> dict[str, Any]:
-        """Register a merged (full) model as model_type=mlx in the hub.
+        """Register a merged (full) model as model_type=llm in the hub.
 
         Unlike publish_adapter (model_type=lora + base_model_id FK), a merged
-        model is a standalone MLX model — no base_model_id. Used by the merge
-        CLI --publish path (issue #58). Idempotent on 409 via the same
-        _find_existing_lora pattern (adapted for model_type=mlx).
+        model is a standalone full model — no base_model_id. Used by the merge
+        CLI --publish path (issue #58). #113: the hub ModelType enum has no
+        "mlx" value (mlx is a ModelFormat, and ModelCreate takes no format
+        field), so a merged model registers as model_type=llm; a wrong
+        "mlx" value 422s and the idempotency lookup searched the wrong
+        partition. Idempotent on 409 via the _find_existing_model pattern.
         """
         if not name or len(name) < 3:
             raise HubPublishError(f"model name too short (min 3): {name!r}")
         payload: dict[str, Any] = {
             "name": name,
-            "model_type": "mlx",
+            "model_type": "llm",
             "description": description
             or f"Merged model from fusion-trainer (base: {base_model})",
         }
@@ -288,7 +291,7 @@ class ModelHubClient:
             )
             return {"published": True, "model": body, "status_code": 201}
         if resp.status_code == 409:
-            existing = self._find_existing_model(name, "mlx")
+            existing = self._find_existing_model(name, "llm")
             if existing is not None:
                 logger.info(
                     "publish_merged_model: name=%s already published (idempotent)",
