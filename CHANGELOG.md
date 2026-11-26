@@ -7,7 +7,7 @@ doc_type: changelog
 title: { zh: "fusion-trainer 变更日志", en: "fusion-trainer changelog" }
 audience: engineer
 status: draft
-version: 1.0.0rc34
+version: 1.0.0rc35
 updated: 2026-11-25
 owner: "@dahai"
 source_of_truth:
@@ -15,6 +15,12 @@ source_of_truth:
 ---
 
 # Changelog
+
+## [1.0.0rc35] - 2026-11-26
+
+### Changed
+
+- **Hub API key domain docs (#109, #110):** `FUSION_MODEL_HUB_API_KEY` must be a hub-issued `fmh-*` key when pointing directly at the hub (`:11444`) — the gateway admin key is a different trust domain and 401s by design. Documented the mint path (`fmh keys create`, models-hub >= 1.2.23), the public zero-key bootstrap endpoint (plaintext shown once), and rotation in README/README_CN `--publish` note, `ft publish --hub-api-key` help, `config.py` field doc, `docs/config-reference.md`, and `docs/troubleshooting.md`. Docs + help text only, no behavior change.
 
 ## [1.0.0rc34] - 2026-11-26
 
