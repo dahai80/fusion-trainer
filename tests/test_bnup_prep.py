@@ -22,6 +22,7 @@ from fusion_trainer.dataset.bnup_prep import (
     validate_dsl_json,
 )
 
+# i18n: user-facing
 _VALID_DSL = {
     "meta": {
         "id": "demo_01",
@@ -77,6 +78,7 @@ class TestBuildSftSample:
         sample = build_sft_sample(
             system_prompt="system",
             question="question",
+            # i18n: user-facing
             thinking_content="思考过程",
             dsl_dict=_VALID_DSL,
         )

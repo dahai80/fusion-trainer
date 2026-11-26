@@ -356,7 +356,7 @@ class TestRunTraining:
             assert calls[0]["config"]["fine_tune_type"] == "full"
 
     def test_run_training_qlora_real(self, monkeypatch):
-        # fusion-mlx #402 已落地:qlora = fine_tune_type=qlora + quantize_base=True。
+        # fusion-mlx #402 landed: qlora = fine_tune_type=qlora + quantize_base=True.
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _make_config(method="qlora", cache_path=tmpdir, num_epochs=1)
             trainer = SFTTrainer(cfg)
@@ -404,7 +404,7 @@ class TestRunTraining:
             assert calls[0]["config"]["quant_bits"] == 4
 
     def test_run_training_mxfp8_explicit_true_passes_through(self, monkeypatch):
-        # #402/#425 已落地:upstream service.py now routes mxfp8=True to the
+        # #402/#425 landed: upstream service.py now routes mxfp8=True to the
         # 8-bit QLoRA path (quantize_base=True, quant_bits=8, fine_tune_type=
         # qlora) rather than raising. MLX 0.32 has no native fp8 dtype, so
         # semantics = 8-bit frozen base + LoRA for memory saving, NOT fp8
@@ -802,11 +802,14 @@ def _real_model_env() -> bool:
 
 
 def _real_mlx_port() -> int:
-    # 真实微调测试走 fusion-mlx 的 admin fine-tune API (/admin/api/fine-tune/*)。
-    # 该 admin API 仅在 fusion-mlx 直连端口暴露,fusion-gateway(11432)不代理
-    # /admin/api/fine-tune/*(gateway 的 /admin/api/* 是其自身密钥/渠道管理 API)。
-    # 故默认直连 11434;若 fusion-mlx 监听非标准端口,用 FUSION_MLX_PORT 覆盖。
-    # 注:这与 config._default_mlx_port() 的 11432(推理走 gateway)有意不同。
+    # Real fine-tune tests hit fusion-mlx's admin fine-tune API
+    # (/admin/api/fine-tune/*). That admin API is only exposed on the
+    # fusion-mlx direct port; fusion-gateway (11432) does not proxy
+    # /admin/api/fine-tune/* (the gateway's /admin/api/* is its own
+    # key/channel management API). So default to direct 11434; override
+    # with FUSION_MLX_PORT if fusion-mlx listens on a non-standard port.
+    # Note: this intentionally differs from config._default_mlx_port()'s
+    # 11432 (inference goes through the gateway).
     return int(os.environ.get("FUSION_MLX_PORT", "11434"))
 
 
@@ -814,14 +817,16 @@ def _real_mlx_port() -> int:
     not _real_model_env(), reason="needs fusion-mlx server; set FUSION_TRAINER_REAL=1"
 )
 class TestRealFusionMLXIntegration:
-    # Real-model verification (per project rule: 涉及到大模型测试，须真实加载模型).
+    # Real-model verification (per project rule: LLM tests must really load the model).
     # Requires a running fusion-mlx server (direct, port 11434 by default) with
-    # the Qwen3-0.6B-4bit model available. 用 FUSION_MLX_PORT 覆盖非标准端口。
-    # 启动示例:
+    # the Qwen3-0.6B-4bit model available. Use FUSION_MLX_PORT for a
+    # non-standard port.
+    # Startup example:
     #   FUSION_MLX_API_KEY=dahai168 FUSION_ROUTE_WARN_ONLY=true \
     #     ~/claude-home/fusion-mlx/start.sh start
-    # 注意:避免在已加载 VL(VLM)模型的环境冷启动跑(上游 fusion-mlx#413 VLM
-    # 冷启动崩溃),干净启动(不预加载 VLM)即可正常 SFT 训练。
+    # Note: avoid a cold start in an environment that already has a VL (VLM)
+    # model loaded (upstream fusion-mlx#413 VLM cold-start crash); a clean
+    # start (no VLM preloaded) runs SFT training normally.
     # Then: FUSION_TRAINER_REAL=1 FUSION_MLX_ADMIN_TOKEN=dahai168 pytest \
     #   tests/test_sft_trainer.py::TestRealFusionMLXIntegration -v
 
@@ -892,7 +897,7 @@ class TestRealFusionMLXIntegration:
             assert final["status"] == "completed", f"{name} stuck: {final}"
 
     def test_real_dpo_job_runs_and_writes_adapter(self, tmp_path):
-        # fusion-mlx #399 已落地:真实 DPO 训练。
+        # fusion-mlx #399 landed: real DPO training.
         client = MLXFineTuneClient(port=_real_mlx_port())
         assert isinstance(client.health(), dict)
 
@@ -921,7 +926,7 @@ class TestRealFusionMLXIntegration:
         assert adapter_file.stat().st_size > 0
 
     def test_real_orpo_job_runs_and_writes_adapter(self, tmp_path):
-        # fusion-mlx #399 已落地:真实 ORPO 训练。
+        # fusion-mlx #399 landed: real ORPO training.
         client = MLXFineTuneClient(port=_real_mlx_port())
         assert isinstance(client.health(), dict)
 
@@ -950,7 +955,7 @@ class TestRealFusionMLXIntegration:
         assert adapter_file.stat().st_size > 0
 
     def test_real_qlora_job_runs_and_writes_adapter(self, tmp_path):
-        # fusion-mlx #402 已落地:真实 QLoRA 训练(quantized-base LoRA)。
+        # fusion-mlx #402 landed: real QLoRA training (quantized-base LoRA).
         client = MLXFineTuneClient(port=_real_mlx_port())
         assert isinstance(client.health(), dict)
 
@@ -988,7 +993,7 @@ class TestRealFusionMLXIntegration:
         assert adapter_file.stat().st_size > 0
 
     def test_real_reward_job_runs_and_writes_adapter(self, tmp_path):
-        # fusion-mlx #424 已落地:真实 reward-model 训练(Bradley-Terry value head)。
+        # fusion-mlx #424 landed: real reward-model training (Bradley-Terry value head).
         client = MLXFineTuneClient(port=_real_mlx_port())
         assert isinstance(client.health(), dict)
 
@@ -1019,10 +1024,11 @@ class TestRealFusionMLXIntegration:
         assert progress.get("reward_margin") is not None, "reward_margin missing"
 
     def test_real_rlsl_closed_loop_runs(self, tmp_path):
-        # RLSL 闭环真实集成: Phase1 RM 训练(#424) -> Phase2 真实 GRPO(#363),
-        # reward 信号经本机 RM reward server -> 上游 reward/score(#431)。
-        # 验证 mean_reward 为真实 RM 分数(非 length fallback 58.0)。
-        # 启动:
+        # RLSL closed-loop real integration: Phase1 RM training (#424) ->
+        # Phase2 real GRPO (#363), reward signal via the local RM reward
+        # server -> upstream reward/score (#431).
+        # Verifies mean_reward is a real RM score (not the length fallback 58.0).
+        # Run:
         #   FUSION_TRAINER_REAL=1 FUSION_MLX_ADMIN_TOKEN=dahai168 \
         #     FUSION_MLX_PORT=11434 pytest \
         #     tests/test_sft_trainer.py::TestRealFusionMLXIntegration::test_real_rlsl_closed_loop_runs -v -s
@@ -1079,7 +1085,7 @@ class TestRealFusionMLXIntegration:
         assert result["phase2"]["backend"] == "grpo"
         mean_reward = result["phase2"].get("mean_reward")
         assert mean_reward is not None, "mean_reward missing on phase2"
-        # 真实 RM 打分不为 length fallback(58.0);闭环走的是 RM。
+        # Real RM scoring is not the length fallback (58.0); the loop goes through the RM.
         assert mean_reward != 58.0, (
             f"mean_reward is length fallback, not RM: {mean_reward}"
         )
