@@ -16,6 +16,20 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc40] — 2026-11-26
+
+### Added
+
+- **Office task registry (#120)**: `fusion_trainer/tasks.py` — append-only JSONL registry
+  (`{cache}/tasks/registry.jsonl`, latest-wins), required-field validation, VerifierBench
+  validator audit gate (task emits training signal only with a `passing` validator AND a
+  non-empty known-valid solution corpus), whole-registry gate report, LLM-free stage-2
+  task synthesis on office-api GET /v1/graph edges (moved upstream from fusion-office
+  #49/#50).
+- **CLI**: `ft tasks add|list|gate|synthesize` (`--registry-path`/`--cache-path`);
+  `synthesize` skips already-registered task ids so a passing validator is never reset.
+- **Docs**: `docs/task-registry.md`.
+
 ## [1.0.0rc39] - 2026-11-26
 
 ### Fixed
