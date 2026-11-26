@@ -128,7 +128,11 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   records with their outcome — the input to the resynthesis stage. An
   empty failure set writes an empty file (honest), never an error.
   The manifest carries `weakness` (per-signal failure counts + bounded
-  sample rollout_ids) and `efficiency` (offline redundant consecutive
+  sample rollout_ids; per-task breakdown when outcomes carry
+  `task_id`), `struggle` (per-rollout deterministic struggle features
+  over non-zero-scored failures — redundant calls, error signals,
+  normalized score: the first-pass judge for step-wise expert
+  injection, #116), and `efficiency` (offline redundant consecutive
   tool-call rate — the BEFORE number for any future efficiency reward;
   the budget anchor must be fixed before training, never
   policy-relative).
