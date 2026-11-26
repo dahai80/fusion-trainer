@@ -1,8 +1,5 @@
 # Fusion-Trainer
 
-# --- Code-irrelevant docs (kept local, not uploaded) ---
-CLAUDE.md
-
 # --- Runtime cache (auto-generated, not committed) ---
 runtime_cache/
 dataset_tmp/
