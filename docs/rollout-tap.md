@@ -146,6 +146,16 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   matching bonus-only reward helper (a no-tool-call trajectory scores
   0, never negative — the CARE-PO collapse is structurally impossible).
   An empty budget set (no task coverage yet) writes an empty file.
+- Skill library (`ft skills mine`, #123 gradient-free path 2):
+  procedural skills mined from positive rollouts — a skill is a
+  consecutive assistant tool-call chain (normalized like the
+  redundant-call detector) that succeeded in >= `--min-successes`
+  distinct rollouts (default 2; success_count counts distinct rollouts,
+  repeats inside one rollout count once). Output JSONL sorted by
+  success_count: `{skill_id, tools, chain, success_count, task_ids,
+  example_rollout_id, mined_at}` — trajectories stay in the tap, the
+  library references them by rollout id (fusion-skills retrieval
+  alignment). An empty library is honest.
 - Sidecar manifest `<output>.from_rollouts.json` (atomic write)
   carries the sink sha256 + per-signal counts; `ft sft` auto-detects
   it beside the dataset and records `source_export_sha256` in the run
