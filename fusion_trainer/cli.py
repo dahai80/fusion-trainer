@@ -2397,17 +2397,24 @@ def skills_mine(
     min_successes: int = typer.Option(
         2,
         "--min-successes",
-        help="Admit a skill only when it succeeded in >= N distinct "
-        "positive rollouts (default 2)",
+        help="Admit a skill only when it appeared in >= N distinct scored "
+        "rollouts of the chosen polarity (default 2)",
+    ),
+    polarity: str = typer.Option(
+        "success",
+        "--polarity",
+        help="success = patterns to follow, mined from positives "
+        "(reward >= 1.0); failure = patterns to avoid / recovery seeds, "
+        "mined from scored negatives (reward < 1.0, unobserved excluded)",
     ),
 ):
-    """Mine procedural skills from positive rollouts (#123, gradient-free).
+    """Mine procedural skills from scored rollouts (#123, gradient-free).
 
     A skill = a consecutive assistant tool-call chain (normalized like the
-    redundant-call detector) that succeeded at least --min-successes times.
-    Weights never change — the library is retrieved by the harness
-    (fusion-skills alignment). An empty library is honest (written, not an
-    error).
+    redundant-call detector) that appeared at least --min-successes times
+    in distinct scored rollouts of the chosen --polarity. Weights never
+    change — the library is retrieved by the harness (fusion-skills
+    alignment). An empty library is honest (written, not an error).
     """
     from pathlib import Path
 
@@ -2425,7 +2432,7 @@ def skills_mine(
             records, _ = join_outcomes(
                 records, load_outcome_sidecar(Path(outcomes_file))
             )
-        skills = mine_skills(records, min_successes=min_successes)
+        skills = mine_skills(records, min_successes=min_successes, polarity=polarity)
     except (RolloutIngestError, SkillMiningError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)

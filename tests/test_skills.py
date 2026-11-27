@@ -184,7 +184,9 @@ def test_load_skill_library_roundtrip_and_validation(tmp_path):
     from fusion_trainer.skills import SKILL_SCHEMA_VERSION, load_skill_library
 
     path = tmp_path / "skills.jsonl"
-    skills = mine_skills([_rec("r1", [("open", {"p": 1})]), _rec("r2", [("open", {"p": 1})])])
+    skills = mine_skills(
+        [_rec("r1", [("open", {"p": 1})]), _rec("r2", [("open", {"p": 1})])]
+    )
     write_skill_library(skills, path)
     loaded = load_skill_library(path)
     assert [s["skill_id"] for s in loaded] == [s["skill_id"] for s in skills]
@@ -210,7 +212,10 @@ def test_render_skill_block_deterministic():
 
     assert render_skill_block([]) == ""
     skills = mine_skills(
-        [_rec("r1", [("open", {"p": 1}), ("save", {})]), _rec("r2", [("open", {"p": 1}), ("save", {})])]
+        [
+            _rec("r1", [("open", {"p": 1}), ("save", {})]),
+            _rec("r2", [("open", {"p": 1}), ("save", {})]),
+        ]
     )
     block = render_skill_block(skills)
     assert block == render_skill_block(skills)
@@ -233,3 +238,40 @@ def test_render_skill_block_budget_respected():
     assert "omitted" in block
     assert "+3 more skills omitted" in block
     assert block.count("used 2x") == 3
+
+
+def test_failure_polarity_admits_negative_chains():
+    neg = mine_skills(
+        [
+            _rec("n1", [("open", {"p": 1})], score=0.0),
+            _rec("n2", [("open", {"p": 1})], score=0.5),
+        ],
+        polarity="failure",
+    )
+    assert len(neg) == 1
+    s = neg[0]
+    assert s["polarity"] == "failure"
+    assert s["success_count"] == 2
+    assert s["admission"]["polarity"] == "failure"
+    assert "reward<1.0 (scored)" in s["admission"]["gate"]
+
+
+def test_failure_polarity_excludes_positives_and_unobserved():
+    records = [
+        _rec("p1", [("open", {"p": 1})], score=1.0),
+        _rec("p2", [("open", {"p": 1})], score=1.0),
+    ]
+    unobserved = dict(_rec("u1", [("open", {"p": 1})]))
+    del unobserved["outcome"]
+    assert mine_skills(records + [unobserved], polarity="failure") == []
+    # failure pool never leaks positive chains
+    assert mine_skills(records, polarity="failure") == []
+
+
+def test_polarity_validation():
+    import pytest
+
+    from fusion_trainer.skills import SkillMiningError
+
+    with pytest.raises(SkillMiningError, match="polarity"):
+        mine_skills([_rec("r1", [("t", {})])], polarity="bogus")

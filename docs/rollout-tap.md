@@ -161,7 +161,12 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   verifier} — verifier = office validator name@version when the outcome
   was validator-verified, else `outcome_signal`) plus a versioned
   admission block recording the gate (verified-attempts-only is
-  structural: reward >= 1.0 is the only candidate source).
+  structural: reward >= 1.0 is the only success-pool candidate source).
+  `--polarity failure` (DualPM polarity pools, frontier watch #16) mines
+  the same machinery from scored negatives (reward < 1.0, unobserved
+  excluded) — patterns to avoid / recovery-strategy seeds (WASP-Mem);
+  the admission block records the polarity so consumers never mix the
+  two pools.
 - Skill retrieval (`load_skill_library` / `render_skill_block`,
   `ft skills show`): the harness contract — fail-visible loader
   (missing file raises, malformed/newer-schema lines skipped loudly)
