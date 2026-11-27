@@ -178,3 +178,58 @@ def test_write_empty_library_honest(tmp_path: Path):
     path = tmp_path / "skills.jsonl"
     write_skill_library([], path)
     assert path.read_text(encoding="utf-8") == ""
+
+
+def test_load_skill_library_roundtrip_and_validation(tmp_path):
+    from fusion_trainer.skills import SKILL_SCHEMA_VERSION, load_skill_library
+
+    path = tmp_path / "skills.jsonl"
+    skills = mine_skills([_rec("r1", [("open", {"p": 1})]), _rec("r2", [("open", {"p": 1})])])
+    write_skill_library(skills, path)
+    loaded = load_skill_library(path)
+    assert [s["skill_id"] for s in loaded] == [s["skill_id"] for s in skills]
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(
+        '{"skill_id": "x", "chain": ["a"]}\nnot json\n{"skill_id": "y"}\n'
+        f'{{"skill_id": "z", "chain": ["a"], "schema_version": {SKILL_SCHEMA_VERSION + 1}}}\n',
+        encoding="utf-8",
+    )
+    loaded_bad = load_skill_library(bad)
+    assert [s["skill_id"] for s in loaded_bad] == ["x"]
+
+
+def test_load_skill_library_missing_raises(tmp_path):
+    from fusion_trainer.skills import SkillMiningError, load_skill_library
+
+    with pytest.raises(SkillMiningError, match="not found"):
+        load_skill_library(tmp_path / "nope.jsonl")
+
+
+def test_render_skill_block_deterministic():
+    from fusion_trainer.skills import render_skill_block
+
+    assert render_skill_block([]) == ""
+    skills = mine_skills(
+        [_rec("r1", [("open", {"p": 1}), ("save", {})]), _rec("r2", [("open", {"p": 1}), ("save", {})])]
+    )
+    block = render_skill_block(skills)
+    assert block == render_skill_block(skills)
+    assert "Proven procedural skills" in block
+    assert "open -> save" in block
+    assert "used 2x" in block
+    assert "outcome_signal" in block
+
+
+def test_render_skill_block_budget_respected():
+    from fusion_trainer.skills import render_skill_block
+
+    records = []
+    for i in range(6):
+        for j in range(2):
+            records.append(_rec(f"r{i}_{j}", [(f"tool{i}", {"p": 1})]))
+    skills = mine_skills(records)
+    assert len(skills) == 6
+    block = render_skill_block(skills, max_skills=3)
+    assert "omitted" in block
+    assert "+3 more skills omitted" in block
+    assert block.count("used 2x") == 3

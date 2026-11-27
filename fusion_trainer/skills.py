@@ -178,3 +178,93 @@ def write_skill_library(skills: list[dict[str, Any]], output_path: Path) -> Path
     tmp.replace(output_path)
     logger.info("wrote %d skill(s) to %s", len(skills), output_path)
     return output_path
+
+
+def load_skill_library(path: Path) -> list[dict[str, Any]]:
+    """Load a skill-library JSONL into validated skill dicts (#123).
+
+    Fail-visible: a missing library raises; malformed lines are skipped
+    loudly; a schema_version we do not understand is skipped loudly too
+    (forward compatibility — older readers never misread newer fields).
+    """
+    if not path.is_file():
+        raise SkillMiningError(f"skill library not found: {path}")
+    skills: list[dict[str, Any]] = []
+    bad = 0
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                bad += 1
+                logger.warning("skip skill library line %d: not JSON", lineno)
+                continue
+            if (
+                not isinstance(rec, dict)
+                or not rec.get("skill_id")
+                or not isinstance(rec.get("chain"), list)
+                or not rec["chain"]
+            ):
+                bad += 1
+                logger.warning(
+                    "skip skill library line %d: missing skill_id/chain", lineno
+                )
+                continue
+            version = rec.get("schema_version")
+            if version is not None and version > SKILL_SCHEMA_VERSION:
+                bad += 1
+                logger.warning(
+                    "skip skill library line %d: schema_version %s newer than reader (%s)",
+                    lineno,
+                    version,
+                    SKILL_SCHEMA_VERSION,
+                )
+                continue
+            skills.append(rec)
+    if bad:
+        logger.warning(
+            "skill library: %d skill(s) loaded, %d bad line(s)", len(skills), bad
+        )
+    logger.info("loaded %d skill(s) from %s", len(skills), path)
+    return skills
+
+
+def render_skill_block(
+    skills: list[dict[str, Any]], max_skills: int = 5, max_chars: int = 2000
+) -> str:
+    """Render the deterministic prompt-injection block for a skill set (#123).
+
+    The harness contract: retrieved skills become a compact instruction
+    block the agent sees before acting. Deterministic, LLM-free; the
+    block cites each skill's success_count and verifier so the model can
+    weigh provenance. Truncated at max_skills / max_chars — the budget
+    is explicit, never silently exceeded.
+    """
+    if not skills:
+        return ""
+    lines = [
+        "Proven procedural skills (successfully used before — follow when applicable):"
+    ]
+    rendered = 0
+    for rendered, s in enumerate(skills):
+        if rendered >= max_skills:
+            lines.append(f"(+{len(skills) - max_skills} more skills omitted)")
+            break
+        verifier = "outcome_signal"
+        for ev in s.get("evidence") or []:
+            if ev.get("verifier") and ev["verifier"] != "outcome_signal":
+                verifier = str(ev["verifier"])
+                break
+        tools = " -> ".join(str(t) for t in s.get("tools") or [])
+        line = (
+            f"- {tools} (used {s.get('success_count', '?')}x, verified by {verifier})"
+        )
+        if len("\n".join(lines)) + len(line) > max_chars:
+            lines.append("(further skills omitted: character budget reached)")
+            break
+        lines.append(line)
+        rendered += 1
+    return "\n".join(lines)
