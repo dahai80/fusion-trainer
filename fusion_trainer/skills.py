@@ -55,33 +55,48 @@ def _call_chain(messages: list[Any]) -> list[str]:
 
 
 def mine_skills(
-    records: list[dict[str, Any]], min_successes: int = DEFAULT_MIN_SKILL_SUCCESSES
+    records: list[dict[str, Any]],
+    min_successes: int = DEFAULT_MIN_SKILL_SUCCESSES,
+    polarity: str = "success",
 ) -> list[dict[str, Any]]:
-    """Mine procedural skills from positive rollouts (#123 path 2).
+    """Mine procedural skill patterns from scored rollouts (#123 path 2).
 
-    For every positive rollout (reward >= 1.0) each assistant tool-call
-    segment (consecutive calls, ended by a user turn) becomes a skill
-    candidate keyed by its normalized call chain. Candidates seen in
-    >= min_successes distinct positive rollouts are admitted with:
-    success_count, tool sequence, contributing task_ids (when outcomes
-    carry task_id), the example rollout_id, and a stable skill_id
-    (sha256 of the chain, 12 hex chars).
+    Polarity pools (DualPM pattern, frontier watch #16): polarity="success"
+    (default) mines chains from positive rollouts (reward >= 1.0) —
+    patterns to follow; polarity="failure" mines chains from scored
+    negative rollouts (reward < 1.0, unobserved excluded) — patterns to
+    avoid / recovery-strategy seeds (WASP-Mem). Both pools share the same
+    candidate/admission/evidence machinery.
+
+    For every candidate rollout each assistant tool-call segment
+    (consecutive calls, ended by a user turn) becomes a pattern keyed by
+    its normalized call chain. Candidates seen in >= min_successes
+    (success) / min_failures (failure) DISTINCT rollouts are admitted
+    with: success_count, tool sequence, contributing task_ids (when
+    outcomes carry task_id), the example rollout_id, and a stable
+    skill_id (sha256 of the chain, 12 hex chars).
 
     Trust requirements (frontier watch #16, Zep Agent Skills pattern):
-    every admitted skill carries field-level evidence citations — the
+    every admitted pattern carries field-level evidence citations — the
     supporting rollout events (rollout_id, task_id, signal, score, and
     the office validator name@version when the outcome was
     validator-verified, sidecar schema v2) — plus a versioned admission
-    block recording the gate that let it in. Verified-attempts-only is
-    structural: only outcomes with reward >= 1.0 are ever candidates.
+    block recording the gate that let it in. Scored-attempts-only is
+    structural: unobserved outcomes are never candidates.
     """
     if min_successes < 1:
         raise SkillMiningError("min_successes must be >= 1")
+    if polarity not in ("success", "failure"):
+        raise SkillMiningError("polarity must be 'success' or 'failure'")
     seen: dict[str, dict[str, Any]] = {}
     positives = 0
     for rec in records:
         score = reward_score(rec.get("outcome"))
-        if score is None or score < 1.0:
+        if score is None:
+            continue
+        if polarity == "success" and score < 1.0:
+            continue
+        if polarity == "failure" and score >= 1.0:
             continue
         positives += 1
         messages = rec.get("messages")
@@ -149,9 +164,15 @@ def mine_skills(
                 "task_ids": sorted(entry["task_ids"]),
                 "evidence": sorted(entry["evidence"], key=lambda e: e["rollout_id"]),
                 "example_rollout_id": entry["example_rollout_id"],
+                "polarity": polarity,
                 "admission": {
-                    "gate": f"reward>=1.0 in >={min_successes} distinct rollouts",
+                    "gate": (
+                        f"reward>=1.0 in >={min_successes} distinct rollouts"
+                        if polarity == "success"
+                        else f"reward<1.0 (scored) in >={min_successes} distinct rollouts"
+                    ),
                     "min_successes": min_successes,
+                    "polarity": polarity,
                     "mined_at": datetime.now(UTC).isoformat(),
                 },
             }
