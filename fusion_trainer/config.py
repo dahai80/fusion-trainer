@@ -397,6 +397,28 @@ class RLSLConfig:
     temperature: float = 0.7
     top_p: float = 0.9
 
+    # SeTPO-lite teacher anchor (trainer#128, arXiv 2611.18459)
+    teacher_model: str = ""
+    """Completion-level teacher anchor (SeTPO-lite). Empty = off (default).
+    When set (a fusion-mlx model id), prompts whose group mean reward falls
+    below the batch median get ONE teacher reference completion; student
+    completions in those gated groups receive an advantage bonus of
+    teacher_lambda * agreement(completion, teacher_reference) — agreement is
+    deterministic (normalized edit similarity). This is NOT the paper's
+    token-level reverse-KL (that needs engine logprobs); it selectively
+    injects teacher signal into low-reward groups only, preserving pure
+    group-relative advantage for high-reward groups (student exploration).
+    Forward-KL anchoring is out of scope for the lite mode."""
+
+    teacher_quantile: float = 0.5
+    """Group-mean-reward quantile gate for teacher anchoring (0.5 = median)."""
+
+    teacher_lambda: float = 0.3
+    """Weight of the teacher-agreement advantage bonus on gated samples."""
+
+    teacher_max_tokens: int = 512
+    """Max tokens for the teacher reference completion."""
+
     # Logging
     log_every: int = 10
     save_every: int = 200
