@@ -16,6 +16,18 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc43] — 2026-11-27
+
+### Added
+
+- **Skill-library trust requirements (#123, frontier watch #16)**:
+  field-level evidence citations on every admitted skill
+  ({rollout_id, task_id, signal, score, verifier} — office validator
+  name@version when validator-verified, else outcome_signal) plus a
+  versioned admission block {gate, min_successes, mined_at};
+  verified-attempts-only stays structural (reward >= 1.0 only).
+  Library schema_version=2. 876 tests.
+
 ## [1.0.0rc42] — 2026-11-27
 
 ### Added
