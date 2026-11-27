@@ -813,3 +813,74 @@ class TestRolloutTokensMetric:
         )
         assert completions == ["hello"]
         assert usage == {"completion_tokens": 7}
+
+
+# ===========================================================================
+# SeTPO-lite teacher anchor (trainer#128, arXiv 2611.18459)
+# ===========================================================================
+
+
+class TestSeTPOTeacherAnchor:
+    def _trainer(self, **rlsl_kw):
+        t = GRPOTrainer(_make_grpo_config(**rlsl_kw))
+        return t
+
+    @staticmethod
+    def _samples():
+        low = [
+            {"prompt": "p_low", "completion": f"attempt {i}", "reward": 0.1, "advantage": -0.5, "sample": {}}
+            for i in range(4)
+        ]
+        high = [
+            {"prompt": "p_high", "completion": f"good {i}", "reward": 0.9, "advantage": 0.5, "sample": {}}
+            for i in range(4)
+        ]
+        return low + high
+
+    def test_agreement_deterministic_and_bounded(self):
+        a = GRPOTrainer._teacher_agreement("Hello World", "hello world")
+        b = GRPOTrainer._teacher_agreement("Hello World", "hello world")
+        assert a == b == 1.0
+        assert 0.0 <= GRPOTrainer._teacher_agreement("abc", "xyz") <= 1.0
+
+    def test_anchor_off_by_default(self):
+        cfg = _make_grpo_config()
+        assert cfg.rlsl.teacher_model == ""
+
+    def test_low_reward_group_boosted_high_untouched(self):
+        t = self._trainer(teacher_model="teacher-x", teacher_lambda=0.5)
+        t._teacher_generate = lambda prompt: "good 0"  # matches p_high-style text
+        samples = self._samples()
+        t._apply_teacher_anchor(samples)
+        low = [s for s in samples if s["prompt"] == "p_low"]
+        high = [s for s in samples if s["prompt"] == "p_high"]
+        assert all(s.get("teacher_gated") for s in low)
+        assert all(not s.get("teacher_gated") for s in high)
+        for s in low:
+            assert s["advantage"] == pytest.approx(-0.5 + 0.5 * s["teacher_agreement"])
+        for s in high:
+            assert s["advantage"] == 0.5
+
+    def test_teacher_failure_fails_soft(self):
+        def boom(prompt):
+            raise RuntimeError("teacher down")
+
+        t = self._trainer(teacher_model="teacher-x", teacher_lambda=0.5)
+        t._teacher_generate = boom
+        samples = self._samples()
+        t._apply_teacher_anchor(samples)
+        for s in samples:
+            assert s["advantage"] in (-0.5, 0.5)
+            assert "teacher_gated" not in s
+
+    def test_high_groups_only_never_gated(self):
+        t = self._trainer(teacher_model="teacher-x")
+        calls = []
+        t._teacher_generate = lambda prompt: calls.append(prompt) or "x"
+        samples = [
+            {"prompt": f"p{i}", "completion": "c", "reward": 1.0, "advantage": 0.0, "sample": {}}
+            for i in range(4)
+        ]
+        t._apply_teacher_anchor(samples)
+        assert calls == []
+        assert all(s["advantage"] == 0.0 for s in samples)

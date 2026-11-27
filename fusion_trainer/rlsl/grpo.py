@@ -39,6 +39,7 @@ Data schemas:
 from __future__ import annotations
 
 import contextlib
+import difflib
 import json
 import logging
 import math
@@ -536,7 +537,86 @@ class GRPOTrainer:
                 f"GRPO sampling failed for all {n_attempted} prompts "
                 f"(last error: {last_err}); cannot produce training data"
             )
+        if self.rlsl_cfg.teacher_model:
+            self._apply_teacher_anchor(out)
         return out
+
+    # ------------------------------------------------------------------
+    # SeTPO-lite teacher anchor (trainer#128, arXiv 2611.18459)
+    # ------------------------------------------------------------------
+
+    def _teacher_generate(self, prompt: str) -> str:
+        """Fetch ONE teacher reference completion for a gated prompt.
+
+        Separate method (not folded into _generate) so tests can stub teacher
+        behavior independently of student sampling. Raises MLXFineTuneError on
+        HTTP failure — the caller gates per-prompt and fails soft.
+        """
+        completions, _ = self._client.chat_completions_with_usage(
+            self.rlsl_cfg.teacher_model,
+            [{"role": "user", "content": prompt}],
+            n=1,
+            temperature=0.2,
+            top_p=0.9,
+            max_tokens=int(self.rlsl_cfg.teacher_max_tokens),
+        )
+        if not completions:
+            raise MLXFineTuneError(f"teacher returned no completion for prompt: {prompt[:80]}")
+        return completions[0]
+
+    @staticmethod
+    def _teacher_agreement(completion: str, reference: str) -> float:
+        """Deterministic completion-level agreement with the teacher reference.
+
+        Normalized edit similarity (difflib SequenceMatcher on lowercased,
+        whitespace-collapsed text). Stdlib, no model in the loop, stable across
+        runs — the lite anchor must not introduce a second source of sampling
+        variance into the advantage signal.
+        """
+        norm = lambda s: " ".join(s.lower().split())
+        return difflib.SequenceMatcher(None, norm(completion), norm(reference)).ratio()
+
+    def _apply_teacher_anchor(self, samples: list[dict[str, Any]]) -> None:
+        """SeTPO-lite: boost advantages in low-reward groups with teacher signal.
+
+        Selective injection per arXiv 2611.18459: ONLY groups whose mean reward
+        is below the teacher_quantile of group means receive teacher feedback —
+        high-reward groups keep their pure group-relative advantage, preserving
+        student exploration. Completion-level anchor (not token-level KL): the
+        advantage bonus is teacher_lambda * agreement(completion, reference).
+        Teacher failures fail soft per-prompt (logged, skipped) so a teacher
+        outage degrades to plain GRPO, never to a failed run.
+        """
+        by_prompt: dict[str, list[dict[str, Any]]] = {}
+        for s in samples:
+            by_prompt.setdefault(s["prompt"], []).append(s)
+        if not by_prompt:
+            return
+        group_means = {p: sum(x["reward"] for x in g) / len(g) for p, g in by_prompt.items()}
+        means_sorted = sorted(group_means.values())
+        gate = means_sorted[max(0, min(len(means_sorted) - 1, int(self.rlsl_cfg.teacher_quantile * len(means_sorted))))]
+        lam = float(self.rlsl_cfg.teacher_lambda)
+        n_gated = n_bonus = n_fail = 0
+        for prompt, group in by_prompt.items():
+            if group_means[prompt] >= gate:
+                continue
+            n_gated += 1
+            try:
+                reference = self._teacher_generate(prompt)
+            except Exception as exc:
+                n_fail += 1
+                logger.warning("teacher anchor failed for prompt (soft skip): %s", exc)
+                continue
+            for s in group:
+                agreement = self._teacher_agreement(s["completion"], reference)
+                s["advantage"] = s["advantage"] + lam * agreement
+                s["teacher_gated"] = True
+                s["teacher_agreement"] = agreement
+                n_bonus += 1
+        logger.info(
+            "SeTPO-lite teacher anchor: gate=%.4f groups=%d gated=%d boosted=%d teacher_failures=%d",
+            gate, len(by_prompt), n_gated, n_bonus, n_fail,
+        )
 
     def _generate(self, prompt: str, n: int) -> list[str]:
         """Sample n completions via the pooled MLXFineTuneClient.
