@@ -16,6 +16,21 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc41] — 2026-11-27
+
+### Added
+
+- **Per-task efficiency budgets (#117, CARE-PO offline portion)**:
+  `efficiency_budgets()` — p50 tool-call count of each task's positive
+  baselines, frozen BEFORE training (tasks below min_positives=3
+  omitted loudly); `budget_penalty()` — bonus-only frozen-budget reward
+  helper (no-tool-call scores 0, never negative, so the CARE-PO
+  policy-relative-anchor collapse is structurally impossible);
+  `ft datasets from-rollouts --budgets-output` + manifest block
+  (budgets_path/tasks/omitted, lineage transform). Empty budget set is
+  honest. Live check on real tap+sidecar: 0 budgets (outcomes carry no
+  task_id yet — #116/#117 volume gate unchanged). 865 tests.
+
 ## [1.0.0rc40] — 2026-11-26
 
 ### Added
