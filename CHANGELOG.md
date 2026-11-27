@@ -16,6 +16,17 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc44] — 2026-11-27
+
+### Added
+
+- **Skill retrieval contract (#123)**: `load_skill_library()`
+  (fail-visible: missing file raises, malformed/newer-schema lines
+  skipped loudly) + `render_skill_block()` (deterministic
+  prompt-injection block with success_count + verifier provenance,
+  explicit max_skills/max_chars budgets) + `ft skills show`.
+  fusion-skills consumes the same renderer. 880 tests.
+
 ## [1.0.0rc43] — 2026-11-27
 
 ### Added
