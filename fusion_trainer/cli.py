@@ -1806,6 +1806,13 @@ def datasets_from_rollouts(
         "the manifest carries the weakness profile and redundant tool-call "
         "rate",
     ),
+    budgets_file: str = typer.Option(
+        "",
+        "--budgets-output",
+        help="Optional per-task efficiency budgets JSON (p50 tool-call count "
+        "of positive baselines, frozen BEFORE training — pin it into the "
+        "GRPO round config; #117 CARE-PO)",
+    ),
 ):
     """Build RFT/GRPO datasets from a gateway rollout-tap sink (#86).
 
@@ -1822,10 +1829,11 @@ def datasets_from_rollouts(
         build_from_rollouts,
     )
 
-    if not output_file and not grpo_output and not failures_file:
+    if not output_file and not grpo_output and not failures_file and not budgets_file:
         typer.echo(
             "Error: nothing to write — pass --output (SFT) and/or "
-            "--grpo-output (GRPO prompts) and/or --failures-output",
+            "--grpo-output (GRPO prompts) and/or --failures-output "
+            "and/or --budgets-output",
             err=True,
         )
         raise typer.Exit(1)
@@ -1837,6 +1845,7 @@ def datasets_from_rollouts(
             min_score=min_score,
             outcomes_path=Path(outcomes_file) if outcomes_file else None,
             failures_output_path=Path(failures_file) if failures_file else None,
+            budgets_output_path=Path(budgets_file) if budgets_file else None,
         )
     except RolloutIngestError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1860,6 +1869,17 @@ def datasets_from_rollouts(
             f"Efficiency:   {eff['redundant_consecutive']}/{eff['tool_calls']} "
             f"redundant tool calls ({eff['redundant_rate']:.1%})"
         )
+    if manifest["budgets_path"]:
+        typer.echo(
+            f"Budgets:      {manifest['budgets_tasks']} task(s) -> "
+            f"{manifest['budgets_path']}  ({manifest['budgets_omitted']} "
+            f"omitted below min-positives; freeze into the GRPO round config)"
+        )
+        for tid, b in sorted(manifest["budgets"].get("tasks", {}).items()):
+            typer.echo(
+                f"  {tid}: budget={b['budget_tool_calls']} calls "
+                f"(p50 of {b['positives']} positives, redundant_rate={b['redundant_rate']})"
+            )
     typer.echo(f"Signals:      {manifest['signals']}")
     if manifest.get("outcomes_path"):
         typer.echo(

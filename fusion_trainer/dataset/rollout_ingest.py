@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -429,6 +430,88 @@ def tool_call_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+MIN_BUDGET_POSITIVES = 3
+_BUDGET_PENALTY_BONUS = 0.1
+
+
+def efficiency_budgets(
+    records: list[dict[str, Any]], min_positives: int = MIN_BUDGET_POSITIVES
+) -> dict[str, Any]:
+    """Per-task frozen tool-call budgets from positive baselines (#117, CARE-PO).
+
+    For every task_id seen in positive outcomes (reward >= 1.0), the
+    budget is the p50 tool-call count of the positive baselines, plus
+    the task's redundant-call rate. Tasks with fewer than `min_positives`
+    positives are omitted loudly — a budget computed from a thin baseline
+    is the round-5 DPO lesson (22 pairs was too thin). The budget is
+    frozen into the round config BEFORE the first training step; it is
+    never policy-relative.
+    """
+    by_task: dict[str, list[dict[str, Any]]] = {}
+    positives_total = 0
+    for rec in records:
+        score = reward_score(rec.get("outcome"))
+        if score is None or score < 1.0:
+            continue
+        positives_total += 1
+        task_id = str((rec.get("outcome") or {}).get("task_id") or "").strip()
+        if not task_id:
+            continue
+        by_task.setdefault(task_id, []).append(rec)
+    tasks: dict[str, dict[str, Any]] = {}
+    omitted: list[dict[str, Any]] = []
+    for tid, recs in sorted(by_task.items()):
+        counts = [
+            tool_call_stats([rec])["tool_calls"]
+            for rec in recs
+            if isinstance(rec.get("messages"), list)
+        ]
+        if len(counts) < min_positives:
+            omitted.append({"task_id": tid, "positives": len(counts)})
+            continue
+        stats = tool_call_stats(recs)
+        tasks[tid] = {
+            "budget_tool_calls": int(statistics.median(counts)),
+            "positives": len(counts),
+            "p50": statistics.median(counts),
+            "max": max(counts),
+            "redundant_rate": stats["redundant_rate"],
+        }
+        logger.info(
+            "efficiency budget %s: %s calls from %d positives",
+            tid,
+            tasks[tid]["budget_tool_calls"],
+            len(counts),
+        )
+    if omitted:
+        logger.warning(
+            "efficiency budgets: %d task(s) omitted below min_positives=%d",
+            len(omitted),
+            min_positives,
+        )
+    return {
+        "tasks": tasks,
+        "omitted": omitted,
+        "positives_total": positives_total,
+        "min_positives": min_positives,
+    }
+
+
+def budget_penalty(tool_calls: int, budget: int, redundant_consecutive: int) -> float:
+    """Frozen-budget efficiency bonus (#117). Bonus-only by design: a
+    no-tool-call trajectory earns 0, never less — the CARE-PO failure
+    mode (policy-relative anchors collapsing into no-tool-call policies)
+    is structurally impossible when the reward floor is the no-op score.
+    Returns _BUDGET_PENALTY_BONUS when the trajectory stays within the
+    frozen budget with zero redundant consecutive calls, else 0.0.
+    """
+    if tool_calls <= 0:
+        return 0.0
+    if tool_calls <= budget and redundant_consecutive == 0:
+        return _BUDGET_PENALTY_BONUS
+    return 0.0
+
+
 def rollouts_to_sft(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Positive rollouts -> D1 messages samples (multi-turn + tool calls
     preserved, issue #88)."""
@@ -517,6 +600,7 @@ def build_from_rollouts(
     min_score: float = 1.0,
     outcomes_path: Path | None = None,
     failures_output_path: Path | None = None,
+    budgets_output_path: Path | None = None,
 ) -> dict[str, Any]:
     """Full ingestion: sink -> SFT dataset and/or GRPO prompt set + manifest.
 
@@ -533,10 +617,16 @@ def build_from_rollouts(
     manifest carries the weakness profile and the offline redundant
     tool-call rate.
     """
-    if sft_output_path is None and grpo_output_path is None and failures_output_path is None:
+    if (
+        sft_output_path is None
+        and grpo_output_path is None
+        and failures_output_path is None
+        and budgets_output_path is None
+    ):
         raise RolloutIngestError(
             "nothing to write: pass --output (SFT) and/or --grpo-output "
-            "(GRPO prompts) and/or --failures-output (failure channel)"
+            "(GRPO prompts) and/or --failures-output (failure channel) "
+            "and/or --budgets-output (efficiency budgets)"
         )
     records, digest = load_rollout_sink(sink_path)
     joined = 0
@@ -587,6 +677,21 @@ def build_from_rollouts(
             failures_output_path,
         )
 
+    budgets: dict[str, Any] = {}
+    if budgets_output_path is not None:
+        # #117: an empty budget set (no task_id coverage yet) is honest —
+        # write it and say so; the reward stays budget-less this round.
+        budgets = efficiency_budgets(records)
+        budgets_output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(budgets_output_path, "w", encoding="utf-8") as fh:
+            json.dump(budgets, fh, ensure_ascii=False, indent=2)
+        logger.info(
+            "wrote %d efficiency budget(s) to %s (%d omitted)",
+            len(budgets["tasks"]),
+            budgets_output_path,
+            len(budgets["omitted"]),
+        )
+
     efficiency = tool_call_stats(records)
     if efficiency["tool_calls"]:
         logger.info(
@@ -596,7 +701,12 @@ def build_from_rollouts(
             efficiency["redundant_rate"] * 100,
         )
 
-    manifest_anchor = sft_output_path or grpo_output_path or failures_output_path
+    manifest_anchor = (
+        sft_output_path
+        or grpo_output_path
+        or failures_output_path
+        or budgets_output_path
+    )
     manifest = {
         "source": "gateway-rollout-tap",
         "sink_path": str(sink_path),
@@ -617,6 +727,10 @@ def build_from_rollouts(
             if feat["struggle_score"] > 0
         },
         "efficiency": efficiency,
+        "budgets_path": str(budgets_output_path) if budgets_output_path else "",
+        "budgets_tasks": len(budgets.get("tasks", {})),
+        "budgets_omitted": len(budgets.get("omitted", [])),
+        "budgets": budgets,
         "records_total": len(records),
         "signals": _signal_counts(records),
         "lineage": {
@@ -627,6 +741,7 @@ def build_from_rollouts(
                 (["join_outcomes"] if outcomes_path else [])
                 + (["positive_rollouts", "rollouts_to_sft"] if sft_output_path else [])
                 + (["failure_rollouts"] if failures_output_path else [])
+                + (["efficiency_budgets"] if budgets_output_path else [])
             ),
             "output": str(manifest_anchor),
         },
