@@ -136,6 +136,16 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   tool-call rate — the BEFORE number for any future efficiency reward;
   the budget anchor must be fixed before training, never
   policy-relative).
+- Efficiency budgets (`--budgets-output`, #117 CARE-PO): per-task
+  frozen tool-call budgets — the p50 tool-call count of each task's
+  positive baselines (reward >= 1.0, `outcome.task_id` required; tasks
+  with fewer than 3 positives are omitted loudly). Pin the budget into
+  the GRPO round config BEFORE the first training step; the anchor is
+  difficulty-anchored and frozen, never policy-relative.
+  `budget_penalty(tool_calls, budget, redundant_consecutive)` is the
+  matching bonus-only reward helper (a no-tool-call trajectory scores
+  0, never negative — the CARE-PO collapse is structurally impossible).
+  An empty budget set (no task coverage yet) writes an empty file.
 - Sidecar manifest `<output>.from_rollouts.json` (atomic write)
   carries the sink sha256 + per-signal counts; `ft sft` auto-detects
   it beside the dataset and records `source_export_sha256` in the run

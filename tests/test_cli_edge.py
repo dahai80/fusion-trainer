@@ -583,9 +583,7 @@ def test_from_rollouts_failures_output(tmp_path):
         "prompt": "go",
         "outcome": {"signal": "user_rejected"},
     }
-    sink.write_text(
-        json.dumps(ok) + "\n" + json.dumps(bad) + "\n", encoding="utf-8"
-    )
+    sink.write_text(json.dumps(ok) + "\n" + json.dumps(bad) + "\n", encoding="utf-8")
     fail_out = tmp_path / "failures.jsonl"
     runner = CliRunner()
     result = runner.invoke(
@@ -604,6 +602,47 @@ def test_from_rollouts_failures_output(tmp_path):
     assert "user_rejected" in result.output
     lines = [json.loads(l) for l in fail_out.read_text().splitlines()]
     assert lines[0]["rollout_id"] == "ro-2"
+
+
+def test_from_rollouts_budgets_output(tmp_path):
+    import json as _json
+
+    sink = tmp_path / "tap.jsonl"
+    recs = [
+        {
+            "schema_version": 1,
+            "rollout_id": f"r{i}",
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "open", "arguments": {"p": i}}}
+                    ],
+                }
+            ],
+            "outcome": {"signal": "task_success", "score": 1.0, "task_id": "t-a"},
+        }
+        for i in range(3)
+    ]
+    sink.write_text("\n".join(_json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    budgets = tmp_path / "budgets.json"
+    result = CliRunner().invoke(
+        app,
+        [
+            "datasets",
+            "from-rollouts",
+            "--sink",
+            str(sink),
+            "--budgets-output",
+            str(budgets),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = _json.loads(budgets.read_text())
+    assert data["tasks"]["t-a"]["budget_tool_calls"] == 1
+    assert "Budgets:" in result.output
 
 
 def test_from_rollouts_no_output_errors():
