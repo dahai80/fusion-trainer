@@ -162,6 +162,12 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   was validator-verified, else `outcome_signal`) plus a versioned
   admission block recording the gate (verified-attempts-only is
   structural: reward >= 1.0 is the only candidate source).
+- Skill retrieval (`load_skill_library` / `render_skill_block`,
+  `ft skills show`): the harness contract — fail-visible loader
+  (missing file raises, malformed/newer-schema lines skipped loudly)
+  and the deterministic prompt-injection block (compact skill list with
+  success_count + verifier provenance, explicit max_skills/max_chars
+  budgets). fusion-skills consumes the same renderer.
 - Sidecar manifest `<output>.from_rollouts.json` (atomic write)
   carries the sink sha256 + per-signal counts; `ft sft` auto-detects
   it beside the dataset and records `source_export_sha256` in the run

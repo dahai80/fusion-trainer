@@ -2441,6 +2441,40 @@ def skills_mine(
         typer.echo(f"  ... and {len(skills) - 10} more")
 
 
+@skills_app.command(name="show")
+def skills_show(
+    library_file: str = typer.Option(
+        ..., "--library", "-l", help="Skill-library JSONL (from `ft skills mine`)"
+    ),
+    max_skills: int = typer.Option(5, "--max-skills", help="Max skills in the block"),
+    max_chars: int = typer.Option(2000, "--max-chars", help="Character budget"),
+):
+    """Render the deterministic prompt-injection block for a skill library (#123).
+
+    This is the harness contract: retrieved skills become this compact
+    instruction block (with success_count + verifier provenance) that the
+    agent sees before acting. fusion-skills consumes the same renderer.
+    """
+    from pathlib import Path
+
+    from fusion_trainer.skills import (
+        SkillMiningError,
+        load_skill_library,
+        render_skill_block,
+    )
+
+    try:
+        skills = load_skill_library(Path(library_file))
+    except SkillMiningError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    block = render_skill_block(skills, max_skills=max_skills, max_chars=max_chars)
+    if not block:
+        typer.echo("(skill library empty — nothing to inject)")
+        return
+    typer.echo(block)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
