@@ -155,7 +155,13 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   success_count: `{skill_id, tools, chain, success_count, task_ids,
   example_rollout_id, mined_at}` — trajectories stay in the tap, the
   library references them by rollout id (fusion-skills retrieval
-  alignment). An empty library is honest.
+  alignment). An empty library is honest. Schema v2 trust requirements
+  (frontier watch #16, Zep Agent Skills pattern): every skill carries
+  field-level evidence citations ({rollout_id, task_id, signal, score,
+  verifier} — verifier = office validator name@version when the outcome
+  was validator-verified, else `outcome_signal`) plus a versioned
+  admission block recording the gate (verified-attempts-only is
+  structural: reward >= 1.0 is the only candidate source).
 - Sidecar manifest `<output>.from_rollouts.json` (atomic write)
   carries the sink sha256 + per-signal counts; `ft sft` auto-detects
   it beside the dataset and records `source_export_sha256` in the run

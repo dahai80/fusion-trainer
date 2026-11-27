@@ -49,6 +49,37 @@ def test_mine_admits_repeated_success_chain():
     assert len(skills[0]["skill_id"]) == 12
 
 
+def test_evidence_citations_and_admission_block():
+    records = [
+        _rec("r1", [("open", {"p": 1})], task="t-a"),
+        _rec("r2", [("open", {"p": 1})], task="t-a"),
+    ]
+    skills = mine_skills(records)
+    s = skills[0]
+    assert s["schema_version"] == 2
+    assert [e["rollout_id"] for e in s["evidence"]] == ["r1", "r2"]
+    assert all(
+        e["signal"] == "task_success" and e["score"] == 1.0 for e in s["evidence"]
+    )
+    assert all(e["verifier"] == "outcome_signal" for e in s["evidence"])
+    assert s["admission"]["min_successes"] == 2
+    assert "reward>=1.0" in s["admission"]["gate"]
+    assert s["admission"]["mined_at"]
+
+
+def test_validator_verified_evidence():
+    rec = _rec("r1", [("open", {"p": 1})])
+    rec["outcome"]["validator"] = {
+        "name": "docx_check",
+        "version": "1",
+        "status": "passing",
+    }
+    rec2 = _rec("r2", [("open", {"p": 1})])
+    skills = mine_skills([rec, rec2])
+    verifiers = {e["verifier"] for e in skills[0]["evidence"]}
+    assert verifiers == {"docx_check@v1", "outcome_signal"}
+
+
 def test_min_successes_default_is_two():
     assert DEFAULT_MIN_SKILL_SUCCESSES == 2
     records = [_rec("r1", [("open", {"p": 1})])]

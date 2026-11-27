@@ -29,6 +29,7 @@ from .dataset.rollout_ingest import _tool_call_key, reward_score
 logger = logging.getLogger(__name__)
 
 DEFAULT_MIN_SKILL_SUCCESSES = 2
+SKILL_SCHEMA_VERSION = 2
 
 
 class SkillMiningError(Exception):
@@ -65,6 +66,14 @@ def mine_skills(
     success_count, tool sequence, contributing task_ids (when outcomes
     carry task_id), the example rollout_id, and a stable skill_id
     (sha256 of the chain, 12 hex chars).
+
+    Trust requirements (frontier watch #16, Zep Agent Skills pattern):
+    every admitted skill carries field-level evidence citations — the
+    supporting rollout events (rollout_id, task_id, signal, score, and
+    the office validator name@version when the outcome was
+    validator-verified, sidecar schema v2) — plus a versioned admission
+    block recording the gate that let it in. Verified-attempts-only is
+    structural: only outcomes with reward >= 1.0 are ever candidates.
     """
     if min_successes < 1:
         raise SkillMiningError("min_successes must be >= 1")
@@ -79,7 +88,21 @@ def mine_skills(
         if not isinstance(messages, list):
             continue
         rid = str(rec.get("rollout_id", ""))
-        task_id = str((rec.get("outcome") or {}).get("task_id") or "")
+        outcome = rec.get("outcome") if isinstance(rec.get("outcome"), dict) else {}
+        task_id = str(outcome.get("task_id") or "")
+        validator = outcome.get("validator")
+        verifier = (
+            f"{validator.get('name')}@v{validator.get('version')}"
+            if isinstance(validator, dict) and validator.get("name")
+            else "outcome_signal"
+        )
+        evidence = {
+            "rollout_id": rid,
+            "task_id": task_id,
+            "signal": str(outcome.get("signal", "")),
+            "score": score,
+            "verifier": verifier,
+        }
         # Split the message list into assistant segments at user turns.
         segment: list[Any] = []
         segments: list[list[Any]] = []
@@ -104,10 +127,12 @@ def mine_skills(
                     "chain": chain,
                     "rollout_ids": set(),
                     "task_ids": set(),
+                    "evidence": [],
                     "example_rollout_id": rid,
                 },
             )
             entry["rollout_ids"].add(rid)
+            entry["evidence"].append(evidence)
             if task_id:
                 entry["task_ids"].add(task_id)
     skills: list[dict[str, Any]] = []
@@ -116,13 +141,19 @@ def mine_skills(
             continue
         skills.append(
             {
+                "schema_version": SKILL_SCHEMA_VERSION,
                 "skill_id": entry["skill_id"],
                 "tools": [k.split("|", 1)[0] for k in entry["chain"]],
                 "chain": entry["chain"],
                 "success_count": len(entry["rollout_ids"]),
                 "task_ids": sorted(entry["task_ids"]),
+                "evidence": sorted(entry["evidence"], key=lambda e: e["rollout_id"]),
                 "example_rollout_id": entry["example_rollout_id"],
-                "mined_at": datetime.now(UTC).isoformat(),
+                "admission": {
+                    "gate": f"reward>=1.0 in >={min_successes} distinct rollouts",
+                    "min_successes": min_successes,
+                    "mined_at": datetime.now(UTC).isoformat(),
+                },
             }
         )
     skills.sort(key=lambda s: (-s["success_count"], s["skill_id"]))
