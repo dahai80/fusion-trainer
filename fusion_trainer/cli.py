@@ -1687,6 +1687,10 @@ tasks_app = typer.Typer(
     help="Office task registry: corpora, validator gate, synthesis (#120)"
 )
 app.add_typer(tasks_app, name="tasks")
+skills_app = typer.Typer(
+    help="Skill library: mine procedural skills from positive rollouts (#123)"
+)
+app.add_typer(skills_app, name="skills")
 
 
 @datasets_app.command(name="from-eval")
@@ -2369,6 +2373,72 @@ def tasks_synthesize(
         f"tasks synthesize: {added} added, {skipped} skipped (already registered), "
         f"{len(candidates)} edge task(s) from graph"
     )
+
+
+# ---------------------------------------------------------------------------
+# Skill library (#123): mine procedural skills from positive rollouts
+# ---------------------------------------------------------------------------
+
+
+@skills_app.command(name="mine")
+def skills_mine(
+    sink_file: str = typer.Option(
+        ..., "--sink", "-s", help="Gateway rollout-tap sink JSONL"
+    ),
+    outcomes_file: str = typer.Option(
+        "",
+        "--outcomes",
+        help="Optional outcome sidecar JSONL joined by rollout_id (#97) — "
+        "adds task_ids to mined skills",
+    ),
+    output_file: str = typer.Option(
+        ..., "--output", "-o", help="Skill library JSONL path (one skill per line)"
+    ),
+    min_successes: int = typer.Option(
+        2,
+        "--min-successes",
+        help="Admit a skill only when it succeeded in >= N distinct "
+        "positive rollouts (default 2)",
+    ),
+):
+    """Mine procedural skills from positive rollouts (#123, gradient-free).
+
+    A skill = a consecutive assistant tool-call chain (normalized like the
+    redundant-call detector) that succeeded at least --min-successes times.
+    Weights never change — the library is retrieved by the harness
+    (fusion-skills alignment). An empty library is honest (written, not an
+    error).
+    """
+    from pathlib import Path
+
+    from fusion_trainer.dataset.rollout_ingest import (
+        RolloutIngestError,
+        join_outcomes,
+        load_outcome_sidecar,
+        load_rollout_sink,
+    )
+    from fusion_trainer.skills import SkillMiningError, mine_skills, write_skill_library
+
+    try:
+        records, _ = load_rollout_sink(Path(sink_file))
+        if outcomes_file:
+            records, _ = join_outcomes(
+                records, load_outcome_sidecar(Path(outcomes_file))
+            )
+        skills = mine_skills(records, min_successes=min_successes)
+    except (RolloutIngestError, SkillMiningError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    path = write_skill_library(skills, Path(output_file))
+    typer.echo(f"skills mine: {len(skills)} skill(s) -> {path}")
+    for s in skills[:10]:
+        task_note = f"  tasks={','.join(s['task_ids'])}" if s["task_ids"] else ""
+        typer.echo(
+            f"  {s['skill_id']}  x{s['success_count']}  "
+            f"{' -> '.join(s['tools'][:6])}{task_note}"
+        )
+    if len(skills) > 10:
+        typer.echo(f"  ... and {len(skills) - 10} more")
 
 
 # ---------------------------------------------------------------------------
