@@ -16,6 +16,18 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc42] — 2026-11-27
+
+### Added
+
+- **Skill mining (#123, gradient-free path 2)**: `fusion_trainer/skills.py`
+  — procedural skills mined from positive rollouts (consecutive
+  normalized tool-call chains succeeding in >= min_successes distinct
+  rollouts, default 2), skill_id = sha256(chain)[:12], library JSONL
+  sorted by success_count with example rollout references;
+  `ft skills mine` CLI (atomic write, honest empty). Live check on the
+  real tap: 1 skill at min=1, 0 at default min=2 (honest). 874 tests.
+
 ## [1.0.0rc41] — 2026-11-27
 
 ### Added
