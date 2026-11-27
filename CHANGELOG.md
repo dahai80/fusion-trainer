@@ -16,6 +16,16 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc45] - 2026-11-27
+
+### Added
+
+- **Negative-pool skill mining (#123)**: `mine_skills(..., polarity="failure")`
+  mines the same chain/admission/evidence machinery from scored negatives
+  (reward < 1.0, unobserved excluded) — DualPM polarity pools (frontier
+  watch #16), recovery-strategy seeds (WASP-Mem). Admission block records
+  polarity + gate text; CLI `ft skills mine --polarity failure`.
+
 ## [1.0.0rc44] — 2026-11-27
 
 ### Added
