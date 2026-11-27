@@ -16,6 +16,19 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc46] - 2026-11-27
+
+### Added
+
+- **SeTPO-lite teacher anchor (#128)**: GRPO advantage gains a selective
+  teacher channel — groups below `teacher_quantile` of group-mean reward
+  get one teacher reference completion (fusion-mlx, separate model id);
+  gated completions get `advantage += teacher_lambda * agreement`
+  (deterministic difflib edit similarity). High-reward groups keep pure
+  group-relative advantage. Teacher failures fail soft per-prompt. Off by
+  default (`rlsl.teacher_model = ""`). Completion-level anchor; token-level
+  reverse-KL recorded on #128 pending engine logprobs.
+
 ## [1.0.0rc45] - 2026-11-27
 
 ### Added
