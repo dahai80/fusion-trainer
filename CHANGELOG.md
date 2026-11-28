@@ -16,6 +16,23 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc47] - 2026-11-28
+
+### Added
+
+- **Forward-KL anchor via teacher demo mixing (#128)**: `rlsl.teacher_demo_mix`
+  (off by default) stages the teacher reference completions already fetched
+  for gated low-reward groups as demonstration rows into the per-iteration
+  SFT stage — mask_prompt trains on the teacher completion tokens (SeTPO's
+  collapse guard as demo mixing). Gated samples carry `teacher_reference`;
+  one deduped demo row per gated prompt; honest zero when none.
+
+### Filed upstream
+
+- fusion-mlx#1756: `logprobs`/`top_logprobs` accepted but silently dropped
+  on `/v1/chat/completions` and `/v1/completions` (response always null) —
+  blocks the token-level reverse-KL mode of #128.
+
 ## [1.0.0rc46] - 2026-11-27
 
 ### Added
