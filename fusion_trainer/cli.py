@@ -2054,6 +2054,25 @@ def flywheel_record(
         help="Eval-gated promotion (#82): discard the round if pass_rate regresses "
         "vs the incumbent (best prior non-discarded round)",
     ),
+    gate_mode: str = typer.Option(
+        "regression",
+        "--gate-mode",
+        help="Gate comparison: 'regression' (#82 point pass-rate) or 'wilson' "
+        "(#134 Wilson CI non-overlap vs incumbent + optional E-2 floor band; "
+        "degrades loudly to regression when counts are missing)",
+    ),
+    floor_band: str = typer.Option(
+        "",
+        "--floor-band",
+        help="E-2 noise-floor JSON ({passed, total}) — with --gate-mode wilson "
+        "the candidate must also clear the floor band's upper bound",
+    ),
+    claims_registry: str = typer.Option(
+        "",
+        "--claims-registry",
+        help="Claims registry markdown path (insight/claims-registry.md C-1): "
+        "append a CL row for this gate decision (promote/reject) with run ids",
+    ),
     allow_reconsume: bool = typer.Option(
         False,
         "--allow-reconsume",
@@ -2073,6 +2092,11 @@ def flywheel_record(
     from fusion_trainer.flywheel import FlywheelError, record_round
 
     try:
+        floor = None
+        if floor_band:
+            from fusion_trainer.promotion import load_floor_band
+
+            floor = load_floor_band(Path(floor_band))
         entry = record_round(
             cache_path or _default_cache_path(),
             label=label,
@@ -2084,6 +2108,9 @@ def flywheel_record(
             run_id=run_id,
             baseline=baseline,
             gate=gate,
+            gate_mode=gate_mode,
+            floor_band=floor,
+            claims_registry=Path(claims_registry) if claims_registry else None,
             allow_reconsume=allow_reconsume,
         )
     except FlywheelError as exc:
@@ -2097,11 +2124,23 @@ def flywheel_record(
     if entry.get("status") == "discarded":
         typer.echo(
             f"GATE DISCARDED round {label!r}: pass_rate {entry['pass_rate']:.4f} "
-            f"regresses vs incumbent {entry['incumbent_pass_rate']:.4f} "
-            f"({entry['regression']:+.4f}) — checkpoint NOT promoted (#82)"
+            f"vs incumbent {entry['incumbent_pass_rate']:.4f} "
+            f"({entry['regression']:+.4f}) — checkpoint NOT promoted "
+            f"(mode={entry.get('gate_mode', 'regression')})"
         )
+        if entry.get("gate_reason"):
+            typer.echo(f"  reason: {entry['gate_reason']}")
     elif entry.get("status") == "promoted":
-        typer.echo(f"Gate PROMOTED round {label!r}")
+        typer.echo(
+            f"Gate PROMOTED round {label!r}"
+            + (
+                f" (mode={entry['gate_mode']}: {entry['gate_reason']})"
+                if entry.get("gate_reason")
+                else ""
+            )
+        )
+    if entry.get("claims_row"):
+        typer.echo(f"Claims registry row: {entry['claims_row']}")
 
 
 @flywheel_app.command(name="mark")
