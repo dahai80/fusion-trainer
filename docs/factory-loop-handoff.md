@@ -28,15 +28,30 @@ trainer SFT -> factory model slot).
 ## 1. Dataset contract (cowork -> trainer)
 
 - **Source**: cowork trajectory JSONL exports (condition-compile output
-  from cowork#639), one record per completed run.
+  from cowork#639/#638, merged 2026-11-28), one record per completed
+  run. **Shape confirmed**: records are *steps*, not chat messages —
+  `{node_id, node_name, instance_id, output_data, error, status,
+  upstream[]}` per step (instance identity + fan-out/fan-in edges
+  preserved by #638). The condition-compile artifact is a compiled
+  workflow (nodes/edges/skip_if conditions), not an SFT dataset.
 - **Trainer-side format**: the existing `{"messages": [...]}` chat SFT
   schema (same validation as `DatasetLoader.load_messages` and the
-  rollout-tap D1 schema — docs/rollout-tap.md). Tap records and cowork
-  exports stay interchangeable by construction.
-- **Ingestion**: `ft datasets from-rollouts` is the reference reader for
-  tap-shaped exports; cowork exports that already carry `messages` are
-  accepted directly. A dedicated `ft datasets from-cowork` wrapper lands
-  only if cowork's shape diverges (do not fork the schema preemptively).
+  rollout-tap D1 schema — docs/rollout-tap.md). Tap records stay
+  interchangeable; cowork steps need a **deterministic converter**.
+- **Ingestion**: a dedicated `ft datasets from-cowork` wrapper is
+  required (shape diverges — the preemptive-fork caveat resolved).
+  Converter contract, deterministic (rule 5):
+  1. one SFT sample per successful run;
+  2. `messages[0]` = the run's task prompt (user);
+  3. steps in topological order -> one assistant turn each, tool call
+     serialized as a `TOOL_CALL {json}` line (`node_name` + args) with
+     the following tool message carrying the step output (#88
+     serialize_chatml shape — same shapes the reward plugins and
+     struggle judge already parse);
+  4. failed/gated-out steps are dropped with their downstream
+     continuations kept only when the recorded run actually succeeded
+     end-to-end (a run that passed never contains a failed critical
+     step; non-critical skips are dropped loudly, counted).
 - **Filters (all deterministic, rule 5)**:
   1. successful runs only — run status passed / outcome
      `task_success` (score >= 1.0);
@@ -89,9 +104,11 @@ registry) — a path audit runs as part of the acceptance evidence.
 
 ## 5. Open items
 
-- [ ] cowork export shape confirmation (does #639 output carry
-      `messages` directly or a wrapper?).
+- [x] cowork export shape confirmation — resolved: steps-based JSONL
+      with instance identity + DAG edges (cowork#638/#639, merged
+      2026-11-28); `ft datasets from-cowork` converter required per §1.
 - [ ] identity#119 flag mechanics (flag field name / drop-vs-quarantine).
-- [ ] model catalog tenant-adapter registration surface (model-hub
-      metadata fields for tenant scoping).
+- [x] model catalog tenant-adapter registration surface — filed
+      model-hub#110 (`adapter.base_model`/`tenant_id`/`eval_gate`
+      metadata, backwards compatible).
 - [ ] commerce#16 metering payload (which quality/cost fields).
