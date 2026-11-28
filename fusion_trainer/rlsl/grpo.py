@@ -561,7 +561,9 @@ class GRPOTrainer:
             max_tokens=int(self.rlsl_cfg.teacher_max_tokens),
         )
         if not completions:
-            raise MLXFineTuneError(f"teacher returned no completion for prompt: {prompt[:80]}")
+            raise MLXFineTuneError(
+                f"teacher returned no completion for prompt: {prompt[:80]}"
+            )
         return completions[0]
 
     @staticmethod
@@ -592,9 +594,19 @@ class GRPOTrainer:
             by_prompt.setdefault(s["prompt"], []).append(s)
         if not by_prompt:
             return
-        group_means = {p: sum(x["reward"] for x in g) / len(g) for p, g in by_prompt.items()}
+        group_means = {
+            p: sum(x["reward"] for x in g) / len(g) for p, g in by_prompt.items()
+        }
         means_sorted = sorted(group_means.values())
-        gate = means_sorted[max(0, min(len(means_sorted) - 1, int(self.rlsl_cfg.teacher_quantile * len(means_sorted))))]
+        gate = means_sorted[
+            max(
+                0,
+                min(
+                    len(means_sorted) - 1,
+                    int(self.rlsl_cfg.teacher_quantile * len(means_sorted)),
+                ),
+            )
+        ]
         lam = float(self.rlsl_cfg.teacher_lambda)
         n_gated = n_bonus = n_fail = 0
         for prompt, group in by_prompt.items():
@@ -612,10 +624,15 @@ class GRPOTrainer:
                 s["advantage"] = s["advantage"] + lam * agreement
                 s["teacher_gated"] = True
                 s["teacher_agreement"] = agreement
+                s["teacher_reference"] = reference
                 n_bonus += 1
         logger.info(
             "SeTPO-lite teacher anchor: gate=%.4f groups=%d gated=%d boosted=%d teacher_failures=%d",
-            gate, len(by_prompt), n_gated, n_bonus, n_fail,
+            gate,
+            len(by_prompt),
+            n_gated,
+            n_bonus,
+            n_fail,
         )
 
     def _generate(self, prompt: str, n: int) -> list[str]:
@@ -693,10 +710,25 @@ class GRPOTrainer:
         kept: list[dict[str, Any]],
         iteration: int,
     ) -> str:
-        """Write kept (prompt, completion) pairs as messages-JSONL for fusion-mlx."""
+        """Write kept (prompt, completion) pairs as messages-JSONL for fusion-mlx.
+
+        Forward-KL anchor (trainer#128, teacher_demo_mix): when enabled, the
+        teacher reference completions carried by gated samples are ALSO staged
+        as demonstration rows (one per gated prompt, deduped) — mask_prompt
+        makes the engine train on the teacher completion tokens, anchoring the
+        policy to teacher behavior (the paper's collapse guard, realized as
+        demo mixing since exact token-level KL needs engine logprobs,
+        fusion-mlx#1756).
+        """
         dest = self._output_dir / f"grpo_iter_{iteration}"
         dest.mkdir(parents=True, exist_ok=True)
         out_path = dest / "train.jsonl"
+        demos: dict[str, str] = {}
+        if self.rlsl_cfg.teacher_demo_mix:
+            for s in kept:
+                ref = s.get("teacher_reference")
+                if ref and s["prompt"] not in demos:
+                    demos[s["prompt"]] = ref
         with open(out_path, "w") as f:
             for s in kept:
                 messages = [
@@ -704,8 +736,18 @@ class GRPOTrainer:
                     {"role": "assistant", "content": s["completion"]},
                 ]
                 f.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
+            for prompt, ref in demos.items():
+                messages = [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": ref},
+                ]
+                f.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
         logger.info(
-            "GRPO iter %d staged %d samples to %s", iteration, len(kept), out_path
+            "GRPO iter %d staged %d samples (+%d teacher demo rows) to %s",
+            iteration,
+            len(kept),
+            len(demos),
+            out_path,
         )
         return str(dest)
 
