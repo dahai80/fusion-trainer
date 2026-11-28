@@ -16,6 +16,22 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc50] - 2026-11-28
+
+### Added
+
+- **Wilson CI eval-gated promotion + claims registry rows (#134, PR #135)**:
+  phase-2 promotion line — `gate_promotion` promotes a candidate adapter
+  only when its Wilson 95% CI sits strictly above the incumbent's CI
+  (non-overlap) and above the optional E-2 noise-floor band; missing
+  counts degrade loudly to the #82 point regression check. Every gate
+  decision appends a claims-registry row (`CL-0NN`, register-before-use,
+  C-1) with eval/trainer run ids; rejected rows are kept forever.
+  `ft flywheel record --gate-mode wilson --floor-band --claims-registry`;
+  nightly gains an unattended promotion-cycle smoke step. Live cycle
+  verified on the real rc22 flywheel curve (19/30 and 17/30 statistically
+  discarded vs the 22/30 incumbent).
+
 ## [1.0.0rc49] - 2026-11-28
 
 ### Added
