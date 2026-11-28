@@ -16,6 +16,22 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc49] - 2026-11-28
+
+### Added
+
+- **Step-wise struggle judge + expert-guidance injection block (#116,
+  PR #132)**: deterministic per-assistant-step struggle features for
+  JudgeMix co-rollout injection — `judge_struggle_steps` flags steps
+  repeating the immediately preceding tool call (same normalized name +
+  sorted arguments) and tool errors attributed to the ISSUING step;
+  `struggle_score = repeated_prev + 2 * error_results` (rc38 weighting).
+  `struggling_recently(window=3)` is the next-turn injection gate;
+  `render_expert_block` renders the budget-capped guidance block (1200
+  chars, max 3 steps, explicit omission lines) with the same
+  never-silently-exceeded contract as the #123 skill block. LLM-free
+  (rule 5); an LLM judge may layer on top, never replace the gate.
+
 ## [1.0.0rc48] - 2026-11-28
 
 ### Added
