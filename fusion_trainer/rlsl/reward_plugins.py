@@ -128,7 +128,7 @@ def reward_office_xlsx(sample: dict, completion: str, args: dict) -> float:
             ns = {"m": _NS_MAIN, "r": _NS_REL_DOC}
             sheets: dict[str, str] = {}
             for sh in wb.findall("m:sheets/m:sheet", ns):
-                sheets[sh.get("name", "")] = sh.get(f"{{{ _NS_REL_DOC }}}id", "")
+                sheets[sh.get("name", "")] = sh.get(f"{{{_NS_REL_DOC}}}id", "")
             for name in required:
                 checks.append(
                     (f"sheet:{name}", name in sheets, f"sheets={sorted(sheets)}")
@@ -156,10 +156,12 @@ def reward_office_xlsx(sample: dict, completion: str, args: dict) -> float:
     return score
 
 
-def _sheet_target(zf: zipfile.ZipFile, sheet_name: str, sheets: dict[str, str]) -> str | None:
+def _sheet_target(
+    zf: zipfile.ZipFile, sheet_name: str, sheets: dict[str, str]
+) -> str | None:
     rid = sheets.get(sheet_name, "")
     for rel in ET.fromstring(zf.read("xl/_rels/workbook.xml.rels")).iter(
-        f"{{{ _NS_PKG_REL }}}Relationship"
+        f"{{{_NS_PKG_REL}}}Relationship"
     ):
         if rel.get("Id") == rid:
             target = rel.get("Target", "worksheets/sheet1.xml")
@@ -192,8 +194,8 @@ def reward_office_docx(sample: dict, completion: str, args: dict) -> float:
         with zipfile.ZipFile(path) as zf:
             doc = ET.fromstring(zf.read("word/document.xml"))
             text = "\n".join(
-                "".join(t.text or "" for t in p.iter(f"{{{ _NS_WML }}}t"))
-                for p in doc.iter(f"{{{ _NS_WML }}}p")
+                "".join(t.text or "" for t in p.iter(f"{{{_NS_WML}}}t"))
+                for p in doc.iter(f"{{{_NS_WML}}}p")
             )
             for sec in required:
                 checks.append(
@@ -290,9 +292,13 @@ def reward_rubric_judge(sample: dict, completion: str, args: dict) -> float:
         completion=completion[:8000],
         rubric=rubric_text,
     )
-    model = str(args.get("model") or os.environ.get("FUSION_RUBRIC_JUDGE_MODEL", "") or "")
+    model = str(
+        args.get("model") or os.environ.get("FUSION_RUBRIC_JUDGE_MODEL", "") or ""
+    )
     if not model:
-        logger.warning("rubric_judge: no judge model configured (args.model or FUSION_RUBRIC_JUDGE_MODEL) — reward 0.0")
+        logger.warning(
+            "rubric_judge: no judge model configured (args.model or FUSION_RUBRIC_JUDGE_MODEL) — reward 0.0"
+        )
         return 0.0
     try:
         client = MLXFineTuneClient()
@@ -316,7 +322,110 @@ def reward_rubric_judge(sample: dict, completion: str, args: dict) -> float:
     return score
 
 
+def _extract_tool_calls(completion: str) -> tuple[int, int]:
+    """Count tool calls + redundant-consecutive repeats in a completion.
+
+    Two deterministic shapes (issue #117): the in-repo serialization
+    (``TOOL_CALL {"name": ..., "arguments": ...}`` lines, formats.py
+    serialize_chatml) and engine-native JSON tool calls (a single object
+    with function/name, a list of them, or {"tool_calls": [...]}). The
+    redundancy rule matches rollout_ingest: a call repeating the
+    immediately preceding call (same name + normalized arguments) counts
+    as redundant; a completion is one assistant turn, so no user-turn
+    reset is needed. Unparsable text -> (0, 0) — no fabricated calls.
+    """
+    keys: list[str] = []
+
+    def _key_from_call(call: Any) -> str | None:
+        if not isinstance(call, dict):
+            return None
+        fn = call.get("function")
+        if not isinstance(fn, dict) or not fn.get("name"):
+            fn = call  # engine-native flat shape: {"name": ..., "arguments": ...}
+        if not fn.get("name"):
+            return None
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                return f"{fn['name']}|{args}"
+        if isinstance(args, dict):
+            args = json.dumps(args, sort_keys=True, ensure_ascii=False)
+        return f"{fn['name']}|{args}"
+
+    text = completion.strip()
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if parsed is not None:
+        if isinstance(parsed, dict) and isinstance(parsed.get("tool_calls"), list):
+            parsed = parsed["tool_calls"]
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if isinstance(parsed, list):
+            keys.extend(k for k in (_key_from_call(c) for c in parsed) if k)
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("TOOL_CALL "):
+                continue
+            try:
+                call = json.loads(line[len("TOOL_CALL ") :])
+            except ValueError:
+                continue
+            key = _key_from_call(call)
+            if key:
+                keys.append(key)
+    redundant = sum(1 for prev, cur in zip(keys, keys[1:], strict=False) if prev == cur)
+    return len(keys), redundant
+
+
+def reward_efficiency_budget(sample: dict, completion: str, args: dict) -> float:
+    """Frozen-budget efficiency reward (issue #117, CARE-PO recipe).
+
+    args: {"budgets": {"<task_id>": int, ...}, optional "_default": int}.
+    The budgets MUST be the frozen p50 baselines from
+    ``ft datasets from-rollouts --budgets-output`` — never policy-relative.
+    Bonus-only: within budget + zero redundant consecutive calls earns the
+    full bonus (normalized to 1.0; the dispatcher applies scale); a
+    no-tool-call completion earns 0, never negative — the CARE-PO collapse
+    (no-tool-call optimal policy) is structurally impossible. No budget for
+    the sample's task -> 0.0 with a loud log (VerifierBench lesson: silent
+    rejection masquerading as strictness is a poisoning mode).
+    """
+    from ..dataset.rollout_ingest import _BUDGET_PENALTY_BONUS, budget_penalty
+
+    budgets = args.get("budgets")
+    if not isinstance(budgets, dict) or not budgets:
+        logger.warning("efficiency_budget: no budgets in args — reward 0.0")
+        return 0.0
+    task_id = str(sample.get("task_id") or "")
+    budget = budgets.get(task_id, budgets.get("_default"))
+    if budget is None:
+        logger.warning(
+            "efficiency_budget: no frozen budget for task %r (have %d task(s)) — reward 0.0",
+            task_id or "<none>",
+            len(budgets),
+        )
+        return 0.0
+    calls, redundant = _extract_tool_calls(completion)
+    bonus = budget_penalty(calls, int(budget), redundant)
+    score = bonus / _BUDGET_PENALTY_BONUS if bonus else 0.0
+    logger.info(
+        "efficiency_budget task=%s calls=%d redundant=%d budget=%s -> %.2f",
+        task_id or "<none>",
+        calls,
+        redundant,
+        budget,
+        score,
+    )
+    return score
+
+
 register_reward_fn("office_xlsx", reward_office_xlsx)
 register_reward_fn("office_docx", reward_office_docx)
 register_reward_fn("office_pptx", reward_office_pptx)
 register_reward_fn("rubric_judge", reward_rubric_judge)
+register_reward_fn("efficiency_budget", reward_efficiency_budget)
