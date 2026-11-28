@@ -419,6 +419,17 @@ class RLSLConfig:
     teacher_max_tokens: int = 512
     """Max tokens for the teacher reference completion."""
 
+    teacher_demo_mix: bool = False
+    """Forward-KL anchor (SeTPO arXiv 2611.18459), delegation equivalent.
+
+    When teacher_model is set and this is on, the teacher reference
+    completions already fetched for gated low-reward groups are ALSO staged
+    as demonstration rows into the per-iteration SFT stage (mask_prompt=True
+    trains on the teacher completion tokens) — the anchor that keeps the
+    policy from collapsing away from teacher behavior. This is demo mixing,
+    not an exact forward-KL loss (token-level weighting needs engine
+    logprobs, fusion-mlx#1756). Off by default."""
+
     # Logging
     log_every: int = 10
     save_every: int = 200

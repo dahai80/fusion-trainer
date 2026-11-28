@@ -776,7 +776,9 @@ class TestRolloutTokensMetric:
             return (["c1", "c2"], {"completion_tokens": 41})
 
         trainer._client = SimpleNamespace(chat_completions_with_usage=fake_with_usage)
-        trainer.rlsl_cfg = SimpleNamespace(temperature=1.0, top_p=1.0, response_length=64)
+        trainer.rlsl_cfg = SimpleNamespace(
+            temperature=1.0, top_p=1.0, response_length=64
+        )
         out = GRPOTrainer._generate(trainer, "prompt", 2)
         assert out == ["c1", "c2"]
         assert trainer._rollout_completion_tokens == 41
@@ -792,7 +794,9 @@ class TestRolloutTokensMetric:
         trainer._client = SimpleNamespace(
             chat_completions_with_usage=lambda *a, **k: (["c"], {})
         )
-        trainer.rlsl_cfg = SimpleNamespace(temperature=1.0, top_p=1.0, response_length=64)
+        trainer.rlsl_cfg = SimpleNamespace(
+            temperature=1.0, top_p=1.0, response_length=64
+        )
         out = GRPOTrainer._generate(trainer, "prompt", 1)
         assert out == ["c"]
         assert trainer._rollout_completion_tokens == 0
@@ -828,11 +832,23 @@ class TestSeTPOTeacherAnchor:
     @staticmethod
     def _samples():
         low = [
-            {"prompt": "p_low", "completion": f"attempt {i}", "reward": 0.1, "advantage": -0.5, "sample": {}}
+            {
+                "prompt": "p_low",
+                "completion": f"attempt {i}",
+                "reward": 0.1,
+                "advantage": -0.5,
+                "sample": {},
+            }
             for i in range(4)
         ]
         high = [
-            {"prompt": "p_high", "completion": f"good {i}", "reward": 0.9, "advantage": 0.5, "sample": {}}
+            {
+                "prompt": "p_high",
+                "completion": f"good {i}",
+                "reward": 0.9,
+                "advantage": 0.5,
+                "sample": {},
+            }
             for i in range(4)
         ]
         return low + high
@@ -878,9 +894,93 @@ class TestSeTPOTeacherAnchor:
         calls = []
         t._teacher_generate = lambda prompt: calls.append(prompt) or "x"
         samples = [
-            {"prompt": f"p{i}", "completion": "c", "reward": 1.0, "advantage": 0.0, "sample": {}}
+            {
+                "prompt": f"p{i}",
+                "completion": "c",
+                "reward": 1.0,
+                "advantage": 0.0,
+                "sample": {},
+            }
             for i in range(4)
         ]
         t._apply_teacher_anchor(samples)
         assert calls == []
         assert all(s["advantage"] == 0.0 for s in samples)
+
+
+def _read_rows(dest):
+    with open(Path(dest) / "train.jsonl", encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh]
+
+
+class TestTeacherDemoMix:
+    def _trainer(self, **rlsl_kw):
+        return GRPOTrainer(_make_grpo_config(**rlsl_kw))
+
+    def _gated_samples(self):
+        ref = "the teacher way"
+        return [
+            {
+                "prompt": "p_low",
+                "completion": f"attempt {i}",
+                "reward": 0.1,
+                "advantage": -0.5,
+                "sample": {},
+                "teacher_reference": ref,
+                "teacher_gated": True,
+            }
+            for i in range(3)
+        ] + [
+            {
+                "prompt": "p_high",
+                "completion": "good",
+                "reward": 0.9,
+                "advantage": 0.5,
+                "sample": {},
+            }
+        ]
+
+    def test_anchor_stamps_teacher_reference(self):
+        t = self._trainer(teacher_model="teacher-x", teacher_lambda=0.5)
+        t._teacher_generate = lambda prompt: "the teacher way"
+        samples = TestSeTPOTeacherAnchor._samples()
+        t._apply_teacher_anchor(samples)
+        low = [s for s in samples if s["prompt"] == "p_low"]
+        high = [s for s in samples if s["prompt"] == "p_high"]
+        assert all(s.get("teacher_reference") == "the teacher way" for s in low)
+        assert all("teacher_reference" not in s for s in high)
+
+    def test_stage_sft_off_by_default_no_demo_rows(self, tmp_path):
+        t = self._trainer()
+        t._output_dir = tmp_path
+        dest = t._stage_sft(self._gated_samples(), iteration=1)
+        rows = _read_rows(dest)
+        assert len(rows) == 4
+        assert all(r["messages"][1]["content"] != "the teacher way" for r in rows)
+
+    def test_stage_sft_mixes_teacher_demos(self, tmp_path):
+        t = self._trainer(teacher_model="teacher-x", teacher_demo_mix=True)
+        t._output_dir = tmp_path
+        dest = t._stage_sft(self._gated_samples(), iteration=1)
+        rows = _read_rows(dest)
+        demos = [r for r in rows if r["messages"][1]["content"] == "the teacher way"]
+        assert len(demos) == 1  # one per gated prompt, deduped
+        assert demos[0]["messages"][0]["content"] == "p_low"
+        assert len(rows) == 5  # 4 student rows + 1 demo row
+
+    def test_stage_sft_demo_mix_without_references_honest(self, tmp_path):
+        t = self._trainer(teacher_model="teacher-x", teacher_demo_mix=True)
+        t._output_dir = tmp_path
+        plain = [
+            {
+                "prompt": f"p{i}",
+                "completion": "c",
+                "reward": 1.0,
+                "advantage": 0.0,
+                "sample": {},
+            }
+            for i in range(3)
+        ]
+        dest = t._stage_sft(plain, iteration=1)
+        rows = _read_rows(dest)
+        assert len(rows) == 3  # no references carried — zero demo rows, no error
