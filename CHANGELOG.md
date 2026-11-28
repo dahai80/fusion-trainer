@@ -16,6 +16,19 @@ source_of_truth:
 
 # Changelog
 
+## [1.0.0rc48] - 2026-11-28
+
+### Added
+
+- **`efficiency_budget` reward plugin (#117)**: the GRPO reward side of the
+  CARE-PO shape — sample spec `{"plugin": "efficiency_budget", "args":
+  {"budgets": {...}}}` consumes the frozen p50 budgets from
+  `--budgets-output`; `budget_penalty` stays the single bonus-only source
+  (within budget + zero redundant consecutive calls = 1.0; no-tool-call /
+  over-budget / unfrozen task = 0.0, loud log). Tool calls counted from the
+  completion in both in-repo shapes (`TOOL_CALL` lines, engine-native JSON).
+  Live activation remains data-gated per the #117 volume gate.
+
 ## [1.0.0rc47] - 2026-11-28
 
 ### Added
