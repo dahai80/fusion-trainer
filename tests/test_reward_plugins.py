@@ -42,8 +42,7 @@ def _make_xlsx(path, sheets: dict[str, str]) -> str:
             "xl/_rels/workbook.xml.rels",
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
             + "".join(
-                f'<Relationship Id="rId{i + 1}" '
-                f'Target="worksheets/sheet{i + 1}.xml"/>'
+                f'<Relationship Id="rId{i + 1}" Target="worksheets/sheet{i + 1}.xml"/>'
                 for i in range(len(sheets))
             )
             + "</Relationships>",
@@ -89,8 +88,7 @@ COMPLETION = "Saved the result to /tmp/out/report.xlsx"
 
 def test_extract_path_last_token():
     assert (
-        extract_result_path("wrote /tmp/a.xlsx then /tmp/b.xlsx", {})
-        == "/tmp/b.xlsx"
+        extract_result_path("wrote /tmp/a.xlsx then /tmp/b.xlsx", {}) == "/tmp/b.xlsx"
     )
 
 
@@ -117,16 +115,16 @@ def test_xlsx_pass_required_sheets(tmp_path):
         {"Summary": "<sheetData><c r='B1'><f>SUM(A1:A9)</f></c></sheetData>"},
     )
     score = reward_office_xlsx(
-        {}, f"Saved to {f}", {"required_sheets": ["Summary"], "formula_policy": "require"}
+        {},
+        f"Saved to {f}",
+        {"required_sheets": ["Summary"], "formula_policy": "require"},
     )
     assert score == 1.0
 
 
 def test_xlsx_fail_missing_sheet(tmp_path):
     f = _make_xlsx(tmp_path / "r.xlsx", {"Data": "<sheetData/>"})
-    assert (
-        reward_office_xlsx({}, f"saved {f}", {"required_sheets": ["Summary"]}) == 0.0
-    )
+    assert reward_office_xlsx({}, f"saved {f}", {"required_sheets": ["Summary"]}) == 0.0
 
 
 def test_xlsx_strict_policy_fails_hardcoded(tmp_path):
@@ -308,3 +306,121 @@ def test_rubric_judge_clamps_and_fails_visible(monkeypatch, caplog):
             == 0.0
         )
     assert any("rubric_judge failed" in r.message for r in caplog.records)
+
+
+# ===========================================================================
+# efficiency_budget plugin (issue #117, CARE-PO frozen-budget reward)
+# ===========================================================================
+
+
+class TestEfficiencyBudget:
+    BUDGETS = {"task-a": 3, "_default": 5}
+
+    def test_within_budget_clean_calls_full_bonus(self):
+        from fusion_trainer.rlsl.reward_plugins import reward_efficiency_budget
+
+        completion = (
+            'TOOL_CALL {"arguments": {"p": 1}, "name": "open"}\n'
+            'TOOL_CALL {"arguments": {}, "name": "save"}'
+        )
+        assert (
+            reward_efficiency_budget(
+                {"task_id": "task-a"}, completion, {"budgets": self.BUDGETS}
+            )
+            == 1.0
+        )
+
+    def test_over_budget_zero(self):
+        from fusion_trainer.rlsl.reward_plugins import reward_efficiency_budget
+
+        completion = "".join(
+            f'TOOL_CALL {{"arguments": {{"p": {i}}}, "name": "t{i}"}}\n'
+            for i in range(4)
+        )
+        assert (
+            reward_efficiency_budget(
+                {"task_id": "task-a"}, completion, {"budgets": self.BUDGETS}
+            )
+            == 0.0
+        )
+
+    def test_redundant_consecutive_zero(self):
+        from fusion_trainer.rlsl.reward_plugins import reward_efficiency_budget
+
+        completion = (
+            'TOOL_CALL {"arguments": {"p": 1}, "name": "open"}\n'
+            'TOOL_CALL {"arguments": {"p": 1}, "name": "open"}'
+        )
+        assert (
+            reward_efficiency_budget(
+                {"task_id": "task-a"}, completion, {"budgets": self.BUDGETS}
+            )
+            == 0.0
+        )
+
+    def test_no_tool_calls_zero_never_negative(self):
+        from fusion_trainer.rlsl.reward_plugins import reward_efficiency_budget
+
+        assert (
+            reward_efficiency_budget(
+                {"task_id": "task-a"}, "plain prose answer", {"budgets": self.BUDGETS}
+            )
+            == 0.0
+        )
+
+    def test_default_budget_and_missing_task(self, caplog):
+        from fusion_trainer.rlsl.reward_plugins import reward_efficiency_budget
+
+        completion = 'TOOL_CALL {"arguments": {}, "name": "open"}'
+        assert (
+            reward_efficiency_budget(
+                {"task_id": "task-unknown"}, completion, {"budgets": self.BUDGETS}
+            )
+            == 1.0
+        )
+        assert (
+            reward_efficiency_budget(
+                {"task_id": "task-unknown"}, completion, {"budgets": {"task-a": 3}}
+            )
+            == 0.0
+        )
+        assert any("no frozen budget" in r.message for r in caplog.records)
+
+    def test_no_budgets_arg_zero(self, caplog):
+        from fusion_trainer.rlsl.reward_plugins import reward_efficiency_budget
+
+        assert reward_efficiency_budget({"task_id": "t"}, "x", {}) == 0.0
+        assert any("no budgets" in r.message for r in caplog.records)
+
+    def test_engine_native_json_shape(self):
+        import json
+
+        from fusion_trainer.rlsl.reward_plugins import reward_efficiency_budget
+
+        completion = json.dumps(
+            {"tool_calls": [{"function": {"name": "open", "arguments": {"p": 1}}}]}
+        )
+        assert (
+            reward_efficiency_budget(
+                {"task_id": "task-a"}, completion, {"budgets": self.BUDGETS}
+            )
+            == 1.0
+        )
+
+    def test_registered_and_dispatched_via_sample_spec(self):
+        from fusion_trainer.rlsl.reward_plugins import get_reward_fn
+        from fusion_trainer.rlsl.sandbox import reward_completion
+
+        assert get_reward_fn("efficiency_budget") is not None
+        completion = 'TOOL_CALL {"arguments": {}, "name": "open"}'
+        score = reward_completion(
+            {
+                "task_id": "task-a",
+                "reward": {
+                    "plugin": "efficiency_budget",
+                    "args": {"budgets": self.BUDGETS},
+                },
+            },
+            completion,
+        )
+        assert score == 1.0

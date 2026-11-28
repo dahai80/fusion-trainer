@@ -146,6 +146,14 @@ ft datasets from-rollouts --sink rollouts.jsonl \
   matching bonus-only reward helper (a no-tool-call trajectory scores
   0, never negative — the CARE-PO collapse is structurally impossible).
   An empty budget set (no task coverage yet) writes an empty file.
+  The GRPO-side reward is the `efficiency_budget` reward plugin (#90
+  plugin spec): `{"plugin": "efficiency_budget", "args": {"budgets":
+  {"<task_id>": N}}}` — paste the frozen budgets file's tasks in as
+  args; within-budget + zero redundant consecutive calls scores the
+  full bonus (normalized 1.0), no-tool-call and over-budget score 0,
+  an unfrozen task scores 0.0 with a loud log (never silent). Tool
+  calls are counted from the completion in the two in-repo shapes
+  (`TOOL_CALL {json}` lines or engine-native JSON tool calls).
 - Skill library (`ft skills mine`, #123 gradient-free path 2):
   procedural skills mined from positive rollouts — a skill is a
   consecutive assistant tool-call chain (normalized like the
