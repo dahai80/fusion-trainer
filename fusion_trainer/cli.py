@@ -1691,6 +1691,83 @@ skills_app = typer.Typer(
     help="Skill library: mine procedural skills from positive rollouts (#123)"
 )
 app.add_typer(skills_app, name="skills")
+contracts_app = typer.Typer(help="Office-pilot contract gates (#133)")
+app.add_typer(contracts_app, name="contracts")
+
+
+@contracts_app.command(name="gate")
+def contracts_gate(
+    pre_summary: str = typer.Option(
+        ...,
+        "--pre",
+        help="Baseline office-bench summary.json (pre run)",
+    ),
+    post_summary: str = typer.Option(
+        ...,
+        "--post",
+        help="Candidate office-bench summary.json (post run)",
+    ),
+    overall_threshold: float = typer.Option(
+        0.80,
+        "--overall-threshold",
+        help="Minimum post office-bench pass rate (#133 gate 1)",
+    ),
+    token_pre: float = typer.Option(
+        None,
+        "--token-per-task-pre",
+        help="Baseline tokens per task (bench harness row totals); "
+        "omitting leaves the cost gate unmeasured, which fails loud",
+    ),
+    token_post: float = typer.Option(
+        None,
+        "--token-per-task-post",
+        help="Candidate tokens per task",
+    ),
+    token_reduction: float = typer.Option(
+        0.30,
+        "--token-reduction",
+        help="Required token-per-task reduction vs baseline (#133 gate 3)",
+    ),
+    hacking_clean: bool = typer.Option(
+        None,
+        "--hacking-clean/--hacking-dirty",
+        help="hacking_monitor verdict for the candidate run (#133 gate 4); "
+        "omitting leaves the gate unmeasured, which fails loud",
+    ),
+):
+    """Decide the #133 pre/post hard gates from office-bench summaries.
+
+    Gates: overall pass rate, must-not-flip contract ids (never regress),
+    token-per-task cost gate, hacking-monitor clean run. Deterministic;
+    unmeasured hard gates fail loudly — never silently pass.
+    """
+    from pathlib import Path
+
+    from fusion_trainer.contract_gate import (
+        ContractGateError,
+        gate_contract_probes,
+        load_gate_summary,
+    )
+
+    try:
+        pre = load_gate_summary(Path(pre_summary))
+        post = load_gate_summary(Path(post_summary))
+        decision = gate_contract_probes(
+            pre,
+            post,
+            overall_threshold=overall_threshold,
+            token_per_task_pre=token_pre,
+            token_per_task_post=token_post,
+            token_reduction=token_reduction,
+            hacking_clean=hacking_clean,
+        )
+    except (ContractGateError, OSError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    for check in decision["checks"]:
+        typer.echo(f"  [{'PASS' if check['passed'] else 'FAIL'}] {check['gate']}: {check['detail']}")
+    typer.echo(f"Verdict: {'PROMOTED' if decision['promoted'] else 'REJECTED'} — {decision['reason']}")
+    raise typer.Exit(0 if decision["promoted"] else 1)
 
 
 @datasets_app.command(name="from-eval")
