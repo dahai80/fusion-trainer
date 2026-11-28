@@ -1925,13 +1925,14 @@ def datasets_from_cowork(
         help="Write the DPO output even when mining is structurally empty",
     ),
 ):
-    """Build SFT/DPO datasets from cowork flow exports (flywheel entry 3).
+    """Build SFT/DPO datasets from cowork exports (flywheel entry 3 + #136).
 
-    Cowork node runs are mapped to eval-trajectory shape (task_id =
-    "<flow_id>/<node_id>") and mined by the same path as from-eval —
-    passed nodes become SFT samples, passed/failed siblings become DPO
-    pairs (#83 showed DPO is data-thin, not algorithm-thin; multi-node
-    flows are the volume source). Sidecar manifest carries the export
+    Shape is detected deterministically from the first record: per-run
+    DAG-step records (#136, handoff doc §1) convert to chat SFT samples —
+    one per successful run, steps topologically ordered into tool-call
+    turns, classification screen per the identity#119 trainer default.
+    Legacy per-node flow exports (T4) map to eval-trajectory shape and
+    mine via the from-eval path. Sidecar manifest carries the export
     sha256 + lineage chain.
     """
     from pathlib import Path
@@ -1939,19 +1940,42 @@ def datasets_from_cowork(
     from fusion_trainer.dataset.cowork_ingest import (
         CoworkIngestError,
         build_from_cowork_dataset,
+        build_from_cowork_steps_dataset,
+        detect_cowork_export_shape,
     )
     from fusion_trainer.dataset.eval_ingest import EvalIngestError
 
     try:
-        manifest = build_from_cowork_dataset(
-            Path(export_file),
-            Path(output_file),
-            Path(dpo_output) if dpo_output else None,
-            dpo_allow_empty=dpo_anyway,
-        )
+        shape = detect_cowork_export_shape(Path(export_file))
+        if shape == "steps":
+            manifest = build_from_cowork_steps_dataset(
+                Path(export_file), Path(output_file)
+            )
+        else:
+            manifest = build_from_cowork_dataset(
+                Path(export_file),
+                Path(output_file),
+                Path(dpo_output) if dpo_output else None,
+                dpo_allow_empty=dpo_anyway,
+            )
     except (CoworkIngestError, EvalIngestError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
+    if manifest.get("shape") == "steps":
+        stats = manifest["stats"]
+        typer.echo(
+            f"SFT dataset: {manifest['sft_samples']} samples -> {manifest['sft_path']} "
+            f"({stats['runs_kept']}/{stats['runs_total']} runs kept)"
+        )
+        typer.echo(
+            f"Dropped:     unsuccessful={stats['dropped_unsuccessful']} "
+            f"classification={stats['dropped_classification']} "
+            f"inconsistent={stats['dropped_inconsistent']} "
+            f"cycle={stats['dropped_cycle']} skipped_steps={stats['steps_skipped']}"
+        )
+        typer.echo(f"Cowork sha256: {manifest['cowork_export_sha256']}")
+        typer.echo(f"Manifest:     {manifest['sft_path']}.from_cowork.json")
+        return
     typer.echo(
         f"SFT dataset: {manifest['sft_samples']} samples -> {manifest['sft_path']} "
         f"({manifest['records_passed']} passed / {manifest['records_total']} records)"
