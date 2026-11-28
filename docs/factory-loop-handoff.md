@@ -91,8 +91,11 @@ trainer SFT -> factory model slot).
 - **Registration**: a passing adapter is registered in the model catalog
   as a tenant-scoped adapter on the 27B base (model_type `llm`, adapter
   path + run ids in metadata). The demand dual-draft local arm can then
-  route to the tenant adapter; cost/quality deltas feed commerce#16
-  metering.
+  route to the tenant adapter; cost deltas (run duration + token usage
+  from the harness budget funnel) feed commerce#16 dual metering —
+  line A duration invoicing, line B token quota with hard stop and
+  consumed-vs-unused refund balance; quality stays the eval-gate CI
+  registered in the catalog metadata.
 
 ## 4. Acceptance loop (offline synthetic tenant)
 
@@ -111,4 +114,13 @@ registry) — a path audit runs as part of the acceptance evidence.
 - [x] model catalog tenant-adapter registration surface — filed
       model-hub#110 (`adapter.base_model`/`tenant_id`/`eval_gate`
       metadata, backwards compatible).
-- [ ] commerce#16 metering payload (which quality/cost fields).
+- [x] commerce#16 metering payload — resolved (commerce#16 closed
+      2026-11-28, dual metering wired into the order lifecycle): line A
+      invoices per-order workflow run **duration totals**; line B meters
+      **token usage vs quota** from harness budget-funnel accounting,
+      with a hard stop that surfaces `quota_exhausted`. The refund rule
+      requires metering records to distinguish **consumed vs unused
+      token balance**. For §3 the tenant-adapter route therefore records
+      per-request duration + token counts (budget funnel already emits
+      them) — quality stays the eval-gate CI in the catalog metadata
+      (model-hub#110), commerce meters cost only.
