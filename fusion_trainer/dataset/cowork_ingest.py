@@ -187,3 +187,292 @@ def find_cowork_manifest(dataset_path: str | Path) -> dict[str, Any] | None:
     if isinstance(data, dict) and data.get("cowork_export_sha256"):
         return data
     return None
+
+
+# ---------------------------------------------------------------------------
+# Steps-shape ingestion (#136, handoff doc §1) — cowork run exports whose
+# records are DAG steps, not chat messages: per run {"run_id", "task",
+# "success", "classification"?, "steps": [{"node_id", "node_name",
+# "output_data", "error", "status", "upstream"[]}]}.
+# ---------------------------------------------------------------------------
+
+_STEPS_REQUIRED_KEYS = ("run_id", "task", "success", "steps")
+_STEP_FAIL_STATUS = {"failed", "error", "failure"}
+_STEP_SKIP_STATUS = {"skipped", "skip", "gated", "gated_out", "cancelled"}
+_CLASSIFICATION_PASS = {"public", "internal"}
+
+
+def detect_cowork_export_shape(path: Path) -> str:
+    """Deterministically detect the export shape from the first valid line.
+
+    "steps" = per-run DAG-step records (#136); "node-runs" = legacy per-node
+    flow-export records (T4). Mixed/ambiguous files raise — never guess past
+    the first record.
+    """
+    if not path.is_file():
+        raise CoworkIngestError(f"cowork export not found: {path}")
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if "steps" in rec and "run_id" in rec:
+                return "steps"
+            if "messages" in rec and "passed" in rec:
+                return "node-runs"
+            raise CoworkIngestError(
+                f"unrecognized cowork export record shape in {path}: keys "
+                f"{sorted(rec.keys())[:8]}"
+            )
+    raise CoworkIngestError(f"no records in cowork export {path}")
+
+
+def load_cowork_runs(path: Path) -> tuple[list[dict[str, Any]], str]:
+    """Load a steps-shape cowork run export, validate, return (runs, sha256)."""
+    if not path.is_file():
+        raise CoworkIngestError(f"cowork export not found: {path}")
+    digest = sha256_file(path)
+    runs: list[dict[str, Any]] = []
+    bad = 0
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                bad += 1
+                logger.warning("skip cowork run line %d: not JSON", lineno)
+                continue
+            if not isinstance(rec, dict):
+                bad += 1
+                logger.warning("skip cowork run line %d: not an object", lineno)
+                continue
+            missing = [k for k in _STEPS_REQUIRED_KEYS if k not in rec]
+            if missing:
+                bad += 1
+                logger.warning(
+                    "skip cowork run line %d (run %s): missing keys %s",
+                    lineno,
+                    rec.get("run_id", "?"),
+                    missing,
+                )
+                continue
+            steps = rec.get("steps")
+            if not isinstance(steps, list) or not all(isinstance(s, dict) for s in steps):
+                bad += 1
+                logger.warning(
+                    "skip cowork run line %d (run %s): steps must be a list of objects",
+                    lineno,
+                    rec.get("run_id", "?"),
+                )
+                continue
+            runs.append(rec)
+    if not runs:
+        raise CoworkIngestError(
+            f"no valid cowork run records in {path} (skipped {bad} bad lines)"
+        )
+    if bad:
+        logger.warning("loaded %d cowork runs, skipped %d bad lines", len(runs), bad)
+    logger.info(
+        "loaded %d cowork runs from %s (sha256=%s)", len(runs), path, digest[:12]
+    )
+    return runs, digest
+
+
+def _topo_order_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Kahn topological sort preserving the recorded order as tiebreak.
+
+    Returns None on a cycle (run is dropped loudly by the caller). Steps
+    without ids keep their recorded position; upstream references unknown
+    ids are ignored for ordering (kept in the step itself).
+    """
+    ids: list[str] = []
+    for idx, s in enumerate(steps):
+        ids.append(str(s.get("node_id", "") or "") or f"__idx_{idx}")
+    known = set(ids)
+    indeg = {i: 0 for i in range(len(steps))}
+    dependents: dict[int, list[int]] = {i: [] for i in range(len(steps))}
+    for idx, s in enumerate(steps):
+        for u in s.get("upstream", None) or []:
+            u = str(u)
+            if u in known:
+                up = ids.index(u)
+                indeg[idx] += 1
+                dependents[up].append(idx)
+    queue = [i for i in range(len(steps)) if indeg[i] == 0]
+    ordered: list[dict[str, Any]] = []
+    seen = 0
+    while queue:
+        idx = queue.pop(0)
+        seen += 1
+        ordered.append(steps[idx])
+        for dep in dependents[idx]:
+            indeg[dep] -= 1
+            if indeg[dep] == 0:
+                queue.append(dep)
+    if seen != len(steps):
+        logger.warning("topo sort: cycle detected across %d steps", len(steps))
+        return None
+    return ordered
+
+
+def cowork_runs_to_sft(runs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Convert successful cowork runs to chat-SFT samples (#136 §1 contract).
+
+    Deterministic (rule 5): one sample per successful run, messages[0] is
+    the run task, steps in topological order become assistant tool-call
+    turns + tool messages (the #88 structured shapes the reward plugins and
+    struggle judge parse). Filters, all loud and counted:
+      - unsuccessful runs dropped;
+      - `confidential` / missing / unknown classification dropped
+        (identity#119 trainer default, comment 2026-11-28);
+      - a successful run carrying a failed step is an inconsistent record
+        and dropped;
+      - skipped/gated steps dropped with their downstream continuations
+        kept (only successful runs reach here);
+      - cyclic step graphs dropped.
+    """
+    stats = {
+        "runs_total": len(runs),
+        "runs_kept": 0,
+        "dropped_unsuccessful": 0,
+        "dropped_classification": 0,
+        "dropped_inconsistent": 0,
+        "dropped_cycle": 0,
+        "steps_skipped": 0,
+    }
+    samples: list[dict[str, Any]] = []
+    for run in runs:
+        run_id = str(run.get("run_id", "") or "?")
+        if not run.get("success"):
+            stats["dropped_unsuccessful"] += 1
+            logger.info("run %s dropped: unsuccessful", run_id)
+            continue
+        classification = str(run.get("classification", "") or "")
+        if classification not in _CLASSIFICATION_PASS:
+            stats["dropped_classification"] += 1
+            logger.warning(
+                "run %s dropped: classification %r not in %s (identity#119 "
+                "trainer default: unclassifiable never silently included)",
+                run_id,
+                classification or "<missing>",
+                sorted(_CLASSIFICATION_PASS),
+            )
+            continue
+        executed = []
+        failed = 0
+        for s in run["steps"]:
+            status = str(s.get("status", "") or "").lower()
+            if status in _STEP_FAIL_STATUS:
+                failed += 1
+            elif status in _STEP_SKIP_STATUS:
+                stats["steps_skipped"] += 1
+                logger.info("run %s: skipped/gated step %s dropped", run_id, s.get("node_id", "?"))
+            else:
+                executed.append(s)
+        if failed:
+            stats["dropped_inconsistent"] += 1
+            logger.warning(
+                "run %s dropped: successful run carries %d failed step(s) — "
+                "inconsistent record",
+                run_id,
+                failed,
+            )
+            continue
+        ordered = _topo_order_steps(executed)
+        if ordered is None:
+            stats["dropped_cycle"] += 1
+            logger.warning("run %s dropped: cyclic step graph", run_id)
+            continue
+        messages: list[dict[str, Any]] = [{"role": "user", "content": str(run.get("task", ""))}]
+        for s in ordered:
+            name = str(s.get("node_name", "") or s.get("node_id", "") or "")
+            args = s.get("input_bindings", None) or {}
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {"name": name, "arguments": args},
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(s.get("node_id", "") or name),
+                    "content": json.dumps(
+                        s.get("output_data", None), ensure_ascii=False, default=str
+                    ),
+                }
+            )
+        samples.append({"messages": messages, "run_id": run_id})
+        stats["runs_kept"] += 1
+    logger.info(
+        "cowork runs -> SFT: %d kept of %d (unsuccessful=%d classification=%d "
+        "inconsistent=%d cycle=%d skipped_steps=%d)",
+        stats["runs_kept"],
+        stats["runs_total"],
+        stats["dropped_unsuccessful"],
+        stats["dropped_classification"],
+        stats["dropped_inconsistent"],
+        stats["dropped_cycle"],
+        stats["steps_skipped"],
+    )
+    return samples, stats
+
+
+def build_from_cowork_steps_dataset(export_path: Path, output_path: Path) -> dict[str, Any]:
+    """Steps-shape ingestion: cowork run export -> SFT dataset + manifest (#136).
+
+    Consumes per-run DAG-step records (handoff doc §1), converts via
+    cowork_runs_to_sft, writes messages-JSONL + atomic sidecar manifest
+    carrying the export sha256 and the full filter accounting.
+    """
+    runs, digest = load_cowork_runs(export_path)
+    samples, stats = cowork_runs_to_sft(runs)
+    if not samples:
+        raise CoworkIngestError(
+            f"no successful cowork runs survived the filters in {export_path} "
+            f"({json.dumps(stats, ensure_ascii=False)})"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(str(output_path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for sample in samples:
+            fh.write(json.dumps(sample, ensure_ascii=False) + "\n")
+    tmp.replace(output_path)
+    manifest = {
+        "source": "fusion-cowork",
+        "shape": "steps",
+        "sft_path": str(output_path),
+        "sft_samples": len(samples),
+        "cowork_export_path": str(export_path),
+        "cowork_export_sha256": digest,
+        "stats": stats,
+        "lineage": {
+            "source": "fusion-cowork",
+            "source_path": str(export_path),
+            "source_sha256": digest,
+            "transforms": ["cowork_runs_to_sft"],
+            "output": str(output_path),
+        },
+    }
+    sidecar = Path(str(output_path) + COWORK_MANIFEST_SUFFIX)
+    tmp = Path(str(sidecar) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    tmp.replace(sidecar)
+    logger.info("wrote cowork steps manifest %s", sidecar)
+    return manifest
