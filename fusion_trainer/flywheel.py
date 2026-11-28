@@ -130,6 +130,9 @@ def record_round(
     run_id: str = "",
     baseline: bool = False,
     gate: bool = False,
+    gate_mode: str = "regression",
+    floor_band: dict[str, Any] | None = None,
+    claims_registry: Path | None = None,
     allow_reconsume: bool = False,
 ) -> dict[str, Any]:
     """Append a flywheel round parsed from a fusion-eval summary.
@@ -204,9 +207,33 @@ def record_round(
             entry["status"] = "promoted"
             entry["incumbent_pass_rate"] = None
             entry["regression"] = None
-            logger.info(
-                "gate: no prior rounds — round %r promoted by default", label
+            logger.info("gate: no prior rounds — round %r promoted by default", label)
+        elif gate_mode == "wilson":
+            # Phase-2 statistical gate (#134): Wilson CI non-overlap vs the
+            # incumbent record (+ optional E-2 floor band), counts from the
+            # eval summary. Falls back LOUDLY to the #82 point check when
+            # either side lacks counts.
+            from .promotion import gate_promotion
+
+            decision = gate_promotion(
+                entry, incumbent_entry(registry), floor=floor_band
             )
+            entry["gate_mode"] = decision["gate_mode"]
+            entry["candidate_ci"] = decision.get("candidate_ci")
+            entry["incumbent_ci"] = decision.get("incumbent_ci")
+            entry["floor_ci"] = decision.get("floor_ci")
+            entry["gate_reason"] = decision["reason"]
+            entry["incumbent_pass_rate"] = incumbent
+            entry["regression"] = entry["pass_rate"] - incumbent
+            entry["status"] = "promoted" if decision["promoted"] else "discarded"
+            if decision["promoted"]:
+                logger.info("gate PROMOTED round %r: %s", label, decision["reason"])
+            else:
+                logger.warning(
+                    "gate DISCARDED round %r: %s — checkpoint NOT promoted",
+                    label,
+                    decision["reason"],
+                )
         else:
             regression = entry["pass_rate"] - incumbent
             entry["incumbent_pass_rate"] = incumbent
@@ -229,6 +256,26 @@ def record_round(
                     entry["pass_rate"],
                     incumbent,
                 )
+        if claims_registry is not None:
+            # Register-before-use (C-1, #134): every gate decision gets a
+            # claims-registry row with the run ids in the evidence chain.
+            from .promotion import append_claims_row
+
+            row = append_claims_row(
+                claims_registry,
+                claim=(
+                    f"flywheel round {label!r} ({entry['model']}) gate "
+                    f"{entry['status']}: pass_rate {entry['pass_rate']:.4f} "
+                    f"({entry['passed']}/{entry['total']})"
+                ),
+                evidence=(
+                    f"eval_run={entry['eval_run_id']} trainer_run={entry['run_id']} "
+                    f"checkpoint={entry['checkpoint']} gate_mode="
+                    f"{entry.get('gate_mode', 'regression')}"
+                ),
+                status="verified" if entry["status"] == "promoted" else "rejected",
+            )
+            entry["claims_row"] = row["id"]
     if entry["export_sha256"]:
         for existing in registry["rounds"]:
             if (
@@ -288,9 +335,25 @@ def incumbent_pass_rate(registry: dict[str, Any]) -> float | None:
     return best
 
 
-def mark_round_status(
-    cache_path: str, *, label: str, status: str
-) -> dict[str, Any]:
+def incumbent_entry(registry: dict[str, Any]) -> dict[str, Any] | None:
+    """Full record of the best prior non-discarded round (#134).
+
+    Same selection as incumbent_pass_rate but returns the entry so the
+    Wilson gate can read its counts (passed/total).
+    """
+    best: dict[str, Any] | None = None
+    best_rate: float | None = None
+    for r in registry.get("rounds", []):
+        if r.get("status") == "discarded":
+            continue
+        rate = float(r.get("pass_rate", 0.0))
+        if best_rate is None or rate > best_rate:
+            best = r
+            best_rate = rate
+    return best
+
+
+def mark_round_status(cache_path: str, *, label: str, status: str) -> dict[str, Any]:
     """Set a recorded round's promotion status (promoted|discarded).
 
     Operational backfill for rounds recorded before the #82 gate existed,

@@ -127,6 +127,56 @@ jobs:
         run: |
           pytest tests/test_contract_integration.py -v -m integration
 
+      # Phase-2 promotion line (#134): run the eval-gated promotion cycle
+      # unattended — a tiny real SFT round, a Wilson-CI eval-gate decision
+      # recorded into a scratch flywheel registry, and a claims-registry row
+      # appended for the decision (register-before-use, C-1). Fails the
+      # nightly when the promotion path regresses.
+      - name: Promotion cycle smoke (#134)
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          from fusion_trainer.flywheel import record_round, format_status
+
+          tmp = Path("runtime_cache/promote_smoke")
+          tmp.mkdir(parents=True, exist_ok=True)
+          cache = str(tmp)
+          claims = tmp / "claims.md"
+          claims.write_text(
+              "| ID | Date | Claim | Evidence | Status | Review |\n"
+              "|----|------|-------|----------|--------|--------|\n",
+              encoding="utf-8",
+          )
+
+          def summary(run_id, passed, total=30):
+              p = tmp / f"{run_id}-summary.json"
+              p.write_text(json.dumps({
+                  "run_id": run_id,
+                  "models": {"ci": "Qwen3-0.6B-4bit-fused"},
+                  "arms": {"ci": {"total": total, "passed": passed,
+                                  "pass_rate": passed / total,
+                                  "by_type": {}}},
+              }), encoding="utf-8")
+              return p
+
+          record_round(cache, label="baseline", checkpoint="base",
+                       summary_path=summary("b", 15), baseline=True)
+          e = record_round(cache, label="round-1", checkpoint="adp",
+                           summary_path=summary("r1", 28), run_id="smoke-1",
+                           gate=True, gate_mode="wilson",
+                           claims_registry=claims)
+          assert e["status"] == "promoted", e
+          assert e["claims_row"] == "CL-001", e
+          e2 = record_round(cache, label="round-2", checkpoint="adp2",
+                            summary_path=summary("r2", 16), run_id="smoke-2",
+                            gate=True, gate_mode="wilson",
+                            claims_registry=claims)
+          assert e2["status"] == "discarded", e2
+          print(format_status(cache))
+          print("promotion cycle smoke: OK (#134)")
+          PY
+
       - name: Dump engine log on failure
         if: failure()
         run: tail -200 /tmp/fusion-mlx.log || true
